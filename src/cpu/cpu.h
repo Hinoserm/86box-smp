@@ -1052,6 +1052,7 @@ extern uint32_t cpu_lapic_timer_divisor_read_index(uint8_t lapic_index);
 extern uint32_t cpu_lapic_timer_current_read_index(uint8_t lapic_index);
 extern uint32_t cpu_lapic_timer_restore_index(uint8_t lapic_index, uint32_t initial, uint32_t current, int enabled);
 extern int      cpu_lapic_mmio_reg_read_only(uint32_t reg);
+extern int      cpu_mp_pairable(const cpu_family_t *family, const CPU *cpu);
 
 /* Write-action codes keep LAPIC MMIO side effects outside generic register writes. */
 #define CPU_LAPIC_MMIO_WRITE_UNHANDLED      0

@@ -34,10 +34,12 @@ extern "C" {
 #include "../cpu/cpu.h"
 
 #include <86box/86box.h>
+#include <86box/ini.h>
 #include <86box/config.h>
 #include <86box/device.h>
 #include <86box/machine.h>
 #include <86box/nvr.h>
+#include <86box/cpu_mp.h>
 }
 
 #include "qt_deviceconfig.hpp"
@@ -140,6 +142,24 @@ SettingsMachine::SettingsMachine(QWidget *parent)
     ui->comboBoxPitMode->setCurrentIndex(-1);
     ui->comboBoxPitMode->setCurrentIndex(pit_mode + 1);
 
+    /* Processors fitted and SMP drift: shown for boards with more than one
+       socket (on_comboBoxMachine_currentIndexChanged), one entry for each
+       socket (updateProcessorsPairable). */
+    wantedProcessors = (cpu_count > 1) ? cpu_count : 1;
+    {
+        static const int drifts[] = { 5, 10, 20, 50, 100 };
+        int              sel      = -1;
+
+        for (int d : drifts) {
+            int row = Models::AddEntry(ui->comboBoxSmpDrift->model(), tr("%1 µs").arg(d), d);
+            if (d == cpu_smp_drift_us)
+                sel = row;
+        }
+        if (sel < 0) /* set by hand in the file: keep it */
+            sel = Models::AddEntry(ui->comboBoxSmpDrift->model(), tr("%1 µs").arg(cpu_smp_drift_us), cpu_smp_drift_us);
+        ui->comboBoxSmpDrift->setCurrentIndex(sel);
+    }
+
     switch (time_sync) {
         case TIME_SYNC_ENABLED:
             ui->radioButtonLocalTime->setChecked(true);
@@ -192,6 +212,8 @@ SettingsMachine::changed()
 #endif
     has_changed |= (fpu_mode_current()         != ui->comboBoxFPUMode->currentData().toInt());
     has_changed |= (force_10ms                 != (ui->radioButtonLargerFrames->isChecked() ? 1 : 0));
+    has_changed |= (cpu_count                  != (ui->comboBoxProcessors->isEnabled() ? ui->comboBoxProcessors->currentData().toInt() : 1));
+    has_changed |= (cpu_smp_drift_us           != ui->comboBoxSmpDrift->currentData().toInt());
 
     int64_t temp_mem_size;
     if (machine_get_ram_granularity(machine) < 1024)
@@ -256,6 +278,8 @@ SettingsMachine::save(int soft)
     fpu_softfloat            = (ui->comboBoxFPUMode->currentData().toInt() != FPU_MODE_DEFAULT) ? 1 : 0;
     fpu_host_x87             = (ui->comboBoxFPUMode->currentData().toInt() == FPU_MODE_HOST_X87) ? 1 : 0;
     force_10ms               = ui->radioButtonLargerFrames->isChecked() ? 1 : 0;
+    cpu_count                = ui->comboBoxProcessors->isEnabled() ? ui->comboBoxProcessors->currentData().toInt() : 1;
+    cpu_smp_drift_us         = ui->comboBoxSmpDrift->currentData().toInt();
 
     int64_t temp_mem_size;
     if (machine_get_ram_granularity(machine) < 1024)
@@ -364,8 +388,87 @@ SettingsMachine::on_comboBoxMachine_currentIndexChanged(int index)
         ui->spinBoxRAM->setValue(mem_size / divisor);
         ui->spinBoxRAM->setEnabled(machine_get_min_ram(machineId) != machine_get_max_ram(machineId));
 
+        {
+            bool dual = machine_cpu_sockets(machineId) > 1;
+
+            ui->labelProcessors->setVisible(dual);
+            ui->comboBoxProcessors->setVisible(dual);
+            ui->labelSmpDrift->setVisible(dual);
+            ui->comboBoxSmpDrift->setVisible(dual);
+            updateProcessorsPairable();
+        }
+
         emit currentMachineChanged(machineId);
     }
+}
+
+/* The previewed board's "disable_apic" setting, as machine_get_config_int
+   reads the running one's. */
+static bool
+machine_disable_apic_set(int machineId)
+{
+    const device_t *dev = machine_get_device(machineId);
+
+    if ((dev == nullptr) || (dev->config == nullptr))
+        return false;
+    for (const device_config_t *cfg = dev->config; cfg->type != CONFIG_END; cfg++)
+        if (!strcmp(cfg->name, "disable_apic"))
+            return config_get_int((char *) dev->name, (char *) "disable_apic", cfg->default_int) != 0;
+    return false;
+}
+
+/* More than one processor only on a board with more than one socket, and
+   with a processor that runs as a pair: one with an on-chip local APIC (the
+   others start from a STARTUP), and not an OverDrive, the upgrade that
+   takes the pair's place (82374EB 13.5.2). Anything else runs one, so One
+   is what is shown and saved. */
+void
+SettingsMachine::updateProcessorsPairable()
+{
+    static const char *const names[] = { QT_TR_NOOP("One"), QT_TR_NOOP("Two") };
+    const int   machineId   = ui->comboBoxMachine->currentData().toInt();
+    const int   sockets     = machine_cpu_sockets(machineId);
+    const bool  dual        = sockets > 1;
+    bool        pairable    = false;
+    const int   cpuFamilyId = ui->comboBoxCPU->currentData().toInt();
+    const int   cpuId       = ui->comboBoxSpeed->currentData().toInt();
+
+    if (dual && (ui->comboBoxCPU->currentIndex() >= 0) && (ui->comboBoxSpeed->currentIndex() >= 0))
+        pairable = cpu_mp_pairable(&cpu_families[cpuFamilyId], &cpu_families[cpuFamilyId].cpus[cpuId]);
+
+    /* The board's own "disable APIC" leaves no way to start a second. */
+    const bool apic_off = dual && machine_disable_apic_set(machineId);
+
+    ui->comboBoxProcessors->setEnabled(pairable && !apic_off);
+    ui->comboBoxProcessors->setToolTip(!dual ? QString() :
+                                       !pairable ? tr("This processor cannot run as a pair") :
+                                       apic_off  ? tr("The board's APIC is disabled") : QString());
+    /* One entry for each socket. Shown as One while it cannot be more; the
+       choice comes back with a processor and board that can. */
+    {
+        const int wanted = wantedProcessors;
+
+        ui->comboBoxProcessors->blockSignals(true);
+        ui->comboBoxProcessors->model()->removeRows(0, ui->comboBoxProcessors->model()->rowCount());
+        for (int n = 1; (n <= sockets) && (n <= (int) (sizeof(names) / sizeof(names[0]))); n++)
+            Models::AddEntry(ui->comboBoxProcessors->model(), tr(names[n - 1]), n);
+        ui->comboBoxProcessors->blockSignals(false);
+        wantedProcessors = wanted;
+    }
+    ui->comboBoxProcessors->setCurrentIndex((pairable && !apic_off && (wantedProcessors > 1)) ?
+                                            (((wantedProcessors < sockets) ? wantedProcessors : sockets) - 1) : 0);
+    on_comboBoxProcessors_currentIndexChanged(ui->comboBoxProcessors->currentIndex());
+}
+
+/* The drift only means something with more than one processor. */
+void
+SettingsMachine::on_comboBoxProcessors_currentIndexChanged(int index)
+{
+    if (ui->comboBoxProcessors->isEnabled() && (index >= 0))
+        wantedProcessors = ui->comboBoxProcessors->currentData().toInt();
+    ui->comboBoxSmpDrift->setEnabled(ui->comboBoxProcessors->isEnabled() && (index >= 0) &&
+                                     (ui->comboBoxProcessors->currentData().toInt() > 1));
+    ui->labelSmpDrift->setEnabled(ui->comboBoxSmpDrift->isEnabled());
 }
 
 void
@@ -466,6 +569,8 @@ SettingsMachine::on_comboBoxSpeed_currentIndexChanged(int index)
         ui->comboBoxFPU->setEnabled(modelFpu->rowCount() > 1);
         ui->comboBoxFPU->setCurrentIndex(-1);
         ui->comboBoxFPU->setCurrentIndex(selectedFpuRow);
+
+        updateProcessorsPairable();
     }
 }
 
@@ -508,6 +613,7 @@ SettingsMachine::on_pushButtonConfigure_clicked()
     int         machineId = ui->comboBoxMachine->currentData().toInt();
     const auto *device    = machine_get_device(machineId);
     machine_cfg_changed |= DeviceConfig::ConfigureDevice(device);
+    updateProcessorsPairable(); /* its "disable APIC" may have changed */
 }
 
 void

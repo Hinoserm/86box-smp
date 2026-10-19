@@ -113,6 +113,7 @@ int cpu_mp_count         = 1;
 int cpu_mp_cur           = 0;
 int cpu_mp_timers_frozen = 0;
 
+int cpu_count        = 1;
 int cpu_smp_drift_us = CPU_SMP_DRIFT_DEFAULT;
 
 /* Slices adapt between the shortest and the SMP drift setting: they double

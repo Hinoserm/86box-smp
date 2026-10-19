@@ -46,10 +46,12 @@
 #include <86box/hdc.h>
 #include <86box/sio.h>
 #include <86box/chipset.h>
+#include <86box/ioapic_routes.h>
 #include <86box/eisa.h>
 #include <86box/esc.h>
 #include <86box/scsi_aic7xxx.h>
 #include <86box/machine.h>
+#include <86box/cpu_mp.h>
 #include <86box/rom.h>
 #include <86box/keyboard.h>
 #include <86box/thread.h>
@@ -111,6 +113,20 @@ static const device_config_t at_54tdp_config[] = {
         .selection      = { { 0 } },
         .bios           = { { 0 } }
     },
+    /* The processor's local APIC and the ESC's I/O APIC. The board always
+       has both; turning this off makes the machine what it was before
+       either was modelled: 8259 only, MP table hidden. */
+    {
+        .name           = "disable_apic",
+        .description    = "Disable APIC",
+        .type           = CONFIG_BINARY,
+        .default_string = NULL,
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
+        .bios           = { { 0 } }
+    },
     { .name = "", .description = "", .type = CONFIG_END }
     // clang-format on
 };
@@ -138,8 +154,8 @@ machine_at_54tdp_init(const machine_t *model)
     if (!device_available(model->device))
         return 0;
 
-    /* Which build: see at_54tdp_config. With 1.51 the second socket is
-       still empty here; nothing yet runs a second processor. */
+    /* Which build: see at_54tdp_config. 1.03 knows one processor: a second
+       one waits for a STARTUP it never sends, as on the board. */
     device_context(model->device);
     fn  = device_get_bios_file(machine_get_device(machine), device_get_config_bios("bios"), 0);
     ret = bios_load_linear(fn, 0x000e0000, 131072, 0);
@@ -172,14 +188,39 @@ machine_at_54tdp_init(const machine_t *model)
        and the system BIOS carries its option ROM. */
     device_add(machine_get_scsi_device(machine));
 
-    /* This board takes two processors and its firmware says so, but the
-       APIC in the ESC has nowhere to deliver a message: there is no local
-       APIC here. An operating system that believes the table and routes
-       its interrupts through the APIC therefore loses them -- the mouse
-       first, because nothing else needs IRQ 12. Blanking the table is what
-       the other dual-capable Socket 7 boards do. The firmware is AMI, whose
-       last POST code before booting is 00, not Award's FF. */
-    device_add(&ioapic_ami_device);
+    /* The ESC's I/O APIC, delivering to the processors' local APICs. The
+       BIOS enables the local APIC at every reset (virtual wire: the 8259
+       through LINT0) and builds an MP 1.1 table, which is left for the
+       operating system to find. With the APIC disabled the table is hidden
+       at AMI's last POST code, 00h, and the ESC's own register file answers
+       at APICBASE. */
+    {
+        static const ioapic_legacy_irq_routing_t esc_irq_routing = {
+            .irq_to_intin = IOAPIC_LEGACY_IRQ_ROUTE_ESC
+        };
+        uintptr_t topo = IOAPIC_TOPOLOGY_UP_APIC_DEFAULT | IOAPIC_POST_TRIGGER_AMI;
+        void     *ioapic;
+
+        /* The board has two sockets (MACHINE_DUAL_CPU): the Processor
+           settings say how many are fitted. The second processor, the
+           Dual, needs the APIC to start (its first instruction comes from
+           a STARTUP); without it the setting falls back to one, and so it
+           does with a processor that does not pair (cpu_mp_pairable). */
+        if ((cpu_count >= 2) && !machine_get_config_int("disable_apic") && cpu_mp_pairable(cpu_f, cpu_s)) {
+            cpu_mp_configure(2);
+            topo |= IOAPIC_TOPOLOGY_LAPIC_SLOTS(2) | IOAPIC_TOPOLOGY_SMP;
+        } else {
+            if (cpu_count >= 2)
+                pclog("54TDP: %i processors configured, one runs: %s\n", cpu_count,
+                      machine_get_config_int("disable_apic") ? "the APIC is disabled" :
+                                                               "this processor does not pair");
+            topo |= IOAPIC_TOPOLOGY_LAPIC_SLOTS(1);
+        }
+
+        ioapic = device_add_params(&ioapic_esc_device, (void *) topo);
+        ioapic_set_legacy_irq_routing(ioapic, &esc_irq_routing);
+        esc_set_ioapic(ioapic);
+    }
 
     /* The firmware lives in a Winbond W29C011A, and some of what setup
        stores goes back into it rather than into CMOS. Without a flash part

@@ -70,6 +70,7 @@
 #include <86box/gameport.h>
 #include <86box/keyboard.h>
 #include <86box/machine.h>
+#include <86box/cpu_mp.h>
 #include <86box/mouse.h>
 #include <86box/thread.h>
 #include <86box/network.h>
@@ -672,6 +673,19 @@ load_machine(void)
         mem_size = machine_get_max_ram(machine);
 
     mem_guard_pages = !!ini_section_get_int(cat, "mem_guard_pages", 0);
+
+    /* Processors fitted and SMP drift, on a board with more than one
+       socket. */
+    cpu_count        = ini_section_get_int(cat, "cpu_count", 1);
+    cpu_smp_drift_us = ini_section_get_int(cat, "smp_drift_us", CPU_SMP_DRIFT_DEFAULT);
+    if (cpu_count < 1)
+        cpu_count = 1;
+    if (cpu_count > machine_cpu_sockets(machine))
+        cpu_count = machine_cpu_sockets(machine);
+    if (cpu_smp_drift_us < 1)
+        cpu_smp_drift_us = CPU_SMP_DRIFT_DEFAULT;
+    if (cpu_smp_drift_us > 1000) /* 1 ms: the slice arithmetic stays in range */
+        cpu_smp_drift_us = 1000;
 
     cpu_use_dynarec = !!ini_section_get_int(cat, "cpu_use_dynarec", 0);
     fpu_softfloat = !!ini_section_get_int(cat, "fpu_softfloat", 0);
@@ -3024,6 +3038,8 @@ config_load(void)
         force_constant_mouse = 0;
 
         cpu_override_interpreter = 0;
+        cpu_count                = 1;
+        cpu_smp_drift_us         = CPU_SMP_DRIFT_DEFAULT;
 
         fpu_type               = fpu_get_type(cpu_f, cpu, "none");
         gfxcard[0]             = video_get_video_from_internal_name("cga");
@@ -3565,6 +3581,15 @@ save_machine(void)
         ini_section_delete_var(cat, "mem_guard_pages");
 
     ini_section_set_int(cat, "cpu_use_dynarec", cpu_use_dynarec);
+
+    /* On a board with more than one socket, and on no other. */
+    if (machine_cpu_sockets(machine) > 1) {
+        ini_section_set_int(cat, "cpu_count", cpu_count);
+        ini_section_set_int(cat, "smp_drift_us", cpu_smp_drift_us);
+    } else {
+        ini_section_delete_var(cat, "cpu_count");
+        ini_section_delete_var(cat, "smp_drift_us");
+    }
 
     /* fpu_softfloat names softfloat itself; the host-x87 FPU, which runs on
        it, has its own key, kept by a build without it while softfloat stands

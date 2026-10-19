@@ -160,6 +160,9 @@ typedef struct ioapic_legacy_irq_routing_t {
    version 11h with MRE 0Fh, no SMI# input, and a window the ESC moves with
    its APICBASE register (ioapic_set_mmio_base). */
 #define IOAPIC_VARIANT_ESC                0x00000800
+/* A board with its other processors fitted and running (cpu_mp.c): a local
+   APIC for each, started by a real STARTUP. */
+#define IOAPIC_TOPOLOGY_SMP               0x00001000
 /* Packed into device_t.local so boards can seed topology without new config keys. */
 #define IOAPIC_TOPOLOGY_LAPIC_SLOTS(slots) \
     (((uintptr_t) (slots) & IOAPIC_TOPOLOGY_LAPIC_SLOTS_MASK) << IOAPIC_TOPOLOGY_LAPIC_SLOTS_SHIFT)

@@ -1600,6 +1600,14 @@ ioapic_init(UNUSED(const device_t *info))
     dev->ap_route_parked = !!device_get_config_int("ap_route_parked");
     dev->smp_probe = !!device_get_config_int("smp_probe");
     dev->post_trigger = (local & IOAPIC_POST_TRIGGER_AMI) ? 0x00 : 0xff;
+    if (local & IOAPIC_TOPOLOGY_SMP) {
+        /* The multi-LAPIC path, with the STARTUP running the processor
+           rather than parking it; the MP-table additions stay off, the
+           BIOS lists its own processors. */
+        dev->multi_lapic     = 1;
+        dev->second_cpu_card = 1;
+        dev->ap_startup      = 1;
+    }
     dev->is_esc       = !!(local & IOAPIC_VARIANT_ESC);
     if (dev->is_esc) {
         dev->pins        = 16;
@@ -1616,6 +1624,11 @@ ioapic_init(UNUSED(const device_t *info))
     dev->topology_lapic_slots_max = (local >> IOAPIC_TOPOLOGY_LAPIC_SLOTS_SHIFT) &
                                     IOAPIC_TOPOLOGY_LAPIC_SLOTS_MASK;
     apic_platform_set_lapic_count_config(dev->apic, device_get_config_int("lapic_count"));
+    /* Every processor the board runs has its local APIC: as many as its
+       slots, two at least. */
+    if (local & IOAPIC_TOPOLOGY_SMP)
+        apic_platform_ensure_lapic_count_min(dev->apic,
+                                             (dev->topology_lapic_slots_max > 2) ? dev->topology_lapic_slots_max : 2);
     if (dev->smp_probe) {
         /* Probe preset enables the guarded two-LAPIC path from one config switch. */
         dev->uniprocessor_apic = 1;

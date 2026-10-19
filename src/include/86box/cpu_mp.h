@@ -33,12 +33,14 @@ extern int cpu_mp_cur;
    time is the first processor's to advance, so nothing fires timers. */
 extern int cpu_mp_timers_frozen;
 
-/* The SMP drift: how far apart, in microseconds of guest time, the
-   processors' clocks may be. Taking turns on one thread, it is the longest
-   turn: turns start at 5 us and grow towards it while the processors do not
-   interact. Tighter keeps the processors closer in step; wider costs the
-   host less switching. */
+/* The Processor settings of a board with more than one socket
+   (MACHINE_DUAL_CPU): how many are fitted, and the SMP drift -- how far
+   apart, in microseconds of guest time, the processors' clocks may be.
+   Taking turns on one thread, it is the longest turn: turns start at 5 us
+   and grow towards it while the processors do not interact. Tighter keeps
+   the processors closer in step; wider costs the host less switching. */
 #define CPU_SMP_DRIFT_DEFAULT 20
+extern int cpu_count;
 extern int cpu_smp_drift_us;
 
 extern void cpu_mp_note_interaction(void);

@@ -29,6 +29,8 @@ signals:
 private slots:
     void on_pushButtonConfigure_clicked();
     void on_comboBoxFPU_currentIndexChanged(int index);
+    void on_comboBoxProcessors_currentIndexChanged(int index);
+    void updateProcessorsPairable();
     void on_comboBoxSpeed_currentIndexChanged(int index);
     void on_comboBoxCPU_currentIndexChanged(int index);
     void on_comboBoxMachine_currentIndexChanged(int index);
@@ -41,6 +43,7 @@ private slots:
     void on_radioButtonLargerFrames_clicked();
 
 private:
+    int wantedProcessors = 1; /* what was chosen, kept while an unpairable processor is looked at */
     Ui::SettingsMachine *ui;
 
     int                  machine_cfg_changed;

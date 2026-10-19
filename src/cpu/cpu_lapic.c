@@ -451,6 +451,34 @@ cpu_lapic_dfr_load_index(uint8_t lapic_index, uint32_t val)
     cpu_lapic_dfrs[lapic_index] = lapic_dfr_sanitize(val);
 }
 
+/* Whether a processor can be one of a pair on a dual board: the Settings
+   dialogue and the board ask the same question here. Only the P54C and
+   P55C have the on-chip APIC a second processor is started through among
+   what the Socket 5 and 7 dual boards take, and an OverDrive is the
+   upgrade that takes the pair's place -- "the P54CT processor will disable
+   P54C" (82374EB 13.5.2). The 3.3 V OverDrive reports CPUID type 0, so it
+   is known by its family's name, not its signature. */
+int
+cpu_mp_pairable(const cpu_family_t *family, const CPU *cpu)
+{
+    if (cpu == NULL)
+        return 0;
+    switch (cpu->cpu_type) {
+        case CPU_PENTIUM:
+        case CPU_PENTIUMMMX:
+            return (family == NULL) || (strstr(family->name, "OverDrive") == NULL);
+        /* The P6 family pairs as equals, through the same on-chip APIC.
+           Not the Celeron: Intel left its second bus agent out (no BR1#),
+           so a Slot 1 Celeron runs alone. */
+        case CPU_PENTIUMPRO:
+        case CPU_PENTIUM2:
+        case CPU_PENTIUM2D:
+            return (family == NULL) || (strstr(family->name, "Celeron") == NULL);
+        default:
+            return 0;
+    }
+}
+
 /* The on-chip APIC of the P54C and P55C is the first of its line: version
    1xh, four LVT entries (timer, LINT0, LINT1, error -- MaxLVT 3), and no
    thermal or performance-counter entries (Pentium Vol. 3, Fig. 19-14 and

@@ -20764,7 +20764,7 @@ const machine_t machines[] = {
             .max_multi   = 3.5
         },
         .bus_flags = MACHINE_PCIE | MACHINE_BUS_PS2,
-        .flags     = MACHINE_SCSI | MACHINE_APM | MACHINE_UART_PRI | MACHINE_UART_SEC | MACHINE_LPT_PRI,
+        .flags     = MACHINE_SCSI | MACHINE_APM | MACHINE_DUAL_CPU | MACHINE_UART_PRI | MACHINE_UART_SEC | MACHINE_LPT_PRI,
         .ram       = {
             .min  = 2048,
             .max  = 786432,
@@ -30737,6 +30737,15 @@ machine_has_flags(int m, uintptr_t flags)
         ret |= MACHINE_PS2_KBC;
 
     return ret;
+}
+
+/* How many processor sockets the board has. */
+int
+machine_cpu_sockets(int m)
+{
+    if (machines[m].flags & MACHINE_DUAL_CPU)
+        return 2;
+    return 1;
 }
 
 uintptr_t
