@@ -12,6 +12,7 @@
 #define EMU_X86_INTERRUPT_H
 
 #include <86box/pic.h>
+#include <86box/cpu_mp.h>
 
 extern int ioapic_external_interrupt_pending(void);
 extern int ioapic_external_interrupt_vector(void);
@@ -30,26 +31,29 @@ x86_external_interrupt_pending(void)
     if (!ioapic_irq_path_active)
         return pic.int_pending;
 
-    /* Nothing from the 8259, nothing in the processor's IRR (local APIC
-       0's), no ExtINT: the full answer below would be no. The full path
-       still runs once after the APIC is enabled or disabled, so the I/O
-       APIC sees the new enable state (ioapic_external_interrupt_pending). */
-    if (!pic.int_pending && !cpu_lapic_extint_live[0] && cpu_apic_int_fast_ok) {
-        if (!(cpu_lapic_irr_live & 1u))
+    /* Nothing from the 8259, nothing in this processor's IRR, no ExtINT:
+       the full answer below would be no. The boot processor still takes
+       the full path once after its APIC is enabled or disabled, so the
+       I/O APIC sees the new enable state (ioapic_external_interrupt_pending). */
+    if (!pic.int_pending && !cpu_lapic_extint_live[cpu_mp_self] &&
+        (cpu_apic_int_fast_ok || cpu_mp_self)) {
+        if (!(cpu_lapic_irr_live & (1u << cpu_mp_self)))
             return 0;
 
         /* Something is in IRR but may be held back by TPR/PPR, as it
            often is at a raised IRQL: the one scan the full path would end
            in answers it. Asking as if started can only find more, never
            less, than the full path would. */
-        if (cpu_lapic_highest_deliverable_irr_index(0, 1) < 0)
+        if (cpu_lapic_highest_deliverable_irr_index((uint8_t) cpu_mp_self, 1) < 0)
             return 0;
     }
 
     if (ioapic_external_interrupt_pending())
         return 1;
 
-    if (!ioapic_pic_fallback_allowed())
+    /* The 8259 straight to the processor is the boot processor's path;
+       any other takes it only through its own LINT0, above. */
+    if (!ioapic_pic_fallback_allowed() || cpu_mp_self)
         return 0;
 
     return pic.int_pending;
@@ -65,7 +69,7 @@ x86_external_interrupt_vector(void)
         return ioapic_external_interrupt_vector();
 
     /* Blocked PIC fallback reports no vector without acknowledging the PIC. */
-    if (!ioapic_pic_fallback_allowed())
+    if (!ioapic_pic_fallback_allowed() || cpu_mp_self)
         return -1;
 
     return picinterrupt();

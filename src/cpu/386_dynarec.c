@@ -44,6 +44,7 @@
 #include "386_common.h"
 #include "x86_interrupt.h"
 #include "x86_idle.h"
+#include <86box/cpu_mp.h>
 
 #if defined(__APPLE__) && defined(__aarch64__)
 #    include <pthread.h>
@@ -273,6 +274,14 @@ int32_t         cycles_main = 0;
 static int32_t  cycles_old  = 0;
 static uint64_t tsc_old     = 0;
 
+/* Per processor (cpu_mp.c): where this processor's block began. */
+void
+cpu_mp_register_dynarec(void)
+{
+    cpu_mp_register(&cycles_old, sizeof(cycles_old));
+    cpu_mp_register(&tsc_old, sizeof(tsc_old));
+}
+
 extern int codegen_record_faulted; /* 386_common.c */
 
 int
@@ -418,7 +427,8 @@ update_tsc(void)
     if (cycdiff > 0)
         tsc += cycdiff;
 
-    if (cycdiff > 0) {
+    /* Timers are the first processor's to run, not another's in its turn. */
+    if ((cycdiff > 0) && !cpu_mp_timers_frozen) {
         if (TIMER_VAL_LESS_THAN_VAL(timer_target, (uint64_t) tsc))
             timer_process();
     }
@@ -586,8 +596,9 @@ codegen_chain_service(void)
        has to give breaks the chain. */
     if ((cpu_state.flags & I_FLAG) && x86_external_interrupt_pending())
         return 1;
-    {
-        /* A timer armed sooner: the chain now runs down only to it. */
+    /* A timer armed sooner: the chain now runs down only to it. Another
+       processor's turn runs no timers (cpu_mp.c). */
+    if (!cpu_mp_timers_frozen) {
         const int64_t until = (int64_t) (timer_target - exec386_chain_tsc);
         const int     floor = (until <= 0) ? cpu_state.chain_cycles :
                                              ((until < cpu_state.chain_cycles) ? (cpu_state.chain_cycles - (int) until) : 0);
@@ -622,12 +633,16 @@ exec386_chain_still_clean(codeblock_t *block)
 }
 
 /* The cycles value below which the next timer is due: a chain runs down to
-   it. Cycles are charged before every branch, so the stub's test is exact. */
+   it. Cycles are charged before every branch, so the stub's test is exact.
+   Another processor's turn runs no timers (cpu_mp.c): its chains run down
+   to its cycles. */
 static inline int
 exec386_chain_floor(void)
 {
     const int64_t until = (int64_t) (timer_target - tsc);
 
+    if (cpu_mp_timers_frozen)
+        return 0;
     if (until <= 0)
         return cycles;
     if (until < cycles)
@@ -1153,8 +1168,10 @@ exec386_dynarec_dyn(void)
 
 }
 
-void
-exec386_dynarec(int32_t cycs)
+/* Blocks until this processor's cycles for the slice are spent. Answers
+   non-zero when the debugger wants control back. */
+static int
+exec386_dynarec_blocks(void)
 {
     int      vector;
     int      tempi;
@@ -1164,162 +1181,215 @@ exec386_dynarec(int32_t cycs)
     uint64_t oldtsc;
     uint64_t delta;
 
+    while (cycles > 0) {
+        /* Waiting for a STARTUP it runs nothing ("wait for SIPI", Pentium
+           Pro Vol. 3, 7.5.4): an SMI that reaches it there is taken at
+           once, before any instruction of the state RESET or INIT left,
+           and without one to take it stops (cpu_core_waiting). */
+        if (__builtin_expect(cpu_core_waiting && !in_smm, 0)) {
+            if (smi_line)
+                enter_smm_check(0);
+            if (!in_smm) {
+                cpu_halted = 1;
+                cycles     = 0;
+                break;
+            }
+        }
+
+        cpu_halted      = 0;
+        oldcs           = CS;
+        oldcpl          = CPL;
+        oldcyc = oldcyc2 = cycles;
+        cycles_old       = cycles;
+        oldtsc           = tsc;
+        tsc_old          = tsc;
+        /* Interpret the block: always with the recompiler switched off,
+           when exec386 has handed the processors over (cpu_mp.c). */
+        if (cpu_force_interpreter || cpu_override_dynarec || cpu_flush_pending || (!CACHE_ON()) || !cpu_use_dynarec) {
+            exec386_dynarec_int();
+        } else {
+            exec386_dynarec_dyn();
+            /* A CR0 paging toggle ends the block it is in, so it was the
+               last instruction executed. */
+            if (cpu_flush_pending == 1)
+                cpu_flush_pending++;
+        }
+#    ifdef CODEGEN_CHAIN
+        /* Whatever broke a chain is looked at below: the break is
+           cleared first, so one set from now on breaks the next chain.
+           A relink and a translation change are taken here, before the
+           next dispatch. */
+        if (__atomic_load_n(&mem_chain_signal.brk, __ATOMIC_RELAXED))
+            __atomic_store_n(&mem_chain_signal.brk, 0, __ATOMIC_SEQ_CST);
+        if (__atomic_load_n(&mem_chain_signal.code, __ATOMIC_RELAXED)) {
+            const uint8_t why = __atomic_exchange_n(&mem_chain_signal.code, 0, __ATOMIC_SEQ_CST);
+
+            if (why & MEM_CHAIN_CODE_RELINK)
+                codegen_links_drop_all(1);
+            if (why & MEM_CHAIN_CODE_REVALIDATE)
+                codegen_links_revalidate();
+        }
+#    endif
+
+        if (cpu_init) {
+            cpu_init = 0;
+            resetx86();
+        }
+
+        if (cpu_state.abrt) {
+            flags_rebuild();
+            tempi          = cpu_state.abrt & ABRT_MASK;
+            cpu_state.abrt = 0;
+            x86_doabrt(tempi);
+            if (cpu_state.abrt) {
+                int second_abrt = cpu_state.abrt & ABRT_MASK;
+                cpu_state.abrt = 0;
+                cpu_state.pc   = cpu_state.oldpc;
+                x86_fault_in_delivery(tempi, second_abrt);
+                if (cpu_state.abrt) {
+                    cpu_state.abrt = 0;
+                    softresetx86();
+                    cpu_set_edx();
+#    ifdef ENABLE_386_DYNAREC_LOG
+                    x386_dynarec_log("Triple fault - reset\n");
+#    endif
+                }
+            }
+        }
+
+        if (new_ne) {
+            oldcs = CS;
+            cpu_state.oldpc = cpu_state.pc;
+            new_ne = 0;
+            x86_int(16);
+        }
+
+        if (smi_line) {
+            /* Out of a HLT that left pc on itself: entered with pc past it
+               and the Auto HALT Restart state, as from within the HLT
+               (opHLT; Pentium Vol. 3, 20.1.5.2). Not taken, it stays as it
+               was. Waiting for a STARTUP is no HLT (cpu_core_waiting). */
+            const int halted = cpu_halted && !cpu_core_waiting;
+            const int before = in_smm;
+
+            if (halted)
+                cpu_state.pc++;
+            enter_smm_check(halted);
+            if (in_smm != before)
+                cpu_halted = 0;
+            else if (halted && before) {
+                /* An SMI latched in SMM still ends a HLT there: "INTR,
+                   NMI, and SMI# are the only events that take the CPU
+                   out of HALT" in SMM (Pentium Vol. 3, 20.1.6.3), as
+                   opHLT has it. */
+                cpu_halted = 0;
+            } else if (halted)
+                cpu_state.pc--;
+        } else if (NMI_TAKEABLE()) {
+            /* Out of a HLT that left pc on itself: "the saved CS:IP (or
+               CS:EIP) value points to the instruction following the HLT
+               instruction" (Pentium Vol. 3, HLT), NMI included. */
+            if (cpu_halted)
+                cpu_state.pc++;
+            cpu_halted = 0;
+            oldcs = CS;
+            cpu_state.oldpc = cpu_state.pc;
+            x86_int(2);
+            nmi_enable = 0;
+#    ifdef OLD_NMI_BEHAVIOR
+            if (nmi_auto_clear) {
+                nmi_auto_clear = 0;
+                nmi            = 0;
+            }
+#    else
+            nmi = 0;
+#    endif
+        } else if ((cpu_state.flags & I_FLAG) && x86_external_interrupt_pending()) {
+            vector = x86_external_interrupt_vector();
+            if (vector != -1) {
+                /* An interrupt that came after the HLT looked: past the
+                   HLT, as above. */
+                if (cpu_halted)
+                    cpu_state.pc++;
+                oldcs = CS;
+                cpu_state.oldpc = cpu_state.pc;
+                x86_int(vector);
+                cpu_halted = 0; /* out of HLT, into the handler */
+            }
+        }
+
+        cycdiff = oldcyc - cycles;
+        delta   = tsc - oldtsc;
+        if (delta > 0) {
+            /* TSC has changed, this means interim timer processing has happened,
+               see how much we still need to add. */
+            cycdiff -= delta;
+            if (cycdiff > 0)
+                tsc += cycdiff;
+        } else {
+            /* TSC has not changed. */
+            tsc += cycdiff;
+        }
+
+        /* Timers are the first processor's to run, not another's in its
+           turn (cpu_mp.c). */
+        if ((cycdiff > 0) && !cpu_mp_timers_frozen) {
+            if (TIMER_VAL_LESS_THAN_VAL(timer_target, (uint64_t) tsc))
+                timer_process();
+        }
+
+#    ifdef USE_GDBSTUB
+        if (gdbstub_instruction())
+            return 1;
+#    endif
+    }
+
+    return 0;
+}
+
+void
+exec386_dynarec(int32_t cycs)
+{
     int32_t cyc_period = cycs / (force_10ms ? 2000 : 200); /*5us*/
+    int32_t cyc_per_us = cycs / (force_10ms ? 10000 : 1000);
 
     cycles_main += cycs;
     while (cycles_main > 0) {
-        int32_t cycles_start;
+        int32_t  cycles_start;
+        int32_t  ran;
+        uint64_t tsc_start = tsc;
+
+        /* With more than one processor the slice adapts (cpu_mp.c). */
+        if (cpu_mp_count > 1) {
+            cyc_period = cyc_per_us * cpu_mp_next_slice_us();
+            if (cyc_period < 1)
+                cyc_period = 1;
+        }
 
         cycles += cyc_period;
         cycles_start = cycles;
 
-        while (cycles > 0) {
-            cpu_halted      = 0;
-            oldcs           = CS;
-            oldcpl          = CPL;
-            oldcyc = oldcyc2 = cycles;
-            cycles_old       = cycles;
-            oldtsc           = tsc;
-            tsc_old          = tsc;
-            if (cpu_force_interpreter || cpu_override_dynarec || cpu_flush_pending || (!CACHE_ON())) /*Interpret block*/
-            {
-                exec386_dynarec_int();
-            } else {
-                exec386_dynarec_dyn();
-                /* A CR0 paging toggle ends the block it is in, so it was the
-                   last instruction executed. */
-                if (cpu_flush_pending == 1)
-                    cpu_flush_pending++;
-            }
-#    ifdef CODEGEN_CHAIN
-            /* Whatever broke a chain is looked at below: the break is
-               cleared first, so one set from now on breaks the next chain.
-               A relink and a translation change are taken here, before the
-               next dispatch. */
-            if (__atomic_load_n(&mem_chain_signal.brk, __ATOMIC_RELAXED))
-                __atomic_store_n(&mem_chain_signal.brk, 0, __ATOMIC_SEQ_CST);
-            if (__atomic_load_n(&mem_chain_signal.code, __ATOMIC_RELAXED)) {
-                const uint8_t why = __atomic_exchange_n(&mem_chain_signal.code, 0, __ATOMIC_SEQ_CST);
+        if (exec386_dynarec_blocks())
+            return;
 
-                if (why & MEM_CHAIN_CODE_RELINK)
-                    codegen_links_drop_all(1);
-                if (why & MEM_CHAIN_CODE_REVALIDATE)
-                    codegen_links_revalidate();
-            }
-#    endif
+        ran = cycles_start - cycles;
 
-            if (cpu_init) {
-                cpu_init = 0;
-                resetx86();
-            }
+        cycles_main -= ran;
 
-            if (cpu_state.abrt) {
-                flags_rebuild();
-                tempi          = cpu_state.abrt & ABRT_MASK;
-                cpu_state.abrt = 0;
-                x86_doabrt(tempi);
-                if (cpu_state.abrt) {
-                    int second_abrt = cpu_state.abrt & ABRT_MASK;
-                    cpu_state.abrt = 0;
-                    cpu_state.pc   = cpu_state.oldpc;
-                    x86_fault_in_delivery(tempi, second_abrt);
-                    if (cpu_state.abrt) {
-                        cpu_state.abrt = 0;
-                        softresetx86();
-                        cpu_set_edx();
-#    ifdef ENABLE_386_DYNAREC_LOG
-                        x386_dynarec_log("Triple fault - reset\n");
-#    endif
-                    }
-                }
-            }
+        /* An INIT the first processor's APIC took during its slice. */
+        cpu_mp_after_chunk();
 
-            if (new_ne) {
-                oldcs = CS;
-                cpu_state.oldpc = cpu_state.pc;
-                new_ne = 0;
-                x86_int(16);
-            }
-
-            if (smi_line) {
-                /* Out of a HLT that left pc on itself: entered with pc past
-                   it and the Auto HALT Restart state, as from within the HLT
-                   (opHLT; Pentium Vol. 3, 20.1.5.2). Not taken, it stays as
-                   it was. */
-                const int halted = cpu_halted;
-                const int before = in_smm;
-
-                if (halted)
-                    cpu_state.pc++;
-                enter_smm_check(halted);
-                if (in_smm != before)
-                    cpu_halted = 0;
-                else if (halted && before) {
-                    /* An SMI latched in SMM still ends a HLT there: "INTR,
-                       NMI, and SMI# are the only events that take the CPU
-                       out of HALT" in SMM (Pentium Vol. 3, 20.1.6.3), as
-                       opHLT has it. */
-                    cpu_halted = 0;
-                } else if (halted)
-                    cpu_state.pc--;
-            } else if (NMI_TAKEABLE()) {
-                /* Out of a HLT that left pc on itself: "the saved CS:IP (or
-                   CS:EIP) value points to the instruction following the HLT
-                   instruction" (Pentium Vol. 3, HLT), NMI included. */
-                if (cpu_halted)
-                    cpu_state.pc++;
-                cpu_halted = 0;
-                oldcs = CS;
-                cpu_state.oldpc = cpu_state.pc;
-                x86_int(2);
-                nmi_enable = 0;
-#    ifdef OLD_NMI_BEHAVIOR
-                if (nmi_auto_clear) {
-                    nmi_auto_clear = 0;
-                    nmi            = 0;
-                }
-#    else
-                nmi = 0;
-#    endif
-            } else if ((cpu_state.flags & I_FLAG) && x86_external_interrupt_pending()) {
-                vector = x86_external_interrupt_vector();
-                if (vector != -1) {
-                    /* An interrupt that came after the HLT looked: past the
-                       HLT, as above. */
-                    if (cpu_halted)
-                        cpu_state.pc++;
-                    oldcs = CS;
-                    cpu_state.oldpc = cpu_state.pc;
-                    x86_int(vector);
-                    cpu_halted = 0; /* out of HLT, into the handler */
-                }
-            }
-
-            cycdiff = oldcyc - cycles;
-            delta   = tsc - oldtsc;
-            if (delta > 0) {
-                /* TSC has changed, this means interim timer processing has happened,
-                   see how much we still need to add. */
-                cycdiff -= delta;
-                if (cycdiff > 0)
-                    tsc += cycdiff;
-            } else {
-                /* TSC has not changed. */
-                tsc += cycdiff;
-            }
-
-            if (cycdiff > 0) {
-                if (TIMER_VAL_LESS_THAN_VAL(timer_target, (uint64_t) tsc))
-                    timer_process();
-            }
-
-#    ifdef USE_GDBSTUB
-            if (gdbstub_instruction())
-                return;
-#    endif
+        /* The other processors take the same stretch of time in turn
+           (cpu_mp.c), the first back in place afterwards: exactly as many
+           cycles as the first used, so none runs ahead of the machine's
+           clock while it stands still. */
+        for (int i = 1; (i < cpu_mp_count) && (ran > 0); i++) {
+            if (!cpu_mp_begin_slice(i, tsc_start))
+                continue;
+            cycles += ran;
+            (void) exec386_dynarec_blocks();
+            cpu_mp_end_slice();
         }
-
-        cycles_main -= (cycles_start - cycles);
     }
 }
 #endif
@@ -1536,6 +1606,10 @@ inboard_post_fixups(void)
 
 }
 
+/* Set while the interpreter's loop runs the only processor: it takes the
+   first processor's INIT at an instruction boundary by itself (cpu_mp.c). */
+int cpu_exec386_active;
+
 void
 exec386(int32_t cycs)
 {
@@ -1547,9 +1621,22 @@ exec386(int32_t cycs)
     int32_t  ins_cycles;
     uint32_t addr;
 
+#if defined(USE_DYNAREC)
+    /* Only exec386_dynarec runs more than one processor; with the
+       recompiler off it interprets every block. */
+    if (cpu_mp_count > 1) {
+        exec386_dynarec(cycs);
+        return;
+    }
+#endif
+
     cycles += cycs;
 
+    cpu_exec386_active = 1;
     while (cycles > 0) {
+        /* An INIT the processor's APIC took (cpu_mp.c). */
+        cpu_mp_after_chunk();
+
         cycle_period = (timer_target - (uint64_t) tsc) + 1;
 
         x86_was_reset = 0;
@@ -1616,6 +1703,10 @@ exec386(int32_t cycs)
 #endif
                 x86_opcodes[(opcode | cpu_state.op32) & 0x3ff](fetchdat);
                 if (x86_was_reset)
+                    break;
+                /* An INIT its APIC took in this instruction: at the
+                   boundary, by the outer loop's cpu_mp_after_chunk. */
+                if (cpu_mp_reset_pending)
                     break;
             }
 #ifdef ENABLE_386_LOG
@@ -1747,9 +1838,12 @@ block_ended:
                 timer_process();
 
 #ifdef USE_GDBSTUB
-            if (gdbstub_instruction())
+            if (gdbstub_instruction()) {
+                cpu_exec386_active = 0;
                 return;
+            }
 #endif
         }
     }
+    cpu_exec386_active = 0;
 }

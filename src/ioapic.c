@@ -26,6 +26,7 @@
 #include <86box/mem.h>
 #include <86box/chipset.h>
 #include <86box/ioapic_routes.h>
+#include <86box/cpu_mp.h>
 #include <86box/pic.h>
 #include <86box/pci.h>
 #include <86box/plat_unused.h>
@@ -287,12 +288,28 @@ ioapic_external_interrupt_pending(void)
         return 0;
 
     /* This enable state has been seen; until it changes the CPU's check
-       may answer "nothing pending" without coming here. */
-    cpu_apic_int_fast_ok = 1;
+       may answer "nothing pending" without coming here. The first
+       processor's flag, set only when it is the one asking. */
+    if (cpu_mp_self == 0)
+        cpu_apic_int_fast_ok = 1;
 
     return apic_platform_current_external_pending(dev->apic,
                                                   ioapic_pic_pending_adapter,
                                                   dev);
+}
+
+/* Whether processor index has an interrupt to take, asked while another
+   is in place (cpu_mp.c, to wake a halted processor). */
+int
+ioapic_external_interrupt_pending_at(int index)
+{
+    ioapic_t *dev = ioapic_global;
+
+    if ((dev == NULL) || !dev->uniprocessor_apic)
+        return 0;
+
+    return apic_platform_external_pending_at(dev->apic, (uint8_t) index,
+                                             ioapic_pic_pending_adapter, dev);
 }
 
 int
@@ -376,47 +393,34 @@ ioapic_pin_raw_high(const ioapic_t *dev, uint8_t pin)
 static int
 ioapic_redir_select_targets(ioapic_t *dev, uint32_t low, uint32_t high, lapic_target_info_t *targets)
 {
-    uint8_t dest = high >> 24;
-    int     logical = !!(low & IOAPIC_REDIR_DESTMOD);
+    uint8_t        dest     = high >> 24;
+    int            logical  = !!(low & IOAPIC_REDIR_DESTMOD);
+    const uint32_t delivery = low & IOAPIC_REDIR_DELIV;
+    /* INIT, NMI and SMI are accepted by an APIC not yet started too
+       (lapic_targets_keep_on_bus), so they are sent, not held pending. */
+    const int system = (delivery == IOAPIC_DELIVERY_INIT) || (delivery == IOAPIC_DELIVERY_NMI) ||
+                       (delivery == IOAPIC_DELIVERY_SMI);
 
     /* 82093AA physical mode uses only IOREDTBLx[59:56]. */
     if (!logical)
         dest &= 0x0f;
 
-    return apic_platform_ioapic_select_targets(dev->apic, dest, logical, targets);
+    return apic_platform_ioapic_select_targets(dev->apic, dest, logical, system, targets);
 }
 
-static int
-ioapic_targets_include_current_lapic(const lapic_target_info_t *targets)
-{
-    uint8_t current;
-
-    if ((targets == NULL) || !targets->count)
-        return 0;
-
-    current = lapic_index_source_read(NULL);
-    if (current >= APIC_MAX_LAPICS)
-        return 0;
-
-    return !!(targets->bitmap & (1u << current));
-}
-
-/* An NMI entry's message: from the APIC bus, so port 70h does not gate it
-   (NMI_TAKEABLE). */
-static void
-ioapic_nmi_apic(void)
-{
-    cpu_nmi_raise_core(1);
-}
-
+/* NMI and SMI go to every processor addressed, whether or not it is the
+   one running (cpu_mp.c holds them for the others); an NMI from the APIC
+   bus is not gated by port 70h (NMI_TAKEABLE). */
 static apic_bus_result_t
-ioapic_deliver_current_lapic_direct(const lapic_target_info_t *targets,
-                                    void (*deliver)(void))
+ioapic_deliver_targets_direct(const lapic_target_info_t *targets,
+                              void (*deliver)(int index))
 {
-    if (!ioapic_targets_include_current_lapic(targets))
+    if ((targets == NULL) || !targets->count)
         return apic_bus_result_no_target();
 
-    deliver();
+    for (uint8_t i = 0; i < targets->count; i++)
+        deliver(targets->indices[i]);
+
     return apic_bus_result(APIC_BUS_ACCEPTED);
 }
 
@@ -653,12 +657,13 @@ ioapic_deliver_pin(ioapic_t *dev, uint8_t pin, int asserted, int retry)
     /* Accepted special deliveries bypass vector accept but still complete APIC bus arbitration. */
     if (delivery == IOAPIC_DELIVERY_SMI) {
         apic_bus_result_t result =
-            ioapic_deliver_current_lapic_direct(&targets, cpu_smi_raise_direct);
+            ioapic_deliver_targets_direct(&targets, cpu_mp_smi);
 
+        /* Nobody to take it: held Send Pending, as a fixed message is. */
         if (!apic_bus_result_accepted(result)) {
-            ioapic_clear_pin_delivery_pending(dev, pin);
+            ioapic_latch_pin_delivery_pending(dev, pin);
             if (ioapic_log_first(&dev->ioapic_dest_mismatch_log_count[pin], 8))
-                ioapic_log("IOAPIC: pin=%u SMI no current LAPIC target status=%u dest=%02x current_lapic=%02x low=%08x high=%08x\n",
+                ioapic_log("IOAPIC: pin=%u SMI no LAPIC target status=%u dest=%02x current_lapic=%02x low=%08x high=%08x\n",
                            pin, result.status, high >> 24,
                            apic_platform_current_lapic_id(dev->apic), low, high);
             return;
@@ -676,12 +681,12 @@ ioapic_deliver_pin(ioapic_t *dev, uint8_t pin, int asserted, int retry)
 
     if (delivery == IOAPIC_DELIVERY_NMI) {
         apic_bus_result_t result =
-            ioapic_deliver_current_lapic_direct(&targets, ioapic_nmi_apic);
+            ioapic_deliver_targets_direct(&targets, cpu_mp_nmi_apic);
 
         if (!apic_bus_result_accepted(result)) {
-            ioapic_clear_pin_delivery_pending(dev, pin);
+            ioapic_latch_pin_delivery_pending(dev, pin);
             if (ioapic_log_first(&dev->ioapic_dest_mismatch_log_count[pin], 8))
-                ioapic_log("IOAPIC: pin=%u NMI no current LAPIC target status=%u dest=%02x current_lapic=%02x low=%08x high=%08x\n",
+                ioapic_log("IOAPIC: pin=%u NMI no LAPIC target status=%u dest=%02x current_lapic=%02x low=%08x high=%08x\n",
                            pin, result.status, high >> 24,
                            apic_platform_current_lapic_id(dev->apic), low, high);
             return;

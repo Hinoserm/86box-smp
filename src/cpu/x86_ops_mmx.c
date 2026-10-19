@@ -34,6 +34,16 @@ uint16_t *MMEP[8];
 
 static uint16_t MME[8];
 
+/* Per processor, like the rest of the MMX state (cpu_mp.c), and kept by
+   INIT with the rest of the floating-point state. */
+extern void cpu_mp_register_keep(void *addr, uint32_t size);
+
+void
+cpu_mp_register_mmx(void)
+{
+    cpu_mp_register_keep(MME, sizeof(MME));
+}
+
 #define MMX_GETREGP(r) fpu_softfloat ? ((MMX_REG *) &fpu_state.st_space[r].signif) : &(cpu_state.MM[r])
 void
 mmx_init(void)

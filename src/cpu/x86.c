@@ -26,6 +26,7 @@
 #include <86box/86box.h>
 #include "cpu.h"
 #include "x86.h"
+#include <86box/cpu_mp.h>
 #include "x86seg_common.h"
 #include "x86seg.h"
 #include <86box/machine.h>
@@ -236,27 +237,52 @@ makeznptable(void)
 }
 
 extern void codegen_set_rounding_mode(int mode); /* x87.h */
+/* An INIT to the processor's local APIC resets that APIC (lapic.c). */
+extern void lapic_index_board_reset(uint8_t index);
 
-/* A soft reset on a processor with an INIT pin: what INIT keeps rather
-   than what RESET sets (Pentium Vol. 3, Table 16-1; 16.2: the INIT pin
-   resets "without altering the FPU state"). */
+/* An INIT message from the processor's local APIC (apic_initx86): this
+   processor's alone, not the board's. */
+static int reset_apic_init;
+/* The processor's side of an INIT, from its APIC or its INIT pin: what INIT
+   keeps rather than what RESET sets (Pentium Vol. 3, Table 16-1; 16.2: the
+   INIT pin resets "without altering the FPU state"). */
 static int reset_init;
 
 /* Common reset function. */
 static void
 reset_common(int hard)
 {
-    automation_reset(hard);
+    /* With more than one processor, a reset is done with the first in
+       place; one asked for by another waits for it (cpu_mp.c). */
+    if (cpu_mp_defer_reset(cpu_mp_self, hard))
+        return;
+
+    /* The machine's resets, not a processor's INIT from its APIC. */
+    if (!reset_apic_init)
+        automation_reset(hard);
+
     /* A soft reset is the INIT pin: on the P54C, the P55C and the P6 family
-       it leaves the FPU, the caches and the MSRs (cpu_init_keeps_state). */
-    reset_init = !hard && cpu_init_keeps_state();
+       it leaves the FPU, the caches and the MSRs (cpu_init_keeps_state), as
+       an INIT from the APIC does. */
+    reset_init = reset_apic_init || (!hard && cpu_init_keeps_state());
+
+    /* In SMM, INIT waits and is "serviced after SMM exits" (Pentium Vol. 1,
+       spec update 49), from the pin as from the APIC. The pin reaches the
+       other sockets now; this processor's INIT is posted and taken after
+       its RSM (cpu_mp_after_chunk posts it again while it is in SMM). */
+    if (!hard && !reset_apic_init && in_smm && cpu_is_p5() && (cpu_mp_self == 0)) {
+        cpu_mp_after_reset(0, 0);
+        if (cpu_mp_reset_pending == 0)
+            cpu_mp_reset_pending = 3;
+        return;
+    }
 
 #ifdef ENABLE_X86_LOG
     if (hard)
         x86_log("x86 reset\n");
 #endif
 
-    if (!hard && reset_on_hlt) {
+    if (!hard && !reset_apic_init && reset_on_hlt) {
         hlt_reset_pending++;
         if (hlt_reset_pending == 2)
             hlt_reset_pending = 0;
@@ -269,7 +295,7 @@ reset_common(int hard)
         leave_smm();
 
     /* Needed for the ALi M1533. */
-    if (is486 && (hard || soft_reset_pci)) {
+    if (is486 && !reset_apic_init && (hard || soft_reset_pci)) {
         pci_reset();
         if (!hard && soft_reset_pci) {
             dma_reset();
@@ -425,10 +451,18 @@ reset_common(int hard)
     mem_chain_break(); /* a chain running when a timer resets the processor ends */
     cpu_alt_reset = 0;
 
-    /* INIT keeps the model-specific registers (Pentium Vol. 1, 3.3): the
-       vendor reset, which clears every MSR, is RESET's. */
+    /* INIT keeps the model-specific registers (Pentium Vol. 1, 3.3), and
+       an APIC INIT resets only the addressed APIC, done by its sender
+       (lapic_init_signal): the vendor reset, which clears every MSR and
+       every local APIC, is RESET's and the board's. */
     if (!reset_init)
         cpu_ven_reset();
+    else if (!reset_apic_init && (cpu_mp_self == 0))
+        /* The INIT pin: the MSRs stay ("All Other Model Specific Registers
+           Unchanged"), and this processor's APIC goes through INIT as the
+           other processors' do (cpu_mp_after_reset) -- its ID kept, the
+           Arb ID from it, nothing pending. */
+        lapic_index_board_reset(0);
 
     in_smm = smi_latched = 0;
     /* Out of any HLT: the block end must not step past the reset vector's
@@ -437,7 +471,7 @@ reset_common(int hard)
     /* Out of SMM however it got here (and with a Cyrix's SMAC cleared): its
        view of the map, its compiled blocks' key and its part in SMIACT# go
        with it. */
-    if (mem_smm_leave(0))
+    if (mem_smm_leave(cpu_mp_self))
         smram_recalc_all(1);
     cpu_smm_view_update();
     smi_line = smm_in_hlt = 0;
@@ -446,14 +480,17 @@ reset_common(int hard)
     if (hard) {
         if (is486)
             smbase = is_am486dxl ? 0x00060000 : 0x00030000;
-        /* The time stamp counter reads the machine's clock again, as at
-           power-on, until a WRMSR moves it (cpu_tsc_write). */
-        cpu_tsc_offset = 0;
+        /* RESET zeroes the time stamp counter (Pentium Vol. 3, Table 16-1),
+           which counts on from there with the machine's clock until a WRMSR
+           moves it (cpu_tsc_write); INIT leaves it. The other processors
+           take theirs from this one's image (cpu_mp_after_reset). */
+        cpu_tsc_offset = -(int64_t) tsc;
         ppi_reset();
     }
     in_sys = 0;
 
-    shadowbios = shadowbios_write = 0;
+    if (!reset_apic_init)
+        shadowbios = shadowbios_write = 0;
     alt_access = cpu_end_block_after_ins = 0;
 
     if (hard) {
@@ -463,7 +500,7 @@ reset_common(int hard)
         /* If we have an AT or PS/2 keyboard controller, make sure the A20 state
            is correct. */
         device_reset_all(DEVICE_KBC);
-    } else
+    } else if (!reset_apic_init)
         device_reset_all(DEVICE_SOFTRESET);
 
     if (!is286) {
@@ -478,6 +515,11 @@ reset_common(int hard)
     cpu_cpurst_on_sr = 0;
 
     cpu_force_interpreter = 0;
+
+    /* The INIT and RESET lines reach every socket; an INIT message from
+       the APIC reaches only its own processor. */
+    if (!reset_apic_init)
+        cpu_mp_after_reset(cpu_mp_self, hard);
 }
 
 /* Hard reset. */
@@ -487,6 +529,17 @@ resetx86(void)
     reset_common(1);
 
     soft_reset_mask = 0;
+}
+
+/* An INIT message from the processor's local APIC (an IPI, or an I/O
+   APIC entry): the processor goes through INIT as at its INIT pin, but
+   the board's devices and the other processors are not reset. */
+void
+apic_initx86(void)
+{
+    reset_apic_init = 1;
+    reset_common(0);
+    reset_apic_init = 0;
 }
 
 /* Soft reset. */

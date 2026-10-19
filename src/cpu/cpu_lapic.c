@@ -30,6 +30,7 @@
 #include <86box/chipset.h>
 #include <86box/timer.h>
 #include <86box/video.h> /* cpuclock */
+#include <86box/cpu_mp.h>
 #include "../lapic_policy.h"
 
 /* Startup slots record AP requests without creating runnable CPU state. */
@@ -202,6 +203,11 @@ cpu_current_lapic_index(void)
 {
     /* Only registered CPU contexts map directly; clamped callers use slot 0 fallback. */
     cpu_state_t *current = &cpu_state;
+
+    /* With more than one processor the state never moves: the one asking
+       is the one in place (cpu_mp.c). */
+    if (cpu_mp_count > 1)
+        return (uint8_t) cpu_mp_self;
 
     for (uint8_t i = 0; i < IOAPIC_STATE_MAX_LAPICS; i++) {
         if (cpu_lapic_contexts[i].state == current)

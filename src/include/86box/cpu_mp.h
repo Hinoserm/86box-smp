@@ -1,0 +1,70 @@
+/*
+ * 86Box    A hypervisor and IBM PC system emulator that specializes in
+ *          running old operating systems and software designed for IBM
+ *          PC systems and compatibles from 1981 through fairly recent
+ *          system designs based on the PCI bus.
+ *
+ *          This file is part of the 86Box distribution.
+ *
+ *          More than one processor on one board, taking turns on the
+ *          emulation thread (cpu_mp.c).
+ *
+ * Authors: Michael Pratte, <mpratte@makefox.group>
+ *
+ *          Copyright 2026 Michael Pratte.
+ */
+#ifndef EMU_CPU_MP_H
+#define EMU_CPU_MP_H
+
+#include <stdint.h>
+
+#define CPU_MP_MAX 2
+
+/* How many processors the machine has, and which one is executing. Both
+   are 1 and 0 on every machine that has not asked for more. */
+extern int cpu_mp_count;
+extern int cpu_mp_cur;
+
+/* Which processor the code running now belongs to: the one cpu_mp.c has
+   in place. */
+#define cpu_mp_self cpu_mp_cur
+
+/* Set while a processor other than the first runs its share of a slice:
+   time is the first processor's to advance, so nothing fires timers. */
+extern int cpu_mp_timers_frozen;
+
+/* The SMP drift: how far apart, in microseconds of guest time, the
+   processors' clocks may be. Taking turns on one thread, it is the longest
+   turn: turns start at 5 us and grow towards it while the processors do not
+   interact. Tighter keeps the processors closer in step; wider costs the
+   host less switching. */
+#define CPU_SMP_DRIFT_DEFAULT 20
+extern int cpu_smp_drift_us;
+
+extern void cpu_mp_note_interaction(void);
+extern int  cpu_mp_next_slice_us(void);
+
+extern void cpu_mp_configure(int count);
+extern void cpu_mp_register(void *addr, uint32_t size);
+extern void cpu_mp_register_keep(void *addr, uint32_t size); /* one INIT leaves as it is */
+
+extern int  cpu_mp_defer_reset(int self, int hard);
+extern void cpu_mp_after_reset(int self, int hard);
+
+extern int  cpu_mp_startup(uint8_t index, uint8_t vector);
+extern void cpu_mp_after_chunk(void);
+extern void cpu_mp_init_signal(uint8_t index);
+extern void cpu_mp_nmi(int index);
+extern void cpu_mp_nmi_apic(int index);
+extern void cpu_mp_smi(int index);
+extern int  cpu_mp_rsm_init_waits(int index);
+
+extern int  cpu_mp_begin_slice(int index, uint64_t start_tsc);
+extern void cpu_mp_end_slice(void);
+extern void cpu_mp_stop_running(void);
+
+/* A reset asked for by a processor other than the first, for the first to
+   do: 0 none, 1 soft, 2 hard, 3 the first processor's INIT from its APIC. */
+extern int cpu_mp_reset_pending;
+
+#endif /*EMU_CPU_MP_H*/

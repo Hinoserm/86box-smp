@@ -211,30 +211,25 @@ lapic_update_mapping(lapic_mmio_device_t *dev)
     if ((dev == NULL) || (dev->lapics == NULL))
         return;
 
-    index = lapic_current_index(dev->lapics, dev->active_count,
-                                dev->current_index, dev->current_index_priv);
-    lapic = lapic_at(dev->lapics, dev->active_count, index);
-
-    /* Expose only the selected CPU's LAPIC mapping; other CPU mappings stay dormant. */
-    for (uint8_t i = 0; i < APIC_MAX_LAPICS; i++) {
-        if ((i != index) && dev->lapics[i].mapping_added)
-            mem_mapping_disable(&dev->lapics[i].mapping);
-    }
-
-    if ((lapic == NULL) || !lapic->mapping_added)
-        return;
-
-    base = lapic_mmio_base(lapic);
-
-    if (cpu_lapic_mmio_mapping_enabled_index(lapic->index))
+    /* Every processor's window where its own APIC_BASE puts it, while its
+       APIC is enabled there: each processor reaches only its own
+       (lapic_mmio_current_target), so where several share an address the
+       one mapped there answers for whichever asks. */
+    for (index = 0; index < APIC_MAX_LAPICS; index++) {
+        lapic = &dev->lapics[index];
+        if (!lapic->mapping_added)
+            continue;
+        if ((index >= dev->active_count) || !cpu_lapic_mmio_mapping_enabled_index(lapic->index)) {
+            mem_mapping_disable(&lapic->mapping);
+            continue;
+        }
+        base = lapic_mmio_base(lapic);
         mem_mapping_set_addr(&lapic->mapping, base, LAPIC_MMIO_SIZE);
-    else
-        mem_mapping_disable(&lapic->mapping);
-
-    lapic_log(dev, "LAPIC: base MSR=%08x%08x mmio=%08x enabled=%u bsp=%u\n",
-              (uint32_t) (lapic->base_msr >> 32), (uint32_t) lapic->base_msr,
-              base, cpu_lapic_mmio_mapping_enabled_index(lapic->index),
-              cpu_lapic_bsp_index(lapic->index));
+        lapic_log(dev, "LAPIC: base MSR=%08x%08x mmio=%08x enabled=%u bsp=%u\n",
+                  (uint32_t) (lapic->base_msr >> 32), (uint32_t) lapic->base_msr,
+                  base, cpu_lapic_mmio_mapping_enabled_index(lapic->index),
+                  cpu_lapic_bsp_index(lapic->index));
+    }
 }
 
 static lapic_state_t *
@@ -248,6 +243,15 @@ lapic_mmio_current_target(lapic_mmio_device_t *dev, uint32_t addr, uint32_t *reg
     lapic = lapic_current(dev->lapics, dev->active_count,
                           dev->current_index, dev->current_index_priv);
     if (lapic == NULL)
+        return NULL;
+
+    /* "For each processor they have an identical address space of 4 KBytes
+       starting at address FEE00000H" (Intel Architecture Vol. 3, 243192,
+       7.5.7): a processor reaches only its own APIC, at its own APIC_BASE,
+       while that is enabled; another processor's window moved elsewhere is
+       not an APIC to it. */
+    if (((addr - lapic_mmio_base(lapic)) >= LAPIC_MMIO_SIZE) ||
+        !cpu_lapic_mmio_mapping_enabled_index(lapic->index))
         return NULL;
 
     if (reg != NULL) {

@@ -36,6 +36,7 @@
 #include "cpu.h"
 #include <86box/video.h>
 #include <86box/machine.h>
+#include <86box/cpu_mp.h>
 #include <86box/isamem.h>
 #include <86box/isarom.h>
 #include <86box/pci.h>
@@ -142,6 +143,9 @@ void
 machine_init(void)
 {
     bios_only = 0;
+
+    /* One processor unless the board's own init asks for more. */
+    cpu_mp_configure(1);
 
     machine_set_p1_default(machines[machine].kbc_p1);
     machine_set_ps2();

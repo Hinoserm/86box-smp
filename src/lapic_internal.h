@@ -175,10 +175,14 @@ extern int                  lapic_consume_extint(lapic_state_t *lapic,
                                                  uint8_t *pin);
 extern apic_bus_result_t    lapic_accept_interrupt_target(lapic_state_t *lapic,
                                                           const apic_bus_message_t *message);
+extern void                 lapic_index_board_reset(uint8_t index);
 extern void                 lapic_init_signal(lapic_state_t *lapic);
 extern void                 lapic_error(lapic_state_t *lapic, uint32_t error);
 extern void                 lapic_targets_clear(lapic_target_info_t *targets);
 extern void                 lapic_targets_keep_interruptible(
+                                                lapic_target_info_t *targets,
+                                                int route_parked);
+extern void                 lapic_targets_keep_on_bus(
                                                 lapic_target_info_t *targets,
                                                 int route_parked);
 extern apic_bus_result_t    lapic_targets_accept_fixed(
@@ -239,6 +243,7 @@ extern void                 lapic_reset_slot(lapic_state_t *lapic,
                                              lapic_mmio_device_t *mmio,
                                              uint8_t index, uint8_t id);
 extern void                 lapic_startup_mark_parked(lapic_state_t *lapic);
+extern void                 lapic_startup_mark_running(lapic_state_t *lapic);
 
 extern void                 lapic_timer_host_stop(lapic_state_t *lapic);
 extern void                 lapic_timer_stop(lapic_state_t *lapic);

@@ -11,6 +11,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <86box/cpu_mp.h>
 
 #include "cpu.h"
 #include "lapic.h"
@@ -280,11 +281,11 @@ lapic_lint_deliver(lapic_state_t *lapic, uint32_t lint_reg)
         }
 
         case CPU_LAPIC_LINT_ACTION_SMI:
-            cpu_smi_raise_direct();
+            cpu_mp_smi(lapic->index);
             return 1;
 
         case CPU_LAPIC_LINT_ACTION_NMI:
-            cpu_nmi_raise_core(1);
+            cpu_mp_nmi_apic(lapic->index);
             return 1;
 
         case CPU_LAPIC_LINT_ACTION_INIT:
@@ -338,11 +339,11 @@ lapic_lvt_source_deliver(lapic_state_t *lapic, uint32_t lvt_reg)
         }
 
         case CPU_LAPIC_LINT_ACTION_SMI:
-            cpu_smi_raise_direct();
+            cpu_mp_smi(lapic->index);
             return 1;
 
         case CPU_LAPIC_LINT_ACTION_NMI:
-            cpu_nmi_raise_core(1);
+            cpu_mp_nmi_apic(lapic->index);
             return 1;
 
         default:
@@ -498,9 +499,10 @@ lapic_icr_smi_write(lapic_state_t *lapic, const lapic_target_info_t *targets,
         return 0;
 
     filtered = *targets;
-    lapic_targets_keep_interruptible(&filtered, route_parked);
+    lapic_targets_keep_on_bus(&filtered, route_parked);
     for (uint8_t i = 0; i < filtered.count; i++) {
-        cpu_smi_raise_direct();
+        /* To the processor addressed, not whichever is in place. */
+        cpu_mp_smi(filtered.indices[i]);
         delivered = 1;
     }
     if (!delivered)
@@ -520,9 +522,10 @@ lapic_icr_nmi_write(lapic_state_t *lapic, const lapic_target_info_t *targets,
         return 0;
 
     filtered = *targets;
-    lapic_targets_keep_interruptible(&filtered, route_parked);
+    lapic_targets_keep_on_bus(&filtered, route_parked);
     for (uint8_t i = 0; i < filtered.count; i++) {
-        cpu_nmi_raise_core(1);
+        /* To the processor addressed, not whichever is in place. */
+        cpu_mp_nmi_apic(filtered.indices[i]);
         delivered = 1;
     }
     if (!delivered)
@@ -553,6 +556,20 @@ lapic_icr_startup_state_write(lapic_state_t *target, uint32_t delivery, uint8_t 
     }
 
     return LAPIC_STARTUP_ACTION_NONE;
+}
+
+/* A processor that has really started: it takes interrupts like any
+   other, where a parked one is kept out of routing. */
+void
+lapic_startup_mark_running(lapic_state_t *lapic)
+{
+    if (lapic == NULL)
+        return;
+
+    lapic->started       = 1;
+    lapic->wait_for_sipi = 0;
+    lapic->init_asserted = 0;
+    lapic->parked        = 0;
 }
 
 void
@@ -660,8 +677,13 @@ lapic_icr_startup_write(lapic_state_t *lapic, const lapic_target_info_t *targets
         if (action == LAPIC_STARTUP_ACTION_INIT) {
             updated = 1;
         } else if (action == LAPIC_STARTUP_ACTION_SIPI) {
-            if ((startup_handler != NULL) &&
-                startup_handler(startup_priv, target_index, vector))
+            /* 2: the processor really runs (cpu_mp.c); 1: parked. */
+            int started = (startup_handler != NULL) ?
+                          startup_handler(startup_priv, target_index, vector) : 0;
+
+            if (started == 2)
+                lapic_startup_mark_running(target);
+            else if (started)
                 lapic_startup_mark_parked(target);
             updated = 1;
         }
@@ -701,6 +723,9 @@ lapic_icr_write(lapic_state_t *lapic, lapic_state_t *lapics, uint8_t count,
 
     if ((lapic == NULL) || (lapics == NULL))
         return;
+
+    /* An IPI: the processors are talking, so slices shorten (cpu_mp.c). */
+    cpu_mp_note_interaction();
 
     /* The ICR holds one message: this one replaces any still waiting to be
        sent again, before its delivery can free a slot and send that one. */
@@ -848,6 +873,33 @@ lapic_target_interruptible(const lapic_state_t *lapic, int route_parked)
 
     /* Parked LAPICs are startup-owned; only explicit route_parked paths see them. */
     return !lapic->parked || route_parked;
+}
+
+/* INIT, NMI and SMI reach an APIC that is on the bus whatever software has
+   done to it: "A software disabled Local APIC unit responds only to
+   self-interrupts and INIT, NMI, SMI, Remote Read and Start-Up messages
+   ... For the above messages, the APIC behaves normally, as if fully
+   enabled" (Pentium Vol. 3, 19.3.1.11). That includes a processor waiting
+   for STARTUP, which holds what it cannot take yet ("it is in a mode where
+   SMIs are masked", IA SDM 1999, 12.2); the sender's message is accepted. */
+static int
+lapic_target_on_bus(const lapic_state_t *lapic, int route_parked)
+{
+    return (lapic != NULL) && (!lapic->parked || route_parked);
+}
+
+void
+lapic_targets_keep_on_bus(lapic_target_info_t *targets, int route_parked)
+{
+    lapic_target_info_t filtered;
+
+    lapic_targets_clear(&filtered);
+    for (uint8_t i = 0; i < targets->count; i++) {
+        if (lapic_target_on_bus(targets->lapics[i], route_parked))
+            lapic_targets_add(&filtered, targets->indices[i], targets->lapics[i]);
+    }
+
+    *targets = filtered;
 }
 
 void

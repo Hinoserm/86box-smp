@@ -175,6 +175,10 @@ extern int                   local_apic_id_at(const local_apic_t *apic, uint8_t 
 extern int                   local_apic_bsp_id(const local_apic_t *apic, uint8_t *id);
 extern int                   local_apic_current_base_enabled(const local_apic_t *apic);
 extern int                   local_apic_current_software_enabled(const local_apic_t *apic);
+extern int                   local_apic_external_pending_at(
+                                                     const local_apic_t *apic, uint8_t index,
+                                                     local_apic_pic_pending_handler_t pic_pending,
+                                                     void *pic_priv);
 extern int                   local_apic_current_external_pending(
                                                 const local_apic_t *apic,
                                                 local_apic_pic_pending_handler_t pic_pending,
@@ -196,7 +200,7 @@ extern int                   local_apic_current_perf_deliver(local_apic_t *apic)
 extern int                   local_apic_select_interruptible_targets(
                                                 local_apic_t *apic, uint8_t dest,
                                                 int logical, int physical_broadcast,
-                                                int route_parked,
+                                                int route_parked, int system,
                                                 lapic_target_info_t *targets);
 extern apic_bus_result_t     local_apic_targets_accept_fixed(
                                                 local_apic_t *apic,

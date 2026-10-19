@@ -60,6 +60,9 @@ extern uint8_t apic_platform_lapic_count(apic_platform_t *platform);
 extern int  apic_platform_lapic_id_at(apic_platform_t *platform, uint8_t index,
                                       uint8_t *id);
 extern int  apic_platform_bsp_lapic_id(apic_platform_t *platform, uint8_t *id);
+extern int  apic_platform_external_pending_at(apic_platform_t *platform, uint8_t index,
+                                              local_apic_pic_pending_handler_t pic_pending,
+                                              void *pic_priv);
 extern int  apic_platform_current_external_pending(apic_platform_t *platform,
                                                    local_apic_pic_pending_handler_t pic_pending,
                                                    void *pic_priv);
@@ -92,7 +95,7 @@ extern int  apic_platform_mp_table_post(apic_platform_t *platform, uint8_t val,
 
 /* IOAPIC-facing bridge: select/deliver through LAPIC without exposing LAPIC internals. */
 extern int  apic_platform_ioapic_select_targets(apic_platform_t *platform, uint8_t dest,
-                                                int logical,
+                                                int logical, int system,
                                                 lapic_target_info_t *targets);
 extern apic_bus_result_t apic_platform_ioapic_deliver(apic_platform_t *platform,
                                          const lapic_target_info_t *targets,

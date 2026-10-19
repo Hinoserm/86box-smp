@@ -19,6 +19,7 @@
 #include <86box/nmi.h>
 #include <86box/mem.h>
 #include <86box/smram.h>
+#include <86box/cpu_mp.h>
 #include <86box/pic.h>
 #include <86box/pit.h>
 #include <86box/fdd.h>
@@ -1327,7 +1328,7 @@ enter_smm(int in_hlt)
     cpu_smm_view_update();
     /* The first processor in asserts SMIACT# for the bus as well; another
        only empties its own TLB, filled through the view it leaves. */
-    if (mem_smm_enter(0)) {
+    if (mem_smm_enter(cpu_mp_self)) {
         smram_backup_all();
         smram_recalc_all(0);
     } else
@@ -1572,10 +1573,30 @@ leave_smm(void)
     in_smm = 0;
     cpu_smm_view_update();
     /* The last processor out takes SMIACT# away from the bus. */
-    if (mem_smm_leave(0))
+    if (mem_smm_leave(cpu_mp_self))
         smram_recalc_all(1);
     else
         flushmmucache_cpu();
+
+    /* It was waiting for a STARTUP when the SMI came: the RSM returns it to
+       that, running nothing of the state the SMI saved (a BIOS moving each
+       processor's SMBASE with an SMI IPI while it waits). cpu_mp.c sees it
+       out of SMM and puts it back to waiting. Not in a HLT, whatever the
+       saved state says: an SMI latched meanwhile (opRSM) is taken from the
+       waiting, and its RSM returns there too. */
+    if (cpu_core_waiting) {
+        smm_in_hlt      = 0;
+        smm_rsm_restart = 0;
+        if (!smi_latched) {
+            cpu_halted = 1;
+            cycles     = 0;
+        }
+    } else if (cpu_mp_rsm_init_waits(cpu_mp_self)) {
+        /* An INIT it held in SMM is taken now, before anything after the
+           RSM runs: "the processor exits SMM and services the pending NMI
+           or INIT" (Pentium Vol. 1, spec update 49). */
+        cycles = 0;
+    }
 
     cpu_386_flags_extract();
     cpu_cur_status &= ~(CPU_STATUS_PMODE | CPU_STATUS_V86);
@@ -2280,6 +2301,12 @@ cpu_nmi_raise_core(int apic)
 void
 smi_raise(void)
 {
+    /* To the processor that caused it. */
+    if (cpu_mp_count > 1) {
+        cpu_mp_smi(cpu_mp_self);
+        return;
+    }
+
     cpu_smi_raise_direct();
 }
 
@@ -2289,6 +2316,11 @@ nmi_raise(void)
 {
     if (ioapic_lint1_raise())
         return;
+
+    if (cpu_mp_count > 1) {
+        cpu_mp_nmi(cpu_mp_self);
+        return;
+    }
 
     cpu_nmi_raise_direct();
 }

@@ -73,6 +73,7 @@
 #include <86box/nmi.h>
 #include <86box/plat_fallthrough.h>
 #include <86box/plat_unused.h>
+#include <86box/cpu_mp.h>
 #ifdef USE_DYNAREC
 #    include "codegen_public.h"
 #endif
@@ -447,7 +448,9 @@ idle_skip(int pass)
 static void
 idle_visit(uint32_t eip, int period)
 {
-    if (!inrecomp)
+    /* Processors taking turns in one core (cpu_mp.c) would share the proof
+       below, and a pass could end on another processor: one at a time. */
+    if (!inrecomp || (cpu_mp_count > 1))
         return;
 
     switch (idle_mode) {

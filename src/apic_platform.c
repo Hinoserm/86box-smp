@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <86box/86box.h>
+#include <86box/cpu_mp.h>
 
 #include <86box/mem.h>
 #include "apic_platform.h"
@@ -137,6 +138,11 @@ apic_platform_lapic_icr_startup(void *priv, uint8_t target_index,
                                 uint8_t vector)
 {
     apic_platform_t *platform = (apic_platform_t *) priv;
+
+    /* A board that really has the second processor starts it (cpu_mp.c);
+       2 means running, as against 1, parked. */
+    if (cpu_mp_count > 1)
+        return cpu_mp_startup(target_index, vector) ? 2 : 0;
 
     if ((platform == NULL) || !platform->ap_startup)
         return 0;
@@ -323,6 +329,14 @@ apic_platform_current_external_pending(apic_platform_t *platform,
 {
     return local_apic_current_external_pending(platform->lapic, pic_pending,
                                                pic_priv);
+}
+
+int
+apic_platform_external_pending_at(apic_platform_t *platform, uint8_t index,
+                                  local_apic_pic_pending_handler_t pic_pending,
+                                  void *pic_priv)
+{
+    return local_apic_external_pending_at(platform->lapic, index, pic_pending, pic_priv);
 }
 
 int
@@ -1218,12 +1232,12 @@ apic_platform_mp_table_post(apic_platform_t *platform, uint8_t val,
 
 int
 apic_platform_ioapic_select_targets(apic_platform_t *platform, uint8_t dest,
-                                    int logical,
+                                    int logical, int system,
                                     lapic_target_info_t *targets)
 {
     return local_apic_select_interruptible_targets(platform->lapic, dest, logical,
                                                    APIC_IOAPIC_PHYS_BROADCAST_4BIT,
-                                                   platform->ap_route_parked, targets);
+                                                   platform->ap_route_parked, system, targets);
 }
 
 apic_bus_result_t

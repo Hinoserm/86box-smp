@@ -614,6 +614,8 @@ extern uint32_t cpu_features;
 
 extern int smi_latched;
 extern int smm_in_hlt;
+/* The processor waits for a STARTUP (cpu_core.c). */
+extern int cpu_core_waiting;
 extern int smi_block;
 /* The processor stopped in HLT, its PC on the HLT (opHLT): an interrupt
    taken from there returns past it. */
@@ -831,6 +833,7 @@ extern void refreshread(void);
 extern void refreshread_vx0(void);
 extern void resetreadlookup(void);
 extern void softresetx86(void);
+extern void apic_initx86(void);
 extern void hardresetx86(void);
 extern void x86_int(int num);
 extern void x86_int_sw(int num);

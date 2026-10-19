@@ -17,6 +17,7 @@
 
 add_library(cpu OBJECT
     cpu.c
+    cpu_core.c
     cpu_lapic.c
     cpu_table.c
     fpu.c x86.c
@@ -30,6 +31,7 @@ add_library(cpu OBJECT
     386_dynarec.c
     x86_idle.c
     x86_ops_mmx.c
+    cpu_mp.c
     x86_rep_host.c
     x86seg_common.c
     x86seg.c

@@ -316,14 +316,16 @@ int fpu_ferr_timing;
 int fpu_ferr;
 uint64_t tsc = 0;
 
-/* What the time stamp counter reads beyond the machine's clock. A write to
-   the TSC (WRMSR 10h; the NT HAL zeroes it before it times one second of
-   the RTC) sets this and leaves the machine's clock alone. That clock
-   never goes back, so what the timers and the recompiler's loop hold of it
-   (the clock at a block's start) stays good. Moving it back made the
-   loop's next update_tsc() take the jump for time passed, and add the low
-   32 bits of it: the HAL timed the RTC's second at many times its length,
-   and every stall after was as many times too long. */
+/* What this processor's time stamp counter reads beyond the machine's
+   clock. The TSC is each processor's own (cpu_mp.c keeps it with the rest
+   of its state): a write to it (WRMSR 10h, as the NT HAL does to align
+   them, and to zero it before it times one second of the RTC) sets this
+   and leaves the machine's clock alone. That clock never goes back, so
+   what the timers and the recompiler's loop hold of it (the clock at a
+   block's start) stays good. Moving it back made the loop's next
+   update_tsc() take the jump for time passed, and add the low 32 bits of
+   it: the HAL timed the RTC's second at many times its length, and every
+   stall after was as many times too long. */
 int64_t cpu_tsc_offset = 0;
 
 void

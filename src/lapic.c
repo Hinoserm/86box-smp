@@ -15,6 +15,7 @@
 #include <86box/device.h>
 #include <86box/chipset.h>
 #include <86box/mem.h>
+#include <86box/cpu_mp.h>
 
 #include "cpu.h"
 #include "lapic.h"
@@ -107,7 +108,7 @@ static int                  lapic_device_select_targets(lapic_device_t *dev, uin
 static int                  lapic_device_select_interruptible_targets(
                                                     lapic_device_t *dev, uint8_t dest,
                                                     int logical, int physical_broadcast,
-                                                    int route_parked,
+                                                    int route_parked, int system,
                                                     lapic_target_info_t *targets);
 static void                 lapic_device_icr_write(lapic_device_t *dev, uint32_t val,
                                                    int route_parked,
@@ -487,6 +488,25 @@ local_apic_current_external_pending(const local_apic_t *apic,
            (pic_pending != NULL) && pic_pending(pic_priv);
 }
 
+/* The same question for any processor's local APIC, not only the one in
+   place (cpu_mp.c asks it of a halted processor). */
+int
+local_apic_external_pending_at(const local_apic_t *apic, uint8_t index,
+                               local_apic_pic_pending_handler_t pic_pending,
+                               void *pic_priv)
+{
+    const lapic_device_t *dev   = local_apic_device_const(apic);
+    const lapic_state_t  *lapic = (dev != NULL) ? lapic_at_const(dev->lapics, dev->count, index) : NULL;
+
+    if (lapic == NULL)
+        return 0;
+
+    if (lapic_interrupt_pending(lapic))
+        return 1;
+
+    return lapic_lint0_extint_enabled(lapic) && (pic_pending != NULL) && pic_pending(pic_priv);
+}
+
 int
 local_apic_current_external_vector(local_apic_t *apic,
                                    local_apic_pic_pending_handler_t pic_pending,
@@ -564,12 +584,12 @@ local_apic_current_perf_deliver(local_apic_t *apic)
 int
 local_apic_select_interruptible_targets(local_apic_t *apic, uint8_t dest,
                                         int logical, int physical_broadcast,
-                                        int route_parked,
+                                        int route_parked, int system,
                                         lapic_target_info_t *targets)
 {
     return lapic_device_select_interruptible_targets(local_apic_device(apic), dest,
                                                      logical, physical_broadcast,
-                                                     route_parked, targets);
+                                                     route_parked, system, targets);
 }
 
 apic_bus_result_t
@@ -1002,7 +1022,7 @@ lapic_device_select_targets(lapic_device_t *dev, uint8_t dest, int logical,
 static int
 lapic_device_select_interruptible_targets(lapic_device_t *dev, uint8_t dest,
                                           int logical, int physical_broadcast,
-                                          int route_parked,
+                                          int route_parked, int system,
                                           lapic_target_info_t *targets)
 {
     int count;
@@ -1011,7 +1031,11 @@ lapic_device_select_interruptible_targets(lapic_device_t *dev, uint8_t dest,
     if (!count)
         return 0;
 
-    lapic_targets_keep_interruptible(targets, route_parked);
+    /* INIT, NMI and SMI (system) reach every APIC on the bus. */
+    if (system)
+        lapic_targets_keep_on_bus(targets, route_parked);
+    else
+        lapic_targets_keep_interruptible(targets, route_parked);
     return targets->count;
 }
 
@@ -1062,8 +1086,10 @@ lapic_current_index(lapic_state_t *lapics, uint8_t count,
     if (index >= APIC_MAX_LAPICS)
         return 0;
 
-    /* Not-started AP slots fall back to BSP for MMIO/callback safety. */
-    if (!lapics[index].started)
+    /* Not-started AP slots fall back to BSP for MMIO/callback safety --
+       where they are model bookkeeping only. With processors really
+       running (cpu_mp.c) the one running is the one asking. */
+    if (!lapics[index].started && (cpu_mp_count < 2))
         return 0;
 
     return index;
@@ -1337,13 +1363,15 @@ lapic_enabled(const lapic_state_t *lapic)
 /* An INIT message accepted (an IPI, or an I/O APIC entry): "INIT has the
    same effect on the Local APIC as the power-up Reset, except that the
    APIC ID and Arb ID registers are not affected" (Pentium Vol. 3,
-   19.3.1.11.3). A processor other than the first goes to wait for a
-   STARTUP. */
+   19.3.1.11.3). The processor goes through INIT with it: the Dual to wait
+   for a STARTUP, the primary on from the reset vector (cpu_mp.c). */
 void
 lapic_init_signal(lapic_state_t *lapic)
 {
     if (lapic == NULL)
         return;
+
+    cpu_mp_init_signal(lapic->index);
 
     lapic->init_asserted  = 0;
     lapic->extint_pending = 0;
@@ -1392,6 +1420,33 @@ lapic_reset_startup_state(lapic_state_t *lapic, uint8_t index)
     lapic->wait_for_sipi = !lapic->is_bsp;
     lapic->sipi_vector = 0;
     lapic->parked = 0;
+}
+
+/* RESET or INIT from the board reaches every socket (the INIT pin is
+   wired to all of them): a processor other than the first stops and waits
+   for a STARTUP, its APIC as INIT leaves it -- every register but the ID
+   back to its reset value, the timer stopped, nothing in service. Left
+   alone, the start-up state still said "started" after a restart, so the
+   BIOS's STARTUP was refused and POST waited for a processor that never
+   came. */
+void
+lapic_index_board_reset(uint8_t index)
+{
+    lapic_state_t *lapic;
+
+    if (lapic_active_device == NULL)
+        return;
+
+    lapic = lapic_device_at(lapic_active_device, index);
+    if (lapic == NULL)
+        return;
+
+    lapic->extint_pending = 0;
+    lapic->extint_pin     = 0;
+    cpu_lapic_extint_live_set(index, 0);
+    lapic_reset_regs(lapic);
+    lapic_arbitration_id_reset_from_id(lapic);
+    lapic_reset_startup_state(lapic, index);
 }
 
 static void

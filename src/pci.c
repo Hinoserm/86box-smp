@@ -28,6 +28,7 @@
 #include <86box/device.h>
 #include <86box/dma.h>
 #include <86box/pci.h>
+#include <86box/cpu_mp.h>
 #include <86box/chipset.h>
 #include <86box/keyboard.h>
 #include <86box/plat_unused.h>
@@ -684,9 +685,13 @@ pci_trc_reset(uint8_t val)
     }
 
 #ifdef USE_DYNAREC
-    if (cpu_use_dynarec)
+    if (cpu_use_dynarec) {
         cpu_init = 1;
-    else
+        /* The first processor resets the machine at its next block; another
+           running in its turn stops, so it does not run on against devices
+           already reset (cpu_mp.c). */
+        cpu_mp_stop_running();
+    } else
         resetx86();
 #else
     resetx86();
