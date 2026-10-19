@@ -39,6 +39,7 @@
 #include <86box/config.h>
 #include <86box/io.h>
 #include <86box/mem.h>
+#include <86box/thread.h> /* thread_spin_pause */
 #include <86box/plat.h>
 #include <86box/rom.h>
 #include <86box/gdbstub.h>
@@ -419,11 +420,14 @@ mem_tlb_select(mem_tlb_t *t)
     pccache  = 0xffffffff;
     pccache2 = (uint8_t *) 0xffffffff;
 
-    if (t->stale & MEM_TLB_STALE_ALL)
-        mem_tlb_flush_local(1);
-    else if (t->stale & MEM_TLB_STALE_WRITE)
-        mem_tlb_flush_local(0);
-    t->stale = 0;
+    {
+        const uint8_t stale = __atomic_exchange_n(&t->stale, 0, __ATOMIC_SEQ_CST);
+
+        if (stale & MEM_TLB_STALE_ALL)
+            mem_tlb_flush_local(1);
+        else if (stale & MEM_TLB_STALE_WRITE)
+            mem_tlb_flush_local(0);
+    }
 }
 
 static void
@@ -484,9 +488,8 @@ flushmmucache_write_cpu(void)
 static void
 mem_tlb_take_stale(int owner)
 {
-    const uint8_t stale = mem_tlb_cur->stale;
+    const uint8_t stale = __atomic_exchange_n(&mem_tlb_cur->stale, 0, __ATOMIC_SEQ_CST);
 
-    mem_tlb_cur->stale = 0;
     if (stale & MEM_TLB_STALE_ALL) {
         if (owner)
             LINKS_DROP_OWNED();
@@ -510,6 +513,17 @@ void
 mem_tlb_flush_now(void)
 {
     mem_tlb_take_stale(0);
+}
+
+/* This core leaves its blocks (its run over, or waiting on the machine's
+   thread) or goes back into them: outside, it uses no TLB entry, and a
+   flush another core left meanwhile is taken on the way in. */
+void
+mem_tlb_outside(int outside)
+{
+    __atomic_store_n(&mem_tlb_cur->outside, (uint8_t) !!outside, __ATOMIC_SEQ_CST);
+    if (!outside && __atomic_load_n(&mem_tlb_cur->stale, __ATOMIC_SEQ_CST))
+        mem_tlb_catch_up();
 }
 
 void
@@ -687,6 +701,43 @@ mem_tlb_drop_page(mem_tlb_t *t, const page_t *page_target, uint32_t addr)
     }
 }
 
+/* Another core's set, which its core uses on a thread of its own: it is
+   told (a write flush in its stale flag), and this core waits until that
+   one is outside its blocks, has passed a block boundary or has taken the
+   flag. From then on every write it makes to the page takes the tracked
+   path, and it keeps no new direct entry to it (addwritelookup). */
+static void
+mem_tlb_wait_write_flush(mem_tlb_t *t)
+{
+    uint32_t e0;
+
+    __atomic_fetch_or(&t->stale, MEM_TLB_STALE_WRITE, __ATOMIC_SEQ_CST);
+    /* The other core's side of the handshake is not fenced: fence it, so
+       either its count is seen to move or its next boundary sees the flag. */
+    if (mem_tlb_asym_fence)
+        mem_tlb_fence_others();
+    e0 = __atomic_load_n(&t->epoch, __ATOMIC_SEQ_CST);
+
+    /* Only its own core clears the flag, and only to empty its write
+       entries: waiting for the count alone would wait for ever when that
+       core took the flag between it being set and the count being read,
+       outside any boundary (in a hold or a forwarded access, which take it
+       once and move the count once). */
+    while (!__atomic_load_n(&t->outside, __ATOMIC_SEQ_CST) && (__atomic_load_n(&t->epoch, __ATOMIC_SEQ_CST) == e0) &&
+           (__atomic_load_n(&t->stale, __ATOMIC_SEQ_CST) & MEM_TLB_STALE_WRITE)) {
+        /* That core may be here too, waiting for this one: this one's own
+           write flush is taken now and counted as a boundary, or each waits
+           for the other. Only the write entries go -- this core is inside a
+           block, where nothing else of its TLB may be emptied. */
+        if (__atomic_load_n(&mem_tlb_cur->stale, __ATOMIC_SEQ_CST) & MEM_TLB_STALE_WRITE) {
+            __atomic_fetch_and(&mem_tlb_cur->stale, (uint8_t) ~MEM_TLB_STALE_WRITE, __ATOMIC_SEQ_CST);
+            flushmmucache_write_cpu();
+            __atomic_store_n(&mem_tlb_cur->epoch, mem_tlb_cur->epoch + 1, __ATOMIC_SEQ_CST);
+        }
+        thread_spin_pause();
+    }
+}
+
 /* The page has gained code: no set may keep a direct write entry to it,
    whatever linear address it maps the page at -- the one being written
    from, another alias of it, or another processor's. */
@@ -701,6 +752,13 @@ mem_flush_write_page(uint32_t addr, UNUSED(uint32_t virt))
         __atomic_fetch_or(&mem_code_page[addr >> 12], mem_code_page_bit(), __ATOMIC_SEQ_CST);
 
     for (int i = 0; i < mem_tlb_count; i++) {
+        /* With a core each, another set is another core's, which runs on
+           a thread of its own or takes the flush when it next runs. With
+           one core every other set is idle, and edited here. */
+        if ((mem_tlbs[i] != mem_tlb_cur) && (mem_page_copy_count > 1)) {
+            mem_tlb_wait_write_flush(mem_tlbs[i]);
+            continue;
+        }
         mem_tlb_drop_page(mem_tlbs[i], page_target, addr);
         mem_tlb_drop_page(mem_tlbs[i]->ubank, page_target, addr);
     }

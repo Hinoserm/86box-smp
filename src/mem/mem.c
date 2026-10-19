@@ -109,6 +109,17 @@ mem_page_set_byte_masks(page_t *p, uint32_t page_nr)
 static mem_page_copy_t mem_page_copies[MEM_PAGE_COPIES_MAX];
 int                    mem_page_copy_count;
 
+/* A dirty bit set where another core's thread may be setting bits in the
+   same word, or taking them (codegen_check_flush takes them with an
+   exchange): atomic whenever there is more than one copy. */
+#define MEM_DIRTY_OR(lv, v)                                  \
+    do {                                                     \
+        if (mem_page_copy_count > 1)                         \
+            __atomic_fetch_or(&(lv), (v), __ATOMIC_SEQ_CST); \
+        else                                                 \
+            (lv) |= (v);                                     \
+    } while (0)
+
 static void mem_pages_alloc_copy(int i);
 static void mem_pages_free_copy(int i);
 
@@ -215,15 +226,13 @@ mem_page_mark_others(const page_t *page, uint64_t mask, int byte_offset, uint64_
         if ((i == own) || (*mem_page_copies[i].pages == NULL))
             continue;
 
+        /* Only the dirty bits, which its blocks' dispatch tests: its purge
+           list is its own core's, on that core's thread. */
         o = &(*mem_page_copies[i].pages)[idx];
-        o->dirty_mask |= mask;
-        o->byte_dirty_mask[byte_offset] |= bm0;
+        __atomic_fetch_or(&o->dirty_mask, mask, __ATOMIC_SEQ_CST);
+        __atomic_fetch_or(&o->byte_dirty_mask[byte_offset], bm0, __ATOMIC_SEQ_CST);
         if (bm1)
-            o->byte_dirty_mask[byte_offset + 1] |= bm1;
-        if (!page_in_evict_list(o) &&
-            ((o->code_present_mask & mask) || (o->byte_code_present_mask[byte_offset] & bm0) ||
-             (bm1 && (o->byte_code_present_mask[byte_offset + 1] & bm1))))
-            mem_page_copies[i].add_to_evict_list(o);
+            __atomic_fetch_or(&o->byte_dirty_mask[byte_offset + 1], bm1, __ATOMIC_SEQ_CST);
 #ifdef CODEGEN_CHAIN
         if (mem_page_code_reached(o, mask, byte_offset, bm0, bm1))
             mem_page_copies[i].code_hit(o, mask, byte_offset, bm0, bm1, 0);
@@ -444,6 +453,48 @@ mem_ram_fill_write(uint32_t virt, uint32_t phys)
 mem_tlb_t *mem_tlbs[MEM_TLB_MAX];
 int        mem_tlb_count;
 
+/* The block-boundary handshake between cores on threads of their own
+   (mem_cpu.c) is a Dekker pair: a core stores its boundary count and then
+   loads its stale flag, and a flushing core sets the flag and then loads
+   the count. Each side needs a full fence between its store and its load,
+   the core's at every block. Where the host can drain every other
+   thread's stores on demand, the rare flushing side does that instead and
+   the core's side is plain (an asymmetric fence): 1 then, 0 where the
+   cores fence. */
+int mem_tlb_asym_fence = 0;
+
+#ifdef _WIN32
+__attribute__((dllimport)) void __stdcall FlushProcessWriteBuffers(void);
+#elif defined(__linux__)
+#    include <unistd.h>
+#    include <sys/syscall.h>
+#    include <linux/membarrier.h>
+#endif
+
+/* Once, before a second core runs on a thread of its own. */
+void
+mem_tlb_fence_setup(void)
+{
+#ifdef _WIN32
+    mem_tlb_asym_fence = 1;
+#elif defined(__linux__) && defined(__NR_membarrier)
+    mem_tlb_asym_fence = (syscall(__NR_membarrier, MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED, 0, 0) == 0);
+#else
+    mem_tlb_asym_fence = 0;
+#endif
+}
+
+/* Every other thread of the process past a full fence. */
+void
+mem_tlb_fence_others(void)
+{
+#ifdef _WIN32
+    FlushProcessWriteBuffers();
+#elif defined(__linux__) && defined(__NR_membarrier)
+    (void) syscall(__NR_membarrier, MEMBARRIER_CMD_PRIVATE_EXPEDITED, 0, 0);
+#endif
+}
+
 void
 mem_tlb_clear(mem_tlb_t *t)
 {
@@ -482,6 +533,10 @@ mem_tlb_register(mem_tlb_t *t)
     if (mem_tlb_count >= MEM_TLB_MAX)
         fatal("mem_tlb_register: too many sets\n");
 
+    /* Outside any block until its core runs one (mem_tlb_outside): a page
+       gaining code does not wait for a core that has not run yet
+       (mem_flush_write_page). */
+    __atomic_store_n(&t->outside, 1, __ATOMIC_SEQ_CST);
     mem_tlbs[mem_tlb_count++] = t;
 }
 
@@ -549,7 +604,7 @@ mem_tlb_mark_others(const mem_tlb_t *except, uint8_t level)
 {
     for (int i = 0; i < mem_tlb_count; i++) {
         if (mem_tlbs[i] != except)
-            mem_tlbs[i]->stale |= level;
+            __atomic_fetch_or(&mem_tlbs[i]->stale, level, __ATOMIC_SEQ_CST);
     }
 
     if (mem_tlb_flush_running)
@@ -807,10 +862,10 @@ mem_write_ramb_page(uint32_t addr, uint8_t val, page_t *page)
         uint64_t byte_mask   = (uint64_t) 1 << (addr & PAGE_BYTE_MASK_MASK);
 
         page->mem[addr & 0xfff] = val;
-        page->dirty_mask |= mask;
+        MEM_DIRTY_OR(page->dirty_mask, mask);
         if ((page->code_present_mask & mask) && !page_in_evict_list(page))
             mem_page_add_evict(page);
-        page->byte_dirty_mask[byte_offset] |= byte_mask;
+        MEM_DIRTY_OR(page->byte_dirty_mask[byte_offset], byte_mask);
         if ((page->byte_code_present_mask[byte_offset] & byte_mask) && !page_in_evict_list(page))
             mem_page_add_evict(page);
 #    ifdef CODEGEN_CHAIN
@@ -840,18 +895,18 @@ mem_write_ramw_page(uint32_t addr, uint16_t val, page_t *page)
         if ((addr & 0xf) == 0xf)
             mask |= (mask << 1);
         *(uint16_t *) &page->mem[addr & 0xfff] = val;
-        page->dirty_mask |= mask;
+        MEM_DIRTY_OR(page->dirty_mask, mask);
         if ((page->code_present_mask & mask) && !page_in_evict_list(page))
             mem_page_add_evict(page);
         if ((addr & PAGE_BYTE_MASK_MASK) == PAGE_BYTE_MASK_MASK) {
             byte_mask_2 = 1;
-            page->byte_dirty_mask[byte_offset + 1] |= 1;
+            MEM_DIRTY_OR(page->byte_dirty_mask[byte_offset + 1], 1);
             if ((page->byte_code_present_mask[byte_offset + 1] & 1) && !page_in_evict_list(page))
                 mem_page_add_evict(page);
         } else
             byte_mask |= (byte_mask << 1);
 
-        page->byte_dirty_mask[byte_offset] |= byte_mask;
+        MEM_DIRTY_OR(page->byte_dirty_mask[byte_offset], byte_mask);
 
         if ((page->byte_code_present_mask[byte_offset] & byte_mask) && !page_in_evict_list(page))
             mem_page_add_evict(page);
@@ -881,15 +936,15 @@ mem_write_raml_page(uint32_t addr, uint32_t val, page_t *page)
         if ((addr & 0xf) >= 0xd)
             mask |= (mask << 1);
         *(uint32_t *) &page->mem[addr & 0xfff] = val;
-        page->dirty_mask |= mask;
-        page->byte_dirty_mask[byte_offset] |= byte_mask;
+        MEM_DIRTY_OR(page->dirty_mask, mask);
+        MEM_DIRTY_OR(page->byte_dirty_mask[byte_offset], byte_mask);
         if (!page_in_evict_list(page) && ((page->code_present_mask & mask) || (page->byte_code_present_mask[byte_offset] & byte_mask)))
             mem_page_add_evict(page);
         uint64_t byte_mask_2 = 0;
         if ((addr & PAGE_BYTE_MASK_MASK) > (PAGE_BYTE_MASK_MASK - 3)) {
             byte_mask_2 = 0xf >> (4 - (addr & 3));
 
-            page->byte_dirty_mask[byte_offset + 1] |= byte_mask_2;
+            MEM_DIRTY_OR(page->byte_dirty_mask[byte_offset + 1], byte_mask_2);
             if ((page->byte_code_present_mask[byte_offset + 1] & byte_mask_2) && !page_in_evict_list(page))
                 mem_page_add_evict(page);
         }
@@ -911,8 +966,8 @@ mem_mark_written_byte(page_t *page, uint32_t addr)
     if ((page == NULL) || (page->mem == NULL) || (page->mem == page_ff) || !page->byte_dirty_mask)
         return;
 
-    page->dirty_mask |= mask;
-    page->byte_dirty_mask[byte_offset] |= byte_mask;
+    MEM_DIRTY_OR(page->dirty_mask, mask);
+    MEM_DIRTY_OR(page->byte_dirty_mask[byte_offset], byte_mask);
     if (!page_in_evict_list(page) &&
         ((page->code_present_mask & mask) || (page->byte_code_present_mask[byte_offset] & byte_mask)))
         mem_page_add_evict(page);
@@ -1111,17 +1166,24 @@ mem_invalidate_range(uint32_t start_addr, uint32_t end_addr)
             if (*mem_page_copies[i].pages == NULL)
                 continue;
 
-            page             = &(*mem_page_copies[i].pages)[start_addr >> 12];
-            page->dirty_mask = 0xffffffffffffffffULL;
+            page = &(*mem_page_copies[i].pages)[start_addr >> 12];
 
-            if ((page->mem != page_ff) && page->byte_dirty_mask)
-                memset(page->byte_dirty_mask, 0xff, 64 * sizeof(uint64_t));
+            /* Another core's thread may be taking these bits meanwhile. */
+            if ((page->mem != page_ff) && page->byte_dirty_mask) {
+                if (mem_page_copy_count > 1) {
+                    for (int c = 0; c < 64; c++)
+                        __atomic_store_n(&page->byte_dirty_mask[c], 0xffffffffffffffffULL, __ATOMIC_SEQ_CST);
+                } else
+                    memset(page->byte_dirty_mask, 0xff, 64 * sizeof(uint64_t));
+            }
+            __atomic_store_n(&page->dirty_mask, 0xffffffffffffffffULL, __ATOMIC_SEQ_CST);
 
-            if (!page_in_evict_list(page))
+            /* A bus master's write, on the machine's thread: the first
+               core's purge list and links are its own, another core's are
+               that core's to take. */
+            if ((i == 0) && !page_in_evict_list(page))
                 mem_page_copies[i].add_to_evict_list(page);
 #    ifdef CODEGEN_CHAIN
-            /* A bus master's write, on the machine's thread: the first
-               core's own, another core's for its loop to take. */
             if (page->block || page->block_2)
                 mem_page_copies[i].code_drop(page, i == 0);
 #    endif
@@ -1215,9 +1277,8 @@ mem_mapping_clear_granule(uint64_t c)
 int
 mem_smm_enter(int cpu)
 {
-    const uint32_t old = mem_smm_cpus;
+    const uint32_t old = __atomic_fetch_or(&mem_smm_cpus, 1u << cpu, __ATOMIC_SEQ_CST);
 
-    mem_smm_cpus |= 1u << cpu;
     return !old;
 }
 
@@ -1243,9 +1304,8 @@ mem_split_lock_give(void)
 int
 mem_smm_leave(int cpu)
 {
-    const uint32_t old = mem_smm_cpus;
+    const uint32_t old = __atomic_fetch_and(&mem_smm_cpus, ~(1u << cpu), __ATOMIC_SEQ_CST);
 
-    mem_smm_cpus &= ~(1u << cpu);
     return (old & (1u << cpu)) && !(old & ~(1u << cpu));
 }
 

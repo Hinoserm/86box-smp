@@ -295,6 +295,12 @@ typedef struct mem_tlb_t {
         };
         uint32_t pending;
     };
+    /* With cores on threads of their own (cpu_thread.c): the core is not
+       running blocks, and how many block boundaries it has passed. A core
+       that makes a page's write entries go waits for each other one to be
+       outside or past a boundary (mem_flush_write_page). */
+    uint8_t  outside;
+    uint32_t epoch;
     /* The tables above hold what the processor may reach at CPL 0-2; these
        (a set of which only the tables are used) what it may reach at CPL 3,
        made when first needed. A privilege change selects the other bank, as
@@ -331,6 +337,15 @@ extern void       mem_tlb_unregister(mem_tlb_t *t);
 extern void       mem_tlb_catch_up(void);
 extern void       mem_tlb_flush_now(void);
 extern void     (*mem_tlb_flush_running)(void);
+extern void       mem_tlb_outside(int outside);
+
+/* The block-boundary handshake between cores on threads of their own
+   (mem_cpu.c) is a Dekker pair; where the host can fence every other
+   thread on demand, the flushing core does that and a core's boundary
+   needs no fence of its own (mem.c). */
+extern int  mem_tlb_asym_fence;
+extern void mem_tlb_fence_setup(void);
+extern void mem_tlb_fence_others(void);
 
 extern uint8_t *ram;
 extern uint32_t rammask;
@@ -589,6 +604,32 @@ static __inline void
 mem_chain_code(uint8_t why)
 {
     __atomic_fetch_or(&mem_tlb_cur->code, why, __ATOMIC_SEQ_CST);
+}
+
+/* A block boundary of the core in place, with another core about: the
+   boundary is counted, then a flush another core left in its set is taken.
+   Answers whether work was posted to the core (attn). One store and one
+   load when nothing is pending; the fence is the flushing core's where the
+   host allows it (mem_tlb_asym_fence). */
+static __inline int
+mem_tlb_boundary_fast(void)
+{
+    mem_tlb_t *t = mem_tlb_cur;
+    uint32_t   p;
+
+    if (__builtin_expect(mem_tlb_asym_fence, 1)) {
+        __atomic_store_n(&t->epoch, t->epoch + 1, __ATOMIC_RELAXED);
+        __atomic_signal_fence(__ATOMIC_SEQ_CST);
+        p = __atomic_load_n(&t->pending, __ATOMIC_RELAXED) & 0xffff;
+    } else {
+        __atomic_store_n(&t->epoch, t->epoch + 1, __ATOMIC_SEQ_CST);
+        p = __atomic_load_n(&t->pending, __ATOMIC_SEQ_CST) & 0xffff;
+    }
+    if (__builtin_expect(p == 0, 1))
+        return 0;
+    if (p & 0xff)
+        mem_tlb_catch_up();
+    return p >> 8;
 }
 
 /* The page entry a linear page translates to now, for checking linked

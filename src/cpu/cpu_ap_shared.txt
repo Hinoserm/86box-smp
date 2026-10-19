@@ -157,8 +157,10 @@ mem_smm_leave
 mem_split_lock_give
 mem_split_lock_take
 mem_thread_in_recompile
+mem_tlb_asym_fence
 mem_tlb_clear
 mem_tlb_count
+mem_tlb_fence_others
 mem_tlb_mark_others
 mem_tlb_register
 mem_tlb_unregister

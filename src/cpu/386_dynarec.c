@@ -1271,6 +1271,11 @@ exec386_dynarec_blocks(void)
     uint64_t delta;
 
     while (cycles > 0) {
+        /* Another core may be running: the boundary is counted, and a flush
+           it left in this core's set is taken (mem_cpu.c). */
+        if (mem_page_copy_count > 1)
+            (void) mem_tlb_boundary_fast();
+
         /* The code held after a locked instruction is for the one right
            after it, and only while nothing else has run: a block that went
            elsewhere lets it go (cpu_fetch_ahead_take). */
@@ -1438,6 +1443,22 @@ exec386_dynarec_blocks(void)
     return 0;
 }
 
+/* The blocks of a chunk, with another core about: between chunks the core
+   is outside its blocks and uses no TLB entry (mem_cpu.c). */
+static int
+exec386_dynarec_chunk(void)
+{
+    int ret;
+
+    if (mem_page_copy_count > 1)
+        mem_tlb_outside(0);
+    ret = exec386_dynarec_blocks();
+    if (mem_page_copy_count > 1)
+        mem_tlb_outside(1);
+
+    return ret;
+}
+
 void
 exec386_dynarec(int32_t cycs)
 {
@@ -1460,7 +1481,7 @@ exec386_dynarec(int32_t cycs)
         cycles += cyc_period;
         cycles_start = cycles;
 
-        if (exec386_dynarec_blocks())
+        if (exec386_dynarec_chunk())
             return;
 
         ran = cycles_start - cycles;
@@ -1481,7 +1502,7 @@ exec386_dynarec(int32_t cycs)
                 (void) cpu_mp_run_slice(ran); /* in its own core */
             else {
                 cycles += ran;
-                (void) exec386_dynarec_blocks();
+                (void) exec386_dynarec_chunk();
             }
             cpu_mp_end_slice();
         }
@@ -1493,7 +1514,7 @@ int
 cpu_core_run_chunk(int32_t cycs)
 {
     cycles += cycs;
-    return exec386_dynarec_blocks();
+    return exec386_dynarec_chunk();
 }
 #endif
 
