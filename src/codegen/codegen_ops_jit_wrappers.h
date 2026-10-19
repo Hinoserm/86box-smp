@@ -58,7 +58,9 @@ call_flags_rebuild(ir_data_t *ir, void (*rebuild)(void))
 
 /*CF into flags before an INC or DEC, which keep it. After another INC or
   DEC it is there already, which depends on the flags op as much as working
-  it out does, so that use is noted too (codegen_flags_known_note)*/
+  it out does, so that use is noted too (codegen_flags_known_note): after
+  an INC, "L: inc eax / adc ecx, 0 / cmp eax, edx / jb L" unrolled would
+  have the copies' ADC add the carry from before the loop, not the CMP's*/
 static inline void
 codegen_rebuild_c(ir_data_t *ir)
 {
