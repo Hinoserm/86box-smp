@@ -19,7 +19,7 @@
             if (cpu_state.abrt)                                                                             \
                 return 1;                                                                                   \
             src = getr8(cpu_reg);                                                                           \
-            seteab(operation);                                                                              \
+            seteab_rmw(dst, operation);                                                                     \
             if (cpu_state.abrt)                                                                             \
                 return 1;                                                                                   \
             setflags##8 flagops;                                                                            \
@@ -48,7 +48,7 @@
             if (cpu_state.abrt)                                                                             \
                 return 1;                                                                                   \
             src = getr8(cpu_reg);                                                                           \
-            seteab(operation);                                                                              \
+            seteab_rmw(dst, operation);                                                                     \
             if (cpu_state.abrt)                                                                             \
                 return 1;                                                                                   \
             setflags##8 flagops;                                                                            \
@@ -78,7 +78,7 @@
             if (cpu_state.abrt)                                                                             \
                 return 1;                                                                                   \
             src = cpu_state.regs[cpu_reg].w;                                                                \
-            seteaw(operation);                                                                              \
+            seteaw_rmw(dst, operation);                                                                     \
             if (cpu_state.abrt)                                                                             \
                 return 1;                                                                                   \
             setflags##16 flagops;                                                                           \
@@ -107,7 +107,7 @@
             if (cpu_state.abrt)                                                                             \
                 return 1;                                                                                   \
             src = cpu_state.regs[cpu_reg].w;                                                                \
-            seteaw(operation);                                                                              \
+            seteaw_rmw(dst, operation);                                                                     \
             if (cpu_state.abrt)                                                                             \
                 return 1;                                                                                   \
             setflags##16 flagops;                                                                           \
@@ -137,7 +137,7 @@
             if (cpu_state.abrt)                                                                             \
                 return 1;                                                                                   \
             src = cpu_state.regs[cpu_reg].l;                                                                \
-            seteal(operation);                                                                              \
+            seteal_rmw(dst, operation);                                                                     \
             if (cpu_state.abrt)                                                                             \
                 return 1;                                                                                   \
             setflags##32 flagops;                                                                           \
@@ -166,7 +166,7 @@
             if (cpu_state.abrt)                                                                             \
                 return 1;                                                                                   \
             src = cpu_state.regs[cpu_reg].l;                                                                \
-            seteal(operation);                                                                              \
+            seteal_rmw(dst, operation);                                                                     \
             if (cpu_state.abrt)                                                                             \
                 return 1;                                                                                   \
             setflags##32 flagops;                                                                           \
@@ -764,15 +764,15 @@ opTEST_EAX(UNUSED(uint32_t fetchdat))
         return 1;                                                 \
     switch (rmdat & 0x38) {                                       \
         case 0x00: /*ADD ea, #*/                                  \
-            setea##ea_width(dst + src);                           \
+            setea##ea_width##_rmw(dst, dst + src);                \
             if (cpu_state.abrt)                                   \
                 return 1;                                         \
             setadd##flag_width(dst, src);                         \
             CLOCK_CYCLES((cpu_mod == 3) ? timing_rr : timing_mr); \
             break;                                                \
         case 0x08: /*OR ea, #*/                                   \
+            setea##ea_width##_rmw(dst, dst | src);                \
             dst |= src;                                           \
-            setea##ea_width(dst);                                 \
             if (cpu_state.abrt)                                   \
                 return 1;                                         \
             setznp##flag_width(dst);                              \
@@ -780,7 +780,7 @@ opTEST_EAX(UNUSED(uint32_t fetchdat))
             break;                                                \
         case 0x10: /*ADC ea, #*/                                  \
             tempc = CF_SET() ? 1 : 0;                             \
-            setea##ea_width(dst + src + tempc);                   \
+            setea##ea_width##_rmw(dst, dst + src + tempc);        \
             if (cpu_state.abrt)                                   \
                 return 1;                                         \
             setadc##flag_width(dst, src);                         \
@@ -788,30 +788,30 @@ opTEST_EAX(UNUSED(uint32_t fetchdat))
             break;                                                \
         case 0x18: /*SBB ea, #*/                                  \
             tempc = CF_SET() ? 1 : 0;                             \
-            setea##ea_width(dst - (src + tempc));                 \
+            setea##ea_width##_rmw(dst, dst - (src + tempc));      \
             if (cpu_state.abrt)                                   \
                 return 1;                                         \
             setsbc##flag_width(dst, src);                         \
             CLOCK_CYCLES((cpu_mod == 3) ? timing_rr : timing_mr); \
             break;                                                \
         case 0x20: /*AND ea, #*/                                  \
+            setea##ea_width##_rmw(dst, dst & src);                \
             dst &= src;                                           \
-            setea##ea_width(dst);                                 \
             if (cpu_state.abrt)                                   \
                 return 1;                                         \
             setznp##flag_width(dst);                              \
             CLOCK_CYCLES((cpu_mod == 3) ? timing_rr : timing_mr); \
             break;                                                \
         case 0x28: /*SUB ea, #*/                                  \
-            setea##ea_width(dst - src);                           \
+            setea##ea_width##_rmw(dst, dst - src);                \
             if (cpu_state.abrt)                                   \
                 return 1;                                         \
             setsub##flag_width(dst, src);                         \
             CLOCK_CYCLES((cpu_mod == 3) ? timing_rr : timing_mr); \
             break;                                                \
         case 0x30: /*XOR ea, #*/                                  \
+            setea##ea_width##_rmw(dst, dst ^ src);                \
             dst ^= src;                                           \
-            setea##ea_width(dst);                                 \
             if (cpu_state.abrt)                                   \
                 return 1;                                         \
             setznp##flag_width(dst);                              \

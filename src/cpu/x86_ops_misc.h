@@ -87,7 +87,7 @@ opF6_a16(uint32_t fetchdat)
         case 0x10: /*NOT b*/
             if (cpu_mod != 3)
                 SEG_CHECK_WRITE(cpu_state.ea_seg);
-            seteab(~dst);
+            seteab_rmw(dst, ~dst);
             if (cpu_state.abrt)
                 return 1;
             CLOCK_CYCLES((cpu_mod == 3) ? timing_rr : timing_mm);
@@ -96,7 +96,7 @@ opF6_a16(uint32_t fetchdat)
         case 0x18: /*NEG b*/
             if (cpu_mod != 3)
                 SEG_CHECK_WRITE(cpu_state.ea_seg);
-            seteab(0 - dst);
+            seteab_rmw(dst, 0 - dst);
             if (cpu_state.abrt)
                 return 1;
             setsub8(0, dst);
@@ -204,7 +204,7 @@ opF6_a32(uint32_t fetchdat)
         case 0x10: /*NOT b*/
             if (cpu_mod != 3)
                 SEG_CHECK_WRITE(cpu_state.ea_seg);
-            seteab(~dst);
+            seteab_rmw(dst, ~dst);
             if (cpu_state.abrt)
                 return 1;
             CLOCK_CYCLES((cpu_mod == 3) ? timing_rr : timing_mm);
@@ -213,7 +213,7 @@ opF6_a32(uint32_t fetchdat)
         case 0x18: /*NEG b*/
             if (cpu_mod != 3)
                 SEG_CHECK_WRITE(cpu_state.ea_seg);
-            seteab(0 - dst);
+            seteab_rmw(dst, 0 - dst);
             if (cpu_state.abrt)
                 return 1;
             setsub8(0, dst);
@@ -320,7 +320,7 @@ opF7_w_a16(uint32_t fetchdat)
         case 0x10: /*NOT w*/
             if (cpu_mod != 3)
                 SEG_CHECK_WRITE(cpu_state.ea_seg);
-            seteaw(~dst);
+            seteaw_rmw(dst, ~dst);
             if (cpu_state.abrt)
                 return 1;
             CLOCK_CYCLES((cpu_mod == 3) ? timing_rr : timing_mm);
@@ -329,7 +329,7 @@ opF7_w_a16(uint32_t fetchdat)
         case 0x18: /*NEG w*/
             if (cpu_mod != 3)
                 SEG_CHECK_WRITE(cpu_state.ea_seg);
-            seteaw(0 - dst);
+            seteaw_rmw(dst, 0 - dst);
             if (cpu_state.abrt)
                 return 1;
             setsub16(0, dst);
@@ -433,7 +433,7 @@ opF7_w_a32(uint32_t fetchdat)
         case 0x10: /*NOT w*/
             if (cpu_mod != 3)
                 SEG_CHECK_WRITE(cpu_state.ea_seg);
-            seteaw(~dst);
+            seteaw_rmw(dst, ~dst);
             if (cpu_state.abrt)
                 return 1;
             CLOCK_CYCLES((cpu_mod == 3) ? timing_rr : timing_mm);
@@ -442,7 +442,7 @@ opF7_w_a32(uint32_t fetchdat)
         case 0x18: /*NEG w*/
             if (cpu_mod != 3)
                 SEG_CHECK_WRITE(cpu_state.ea_seg);
-            seteaw(0 - dst);
+            seteaw_rmw(dst, 0 - dst);
             if (cpu_state.abrt)
                 return 1;
             setsub16(0, dst);
@@ -546,7 +546,7 @@ opF7_l_a16(uint32_t fetchdat)
         case 0x10: /*NOT l*/
             if (cpu_mod != 3)
                 SEG_CHECK_WRITE(cpu_state.ea_seg);
-            seteal(~dst);
+            seteal_rmw(dst, ~dst);
             if (cpu_state.abrt)
                 return 1;
             CLOCK_CYCLES((cpu_mod == 3) ? timing_rr : timing_mml);
@@ -555,7 +555,7 @@ opF7_l_a16(uint32_t fetchdat)
         case 0x18: /*NEG l*/
             if (cpu_mod != 3)
                 SEG_CHECK_WRITE(cpu_state.ea_seg);
-            seteal(0 - dst);
+            seteal_rmw(dst, 0 - dst);
             if (cpu_state.abrt)
                 return 1;
             setsub32(0, dst);
@@ -639,7 +639,7 @@ opF7_l_a32(uint32_t fetchdat)
         case 0x10: /*NOT l*/
             if (cpu_mod != 3)
                 SEG_CHECK_WRITE(cpu_state.ea_seg);
-            seteal(~dst);
+            seteal_rmw(dst, ~dst);
             if (cpu_state.abrt)
                 return 1;
             CLOCK_CYCLES((cpu_mod == 3) ? timing_rr : timing_mml);
@@ -648,7 +648,7 @@ opF7_l_a32(uint32_t fetchdat)
         case 0x18: /*NEG l*/
             if (cpu_mod != 3)
                 SEG_CHECK_WRITE(cpu_state.ea_seg);
-            seteal(0 - dst);
+            seteal_rmw(dst, 0 - dst);
             if (cpu_state.abrt)
                 return 1;
             setsub32(0, dst);

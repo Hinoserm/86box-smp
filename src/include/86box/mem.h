@@ -506,6 +506,21 @@ extern void mem_invalidate_range(uint32_t start_addr, uint32_t end_addr);
 extern void mem_write_ramb_page(uint32_t addr, uint8_t val, page_t *page);
 extern void mem_write_ramw_page(uint32_t addr, uint16_t val, page_t *page);
 extern void mem_write_raml_page(uint32_t addr, uint32_t val, page_t *page);
+/* One byte of the page written behind its write handler (a locked
+   read-modify-write done in place), marked as a write through it is. */
+extern void mem_mark_written_byte(page_t *page, uint32_t addr);
+
+/* A locked read-modify-write another processor sees whole (386_common.h):
+   the host address of a plain-RAM operand, or NULL -- device memory, or
+   (mem_atomic_split) an operand in RAM crossing a page or a line of
+   MEM_ATOMIC_SPAN bytes, done instead under the split lock; and after one,
+   the bytes marked written for any code compiled from them. */
+#define MEM_ATOMIC_SPAN 64
+extern int      mem_atomic_split;
+extern uint8_t *mem_atomic_ptr(uint32_t addr, int size);
+extern void     mem_atomic_written(const uint8_t *p, int size);
+extern void     mem_split_lock_take(void);
+extern void     mem_split_lock_give(void);
 extern void mem_flush_write_page(uint32_t addr, uint32_t virt);
 
 extern void mem_reset_page_blocks(void);

@@ -2266,6 +2266,110 @@ mem_cpu_fill_write(uint32_t phys)
     addwritelookup(mem_logical_addr, phys);
 }
 
+/* Whether a physical address is plain RAM, read and written directly. */
+static int
+mem_atomic_ram(uint64_t a)
+{
+    const mem_mapping_t *rm = read_mapping[a >> MEM_GRANULARITY_BITS];
+    const mem_mapping_t *wm = write_mapping[a >> MEM_GRANULARITY_BITS];
+
+    return (rm != NULL) && (wm != NULL) && (rm->read_b == mem_read_ram) && (wm->write_b == mem_write_ram) &&
+           ((size_t) a < mem_ram_size());
+}
+
+/* Set by mem_atomic_ptr when its NULL is an operand in RAM that crosses a
+   page or a line: the caller then does the plain read and write under the
+   split lock (386_common.h). */
+int mem_atomic_split;
+
+/* The host address of a plain-RAM operand for a read-modify-write another
+   processor must see whole, after the write translation (which may fault:
+   cpu_state.abrt, NULL). "The integrity of the lock is not affected by the
+   alignment of the memory field" (Pentium Vol. 3, 19.1.1): an operand
+   crossing a page or a line of MEM_ATOMIC_SPAN bytes is done by the split
+   path (mem_atomic_split). NULL for device memory and ROM: those get the
+   plain store. */
+uint8_t *
+mem_atomic_ptr(uint32_t addr, int size)
+{
+    uint64_t       a       = addr;
+    uint64_t       b;
+    const uint32_t last    = addr + (uint32_t) size - 1;
+    int            entered = 0;
+
+    mem_atomic_split = 0;
+    mem_logical_addr = addr;
+    if (cr0 >> 31) {
+        /* A write entry this privilege's bank already holds: made by a
+           write walk, which set the Accessed and Dirty bits, so no walk and
+           no fill. A supervisor access from CPL 3 (cpl_override) walks, as
+           mmutranslatereal decides it. */
+        if (!cpl_override && (mem_tlb_cur->in_user == (CPL == 3))) {
+            if (writelookup2[addr >> 12] != LOOKUP_INV) {
+                a       = (uint64_t) ((uint8_t *) (writelookup2[addr >> 12] + addr) - ram);
+                entered = 1;
+            } else if (page_lookup[addr >> 12] != NULL) {
+                a       = ((uint64_t) (page_lookup[addr >> 12] - pages) << 12) | (addr & 0xfff);
+                entered = 1;
+            }
+        }
+        if (!entered) {
+            a = mmutranslate_write(a);
+            if (cpu_state.abrt || (a > 0xffffffffULL))
+                return NULL;
+        }
+    }
+    a &= rammask;
+    if (!mem_atomic_ram(a))
+        return NULL;
+
+    if ((addr & 0xfff) + size > 0x1000) {
+        b = last;
+        if (cr0 >> 31) {
+            mem_logical_addr = last;
+            b                = mmutranslate_write(b);
+            if (cpu_state.abrt || (b > 0xffffffffULL))
+                return NULL;
+        }
+        b &= rammask;
+        if (!mem_atomic_ram(b))
+            return NULL;
+        /* Across two pages: the split path, whether they are neighbours or
+           not. */
+        mem_atomic_split = 1;
+        return NULL;
+    } else if (!mem_atomic_ram(a + size - 1))
+        return NULL;
+
+    /* Across a line: the split path too. A host's locked operation across a
+       cache line is a bus lock, which some hosts slow deliberately. */
+    if (((addr & (MEM_ATOMIC_SPAN - 1)) + size) > MEM_ATOMIC_SPAN) {
+        mem_atomic_split = 1;
+        return NULL;
+    }
+
+    /* The page's write entry, as a plain write would leave (the walk above
+       set its Accessed and Dirty bits): the next locked access to the page
+       finds it without a walk. */
+    if (!entered)
+        addwritelookup(addr, (uint32_t) a);
+
+    return &ram[a];
+}
+
+/* After one: code any processor compiled from those bytes is stale, as a
+   write through the page would leave it. */
+void
+mem_atomic_written(const uint8_t *p, int size)
+{
+    const uint32_t phys = (uint32_t) (p - ram);
+
+    for (int i = 0; i < size; i++) {
+        if (((phys + i) >> 12) < pages_sz)
+            mem_mark_written_byte(&pages[(phys + i) >> 12], phys + i);
+    }
+}
+
 /* This core's copy of the page table, and its code cache's bookkeeping in
    it: the blocks on each page, the purge list threaded through it, and
    the byte masks its entries point into. mem.c keeps the machine's half of

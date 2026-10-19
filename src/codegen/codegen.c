@@ -2,6 +2,7 @@
 #include <86box/86box.h>
 #include "cpu.h"
 #include <86box/mem.h>
+#include <86box/cpu_mp.h>
 #include <86box/pic.h>
 #include <86box/plat_unused.h>
 
@@ -1041,6 +1042,14 @@ generate_call:
       it the opcodes are #UD, or something else entirely (the Cyrix 6x86's
       SMM instructions at 0F 78-7E), which only its own table knows*/
     if ((op_table == x86_dynarec_opcodes_0f) && !cpu_has_feature(CPU_FEATURE_MMX) && (((opcode & 0xe0) == 0x60) || (opcode >= 0xd0)))
+        goto codegen_skip;
+
+    /* A locked read-modify-write, and XCHG with a memory operand, is one
+       bus operation another processor must see whole: with more than one
+       processor its handler runs it, as a compare-and-swap while another
+       could be running beside this one (386_common.h). */
+    if ((cpu_mp_count > 1) &&
+        (in_lock || ((recomp_op_table == recomp_opcodes) && ((opcode & 0xfe) == 0x86) && ((fetchdat & 0xc0) != 0xc0))))
         goto codegen_skip;
 
     /* So does an x87 escape this FPU doesn't have: the compiled forms are

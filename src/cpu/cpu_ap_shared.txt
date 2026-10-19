@@ -145,14 +145,18 @@ mem_a20_state
 mem_chain_signal
 mem_exec_view
 mem_in_recompile
+mem_mark_written_byte
 mem_page_code_in_other_copy
 mem_page_copy_count
 mem_page_copy_register
 mem_page_copy_unregister
 mem_ram_size
 mem_read_mapping_view
+mem_read_ram
 mem_smm_enter
 mem_smm_leave
+mem_split_lock_give
+mem_split_lock_take
 mem_tlb_clear
 mem_tlb_count
 mem_tlb_mark_others
@@ -160,6 +164,7 @@ mem_tlb_register
 mem_tlb_unregister
 mem_tlbs
 mem_write_mapping_view
+mem_write_ram
 mem_write_ramb_page
 mem_write_raml_page
 mem_write_ramw_page
@@ -227,6 +232,7 @@ lapic_index_board_reset
 # The processors together (cpu_mp.c).
 cpu_mp_after_chunk
 cpu_mp_after_reset
+cpu_mp_atomic
 cpu_mp_begin_slice
 cpu_mp_copy_mode_active
 cpu_mp_count

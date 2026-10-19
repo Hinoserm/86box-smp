@@ -58,13 +58,13 @@ opINCDEC_b_a16(uint32_t fetchdat)
 
     switch (rmdat & 0x38) {
         case 0: /* INC r/m8 */
-            seteab(temp + 1);
+            seteab_rmw(temp, temp + 1);
             if (cpu_state.abrt)
                 return 1;
             setadd8nc(temp, 1);
             break;
         case 0x8: /* DEC r/m8 */
-            seteab(temp - 1);
+            seteab_rmw(temp, temp - 1);
             if (cpu_state.abrt)
                 return 1;
             setsub8nc(temp, 1);
@@ -92,13 +92,13 @@ opINCDEC_b_a32(uint32_t fetchdat)
 
     switch (rmdat & 0x38) {
         case 0: /* INC r/m8 */
-            seteab(temp + 1);
+            seteab_rmw(temp, temp + 1);
             if (cpu_state.abrt)
                 return 1;
             setadd8nc(temp, 1);
             break;
         case 0x8: /* DEC r/m8 */
-            seteab(temp - 1);
+            seteab_rmw(temp, temp - 1);
             if (cpu_state.abrt)
                 return 1;
             setsub8nc(temp, 1);

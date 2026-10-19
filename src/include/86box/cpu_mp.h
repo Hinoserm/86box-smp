@@ -25,6 +25,10 @@
 extern int cpu_mp_count;
 extern int cpu_mp_cur;
 
+/* Another processor could be running beside this one: memory
+   read-modify-writes are compare-and-swaps (386_common.h). */
+extern int cpu_mp_atomic;
+
 /* Which processor the code running now belongs to, as the processor core
    sees it: another processor's core is always its own processor
    (cpu_core_self, cpu_core.h); the first core's is whichever cpu_mp.c has

@@ -12,15 +12,9 @@ opCMPXCHG_b_a16(uint32_t fetchdat)
     temp = geteab();
     if (cpu_state.abrt)
         return 1;
-    /* The destination is written either way: the old value goes back on a
-       mismatch (SDM 1999, CMPXCHG), so a write fault comes first */
-    if (AL == temp) {
-        seteab(getr8(cpu_reg));
-    } else {
-        seteab(temp);
-        if (!cpu_state.abrt)
-            AL = temp;
-    }
+    /* As one bus operation, the old value written back on a mismatch
+       (386_common.h). */
+    CMPXCHG_RMW(uint8_t, 1, seteab, temp, AL, getr8(cpu_reg));
     if (cpu_state.abrt)
         return 1;
     setsub8(temp2, temp);
@@ -41,15 +35,9 @@ opCMPXCHG_b_a32(uint32_t fetchdat)
     temp = geteab();
     if (cpu_state.abrt)
         return 1;
-    /* The destination is written either way: the old value goes back on a
-       mismatch (SDM 1999, CMPXCHG), so a write fault comes first */
-    if (AL == temp) {
-        seteab(getr8(cpu_reg));
-    } else {
-        seteab(temp);
-        if (!cpu_state.abrt)
-            AL = temp;
-    }
+    /* As one bus operation, the old value written back on a mismatch
+       (386_common.h). */
+    CMPXCHG_RMW(uint8_t, 1, seteab, temp, AL, getr8(cpu_reg));
     if (cpu_state.abrt)
         return 1;
     setsub8(temp2, temp);
@@ -71,15 +59,9 @@ opCMPXCHG_w_a16(uint32_t fetchdat)
     temp = geteaw();
     if (cpu_state.abrt)
         return 1;
-    /* The destination is written either way: the old value goes back on a
-       mismatch (SDM 1999, CMPXCHG), so a write fault comes first */
-    if (AX == temp) {
-        seteaw(cpu_state.regs[cpu_reg].w);
-    } else {
-        seteaw(temp);
-        if (!cpu_state.abrt)
-            AX = temp;
-    }
+    /* As one bus operation, the old value written back on a mismatch
+       (386_common.h). */
+    CMPXCHG_RMW(uint16_t, 2, seteaw, temp, AX, cpu_state.regs[cpu_reg].w);
     if (cpu_state.abrt)
         return 1;
     setsub16(temp2, temp);
@@ -100,15 +82,9 @@ opCMPXCHG_w_a32(uint32_t fetchdat)
     temp = geteaw();
     if (cpu_state.abrt)
         return 1;
-    /* The destination is written either way: the old value goes back on a
-       mismatch (SDM 1999, CMPXCHG), so a write fault comes first */
-    if (AX == temp) {
-        seteaw(cpu_state.regs[cpu_reg].w);
-    } else {
-        seteaw(temp);
-        if (!cpu_state.abrt)
-            AX = temp;
-    }
+    /* As one bus operation, the old value written back on a mismatch
+       (386_common.h). */
+    CMPXCHG_RMW(uint16_t, 2, seteaw, temp, AX, cpu_state.regs[cpu_reg].w);
     if (cpu_state.abrt)
         return 1;
     setsub16(temp2, temp);
@@ -130,15 +106,9 @@ opCMPXCHG_l_a16(uint32_t fetchdat)
     temp = geteal();
     if (cpu_state.abrt)
         return 1;
-    /* The destination is written either way: the old value goes back on a
-       mismatch (SDM 1999, CMPXCHG), so a write fault comes first */
-    if (EAX == temp) {
-        seteal(cpu_state.regs[cpu_reg].l);
-    } else {
-        seteal(temp);
-        if (!cpu_state.abrt)
-            EAX = temp;
-    }
+    /* As one bus operation, the old value written back on a mismatch
+       (386_common.h). */
+    CMPXCHG_RMW(uint32_t, 4, seteal, temp, EAX, cpu_state.regs[cpu_reg].l);
     if (cpu_state.abrt)
         return 1;
     setsub32(temp2, temp);
@@ -159,15 +129,9 @@ opCMPXCHG_l_a32(uint32_t fetchdat)
     temp = geteal();
     if (cpu_state.abrt)
         return 1;
-    /* The destination is written either way: the old value goes back on a
-       mismatch (SDM 1999, CMPXCHG), so a write fault comes first */
-    if (EAX == temp) {
-        seteal(cpu_state.regs[cpu_reg].l);
-    } else {
-        seteal(temp);
-        if (!cpu_state.abrt)
-            EAX = temp;
-    }
+    /* As one bus operation, the old value written back on a mismatch
+       (386_common.h). */
+    CMPXCHG_RMW(uint32_t, 4, seteal, temp, EAX, cpu_state.regs[cpu_reg].l);
     if (cpu_state.abrt)
         return 1;
     setsub32(temp2, temp);
@@ -207,30 +171,65 @@ opCMPXCHG8B_a16(uint32_t fetchdat)
     temp_hi = readmeml(easeg, cpu_state.eaaddr + 4);
     if (cpu_state.abrt)
         return 0;
-    /* Validate both pages before either write. Probing with a write of
-       the old value would cause an extra write to a memory-mapped device. */
-    if (cr0 & 0x80000000) {
-        mmutranslatereal(easeg + cpu_state.eaaddr, 1);
+    {
+        /* One 8-byte compare-and-swap while another processor could be
+           running beside this one (386_common.h). */
+        uint64_t *ap = cpu_mp_atomic ? (uint64_t *) mem_atomic_ptr(easeg + cpu_state.eaaddr, 8) : NULL;
+
         if (cpu_state.abrt)
             return 0;
-        mmutranslatereal(easeg + cpu_state.eaaddr + 7, 1);
-        if (cpu_state.abrt)
-            return 0;
-    }
-    if (EAX == temp && EDX == temp_hi) {
-        seteal(EBX);
-        if (!cpu_state.abrt) {
-            writememl(easeg, cpu_state.eaaddr + 4, ECX);
-        }
-    } else {
-        /* CMPXCHG8B writes back the complete old value on a mismatch. */
-        seteal(temp);
-        if (!cpu_state.abrt) {
-            writememl(easeg, cpu_state.eaaddr + 4, temp_hi);
-        }
-        if (!cpu_state.abrt) {
-            EAX = temp;
-            EDX = temp_hi;
+        if (ap) {
+            uint64_t ex = ((uint64_t) EDX << 32) | EAX;
+
+            if (__atomic_compare_exchange_n(ap, &ex, ((uint64_t) ECX << 32) | EBX, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+                temp    = EAX;
+                temp_hi = EDX;
+                mem_atomic_written((const uint8_t *) ap, 8);
+            } else {
+                temp    = (uint32_t) ex;
+                temp_hi = (uint32_t) (ex >> 32);
+                EAX     = temp;
+                EDX     = temp_hi;
+            }
+        } else {
+            /* Across a page or a line: read again and written under the
+               split lock (386_common.h). */
+            const int split = cpu_mp_atomic && mem_atomic_split;
+
+            /* Validate both pages before either write. Probing with a write of
+               the old value would cause an extra write to a memory-mapped device. */
+            if (cr0 & 0x80000000) {
+                mmutranslatereal(easeg + cpu_state.eaaddr, 1);
+                if (cpu_state.abrt)
+                    return 0;
+                mmutranslatereal(easeg + cpu_state.eaaddr + 7, 1);
+                if (cpu_state.abrt)
+                    return 0;
+            }
+            if (split) {
+                mem_split_lock_take();
+                temp    = geteal();
+                temp_hi = readmeml(easeg, cpu_state.eaaddr + 4);
+            }
+            if (cpu_state.abrt) {
+            } else if (EAX == temp && EDX == temp_hi) {
+                seteal(EBX);
+                if (!cpu_state.abrt) {
+                    writememl(easeg, cpu_state.eaaddr + 4, ECX);
+                }
+            } else {
+                /* CMPXCHG8B writes back the complete old value on a mismatch. */
+                seteal(temp);
+                if (!cpu_state.abrt) {
+                    writememl(easeg, cpu_state.eaaddr + 4, temp_hi);
+                }
+                if (!cpu_state.abrt) {
+                    EAX = temp;
+                    EDX = temp_hi;
+                }
+            }
+            if (split)
+                mem_split_lock_give();
         }
     }
     if (cpu_state.abrt)
@@ -271,30 +270,65 @@ opCMPXCHG8B_a32(uint32_t fetchdat)
     temp_hi = readmeml(easeg, cpu_state.eaaddr + 4);
     if (cpu_state.abrt)
         return 0;
-    /* Validate both pages before either write. Probing with a write of
-       the old value would cause an extra write to a memory-mapped device. */
-    if (cr0 & 0x80000000) {
-        mmutranslatereal(easeg + cpu_state.eaaddr, 1);
+    {
+        /* One 8-byte compare-and-swap while another processor could be
+           running beside this one (386_common.h). */
+        uint64_t *ap = cpu_mp_atomic ? (uint64_t *) mem_atomic_ptr(easeg + cpu_state.eaaddr, 8) : NULL;
+
         if (cpu_state.abrt)
             return 0;
-        mmutranslatereal(easeg + cpu_state.eaaddr + 7, 1);
-        if (cpu_state.abrt)
-            return 0;
-    }
-    if (EAX == temp && EDX == temp_hi) {
-        seteal(EBX);
-        if (!cpu_state.abrt) {
-            writememl(easeg, cpu_state.eaaddr + 4, ECX);
-        }
-    } else {
-        /* CMPXCHG8B writes back the complete old value on a mismatch. */
-        seteal(temp);
-        if (!cpu_state.abrt) {
-            writememl(easeg, cpu_state.eaaddr + 4, temp_hi);
-        }
-        if (!cpu_state.abrt) {
-            EAX = temp;
-            EDX = temp_hi;
+        if (ap) {
+            uint64_t ex = ((uint64_t) EDX << 32) | EAX;
+
+            if (__atomic_compare_exchange_n(ap, &ex, ((uint64_t) ECX << 32) | EBX, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+                temp    = EAX;
+                temp_hi = EDX;
+                mem_atomic_written((const uint8_t *) ap, 8);
+            } else {
+                temp    = (uint32_t) ex;
+                temp_hi = (uint32_t) (ex >> 32);
+                EAX     = temp;
+                EDX     = temp_hi;
+            }
+        } else {
+            /* Across a page or a line: read again and written under the
+               split lock (386_common.h). */
+            const int split = cpu_mp_atomic && mem_atomic_split;
+
+            /* Validate both pages before either write. Probing with a write of
+               the old value would cause an extra write to a memory-mapped device. */
+            if (cr0 & 0x80000000) {
+                mmutranslatereal(easeg + cpu_state.eaaddr, 1);
+                if (cpu_state.abrt)
+                    return 0;
+                mmutranslatereal(easeg + cpu_state.eaaddr + 7, 1);
+                if (cpu_state.abrt)
+                    return 0;
+            }
+            if (split) {
+                mem_split_lock_take();
+                temp    = geteal();
+                temp_hi = readmeml(easeg, cpu_state.eaaddr + 4);
+            }
+            if (cpu_state.abrt) {
+            } else if (EAX == temp && EDX == temp_hi) {
+                seteal(EBX);
+                if (!cpu_state.abrt) {
+                    writememl(easeg, cpu_state.eaaddr + 4, ECX);
+                }
+            } else {
+                /* CMPXCHG8B writes back the complete old value on a mismatch. */
+                seteal(temp);
+                if (!cpu_state.abrt) {
+                    writememl(easeg, cpu_state.eaaddr + 4, temp_hi);
+                }
+                if (!cpu_state.abrt) {
+                    EAX = temp;
+                    EDX = temp_hi;
+                }
+            }
+            if (split)
+                mem_split_lock_give();
         }
     }
     if (cpu_state.abrt)
@@ -326,7 +360,7 @@ opXADD_b_a16(uint32_t fetchdat)
     dest = geteab();
     if (cpu_state.abrt)
         return 1;
-    seteab(src + dest);
+    seteab_rmw(dest, src + dest);
     if (cpu_state.abrt)
         return 1;
     setadd8(src, dest);
@@ -350,7 +384,7 @@ opXADD_b_a32(uint32_t fetchdat)
     dest = geteab();
     if (cpu_state.abrt)
         return 1;
-    seteab(src + dest);
+    seteab_rmw(dest, src + dest);
     if (cpu_state.abrt)
         return 1;
     setadd8(src, dest);
@@ -375,7 +409,7 @@ opXADD_w_a16(uint32_t fetchdat)
     dest = geteaw();
     if (cpu_state.abrt)
         return 1;
-    seteaw(src + dest);
+    seteaw_rmw(dest, src + dest);
     if (cpu_state.abrt)
         return 1;
     setadd16(src, dest);
@@ -398,7 +432,7 @@ opXADD_w_a32(uint32_t fetchdat)
     dest = geteaw();
     if (cpu_state.abrt)
         return 1;
-    seteaw(src + dest);
+    seteaw_rmw(dest, src + dest);
     if (cpu_state.abrt)
         return 1;
     setadd16(src, dest);
@@ -422,7 +456,7 @@ opXADD_l_a16(uint32_t fetchdat)
     dest = geteal();
     if (cpu_state.abrt)
         return 1;
-    seteal(src + dest);
+    seteal_rmw(dest, src + dest);
     if (cpu_state.abrt)
         return 1;
     setadd32(src, dest);
@@ -445,7 +479,7 @@ opXADD_l_a32(uint32_t fetchdat)
     dest = geteal();
     if (cpu_state.abrt)
         return 1;
-    seteal(src + dest);
+    seteal_rmw(dest, src + dest);
     if (cpu_state.abrt)
         return 1;
     setadd32(src, dest);

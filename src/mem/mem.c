@@ -914,6 +914,28 @@ mem_write_raml_page(uint32_t addr, uint32_t val, page_t *page)
 }
 
 void
+mem_mark_written_byte(page_t *page, uint32_t addr)
+{
+    uint64_t mask        = (uint64_t) 1 << ((addr >> PAGE_MASK_SHIFT) & PAGE_MASK_MASK);
+    int      byte_offset = (addr >> PAGE_BYTE_MASK_SHIFT) & PAGE_BYTE_MASK_OFFSET_MASK;
+    uint64_t byte_mask   = (uint64_t) 1 << (addr & PAGE_BYTE_MASK_MASK);
+
+    if ((page == NULL) || (page->mem == NULL) || (page->mem == page_ff) || !page->byte_dirty_mask)
+        return;
+
+    page->dirty_mask |= mask;
+    page->byte_dirty_mask[byte_offset] |= byte_mask;
+    if (!page_in_evict_list(page) &&
+        ((page->code_present_mask & mask) || (page->byte_code_present_mask[byte_offset] & byte_mask)))
+        mem_page_add_evict(page);
+#ifdef CODEGEN_CHAIN
+    mem_page_code_written(page, mask, byte_offset, byte_mask, 0);
+#endif
+    if (mem_page_copy_count > 1)
+        mem_page_mark_others(page, mask, byte_offset, byte_mask, 0);
+}
+
+void
 mem_write_ram(uint32_t addr, uint8_t val, UNUSED(void *priv))
 {
 #ifdef ENABLE_MEM_LOG
@@ -1207,6 +1229,25 @@ mem_smm_enter(int cpu)
 
     mem_smm_cpus |= 1u << cpu;
     return !old;
+}
+
+/* A locked operation on an operand split across pages or lines
+   (386_common.h): the bus is held for the read and the write together, so
+   one such operation runs at a time. */
+static int mem_split_lock;
+
+void
+mem_split_lock_take(void)
+{
+    while (__atomic_exchange_n(&mem_split_lock, 1, __ATOMIC_ACQUIRE))
+        while (__atomic_load_n(&mem_split_lock, __ATOMIC_RELAXED))
+            ;
+}
+
+void
+mem_split_lock_give(void)
+{
+    __atomic_store_n(&mem_split_lock, 0, __ATOMIC_RELEASE);
 }
 
 int

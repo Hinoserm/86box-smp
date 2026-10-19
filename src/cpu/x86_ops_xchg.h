@@ -9,7 +9,7 @@ opXCHG_b_a16(uint32_t fetchdat)
     temp = geteab();
     if (cpu_state.abrt)
         return 1;
-    seteab(getr8(cpu_reg));
+    seteab_rmw(temp, getr8(cpu_reg));
     if (cpu_state.abrt)
         return 1;
     setr8(cpu_reg, temp);
@@ -28,7 +28,7 @@ opXCHG_b_a32(uint32_t fetchdat)
     temp = geteab();
     if (cpu_state.abrt)
         return 1;
-    seteab(getr8(cpu_reg));
+    seteab_rmw(temp, getr8(cpu_reg));
     if (cpu_state.abrt)
         return 1;
     setr8(cpu_reg, temp);
@@ -48,7 +48,7 @@ opXCHG_w_a16(uint32_t fetchdat)
     temp = geteaw();
     if (cpu_state.abrt)
         return 1;
-    seteaw(cpu_state.regs[cpu_reg].w);
+    seteaw_rmw(temp, cpu_state.regs[cpu_reg].w);
     if (cpu_state.abrt)
         return 1;
     cpu_state.regs[cpu_reg].w = temp;
@@ -67,7 +67,7 @@ opXCHG_w_a32(uint32_t fetchdat)
     temp = geteaw();
     if (cpu_state.abrt)
         return 1;
-    seteaw(cpu_state.regs[cpu_reg].w);
+    seteaw_rmw(temp, cpu_state.regs[cpu_reg].w);
     if (cpu_state.abrt)
         return 1;
     cpu_state.regs[cpu_reg].w = temp;
@@ -87,7 +87,7 @@ opXCHG_l_a16(uint32_t fetchdat)
     temp = geteal();
     if (cpu_state.abrt)
         return 1;
-    seteal(cpu_state.regs[cpu_reg].l);
+    seteal_rmw(temp, cpu_state.regs[cpu_reg].l);
     if (cpu_state.abrt)
         return 1;
     cpu_state.regs[cpu_reg].l = temp;
@@ -106,7 +106,7 @@ opXCHG_l_a32(uint32_t fetchdat)
     temp = geteal();
     if (cpu_state.abrt)
         return 1;
-    seteal(cpu_state.regs[cpu_reg].l);
+    seteal_rmw(temp, cpu_state.regs[cpu_reg].l);
     if (cpu_state.abrt)
         return 1;
     cpu_state.regs[cpu_reg].l = temp;

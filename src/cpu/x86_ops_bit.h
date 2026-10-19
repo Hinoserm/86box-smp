@@ -96,6 +96,7 @@ opBT_l_r_a32(uint32_t fetchdat)
     {                                                                     \
         int      tempc;                                                   \
         uint16_t temp;                                                    \
+        uint16_t mask;                                                    \
                                                                           \
         fetch_ea_16(fetchdat);                                            \
         if (cpu_mod != 3)                                                 \
@@ -105,9 +106,10 @@ opBT_l_r_a32(uint32_t fetchdat)
         temp          = geteaw();                                         \
         if (cpu_state.abrt)                                               \
             return 1;                                                     \
-        tempc = (temp & (1 << (cpu_state.regs[cpu_reg].w & 15))) ? 1 : 0; \
-        temp operation(1 << (cpu_state.regs[cpu_reg].w & 15));            \
-        seteaw(temp);                                                     \
+        /* The bit first: the register may be the operand. */             \
+        mask  = 1 << (cpu_state.regs[cpu_reg].w & 15);                    \
+        seteaw_rmw(temp, temp operation mask);                            \
+        tempc = (temp & mask) ? 1 : 0;                                    \
         if (cpu_state.abrt)                                               \
             return 1;                                                     \
         flags_rebuild();                                                  \
@@ -124,6 +126,7 @@ opBT_l_r_a32(uint32_t fetchdat)
     {                                                                     \
         int      tempc;                                                   \
         uint16_t temp;                                                    \
+        uint16_t mask;                                                    \
                                                                           \
         fetch_ea_32(fetchdat);                                            \
         if (cpu_mod != 3)                                                 \
@@ -133,9 +136,10 @@ opBT_l_r_a32(uint32_t fetchdat)
         temp          = geteaw();                                         \
         if (cpu_state.abrt)                                               \
             return 1;                                                     \
-        tempc = (temp & (1 << (cpu_state.regs[cpu_reg].w & 15))) ? 1 : 0; \
-        temp operation(1 << (cpu_state.regs[cpu_reg].w & 15));            \
-        seteaw(temp);                                                     \
+        /* The bit first: the register may be the operand. */             \
+        mask  = 1 << (cpu_state.regs[cpu_reg].w & 15);                    \
+        seteaw_rmw(temp, temp operation mask);                            \
+        tempc = (temp & mask) ? 1 : 0;                                    \
         if (cpu_state.abrt)                                               \
             return 1;                                                     \
         flags_rebuild();                                                  \
@@ -152,6 +156,7 @@ opBT_l_r_a32(uint32_t fetchdat)
     {                                                                     \
         int      tempc;                                                   \
         uint32_t temp;                                                    \
+        uint32_t mask;                                                    \
                                                                           \
         fetch_ea_16(fetchdat);                                            \
         if (cpu_mod != 3)                                                 \
@@ -161,9 +166,10 @@ opBT_l_r_a32(uint32_t fetchdat)
         temp          = geteal();                                         \
         if (cpu_state.abrt)                                               \
             return 1;                                                     \
-        tempc = (temp & (1u << (cpu_state.regs[cpu_reg].l & 31))) ? 1 : 0; \
-        temp operation(1u << (cpu_state.regs[cpu_reg].l & 31));            \
-        seteal(temp);                                                     \
+        /* The bit first: the register may be the operand. */             \
+        mask  = 1u << (cpu_state.regs[cpu_reg].l & 31);                   \
+        seteal_rmw(temp, temp operation mask);                            \
+        tempc = (temp & mask) ? 1 : 0;                                    \
         if (cpu_state.abrt)                                               \
             return 1;                                                     \
         flags_rebuild();                                                  \
@@ -180,6 +186,7 @@ opBT_l_r_a32(uint32_t fetchdat)
     {                                                                     \
         int      tempc;                                                   \
         uint32_t temp;                                                    \
+        uint32_t mask;                                                    \
                                                                           \
         fetch_ea_32(fetchdat);                                            \
         if (cpu_mod != 3)                                                 \
@@ -189,9 +196,10 @@ opBT_l_r_a32(uint32_t fetchdat)
         temp          = geteal();                                         \
         if (cpu_state.abrt)                                               \
             return 1;                                                     \
-        tempc = (temp & (1u << (cpu_state.regs[cpu_reg].l & 31))) ? 1 : 0; \
-        temp operation(1u << (cpu_state.regs[cpu_reg].l & 31));            \
-        seteal(temp);                                                     \
+        /* The bit first: the register may be the operand. */             \
+        mask  = 1u << (cpu_state.regs[cpu_reg].l & 31);                   \
+        seteal_rmw(temp, temp operation mask);                            \
+        tempc = (temp & mask) ? 1 : 0;                                    \
         if (cpu_state.abrt)                                               \
             return 1;                                                     \
         flags_rebuild();                                                  \
@@ -206,9 +214,9 @@ opBT_l_r_a32(uint32_t fetchdat)
     }
 
 // clang-format off
-opBT(C, ^=)
-opBT(R, &= ~)
-opBT(S, |=)
+opBT(C, ^)
+opBT(R, &~)
+opBT(S, |)
     // clang-format on
 
 static int
@@ -243,21 +251,22 @@ opBA_w_a16(uint32_t fetchdat)
             PREFETCH_RUN(3, 3, rmdat, (cpu_mod == 3) ? 0 : 1, 0, 0, 0, 0);
             return 0;
         case 0x28: /*BTS w,imm*/
-            temp |= (1 << count);
+            seteaw_rmw(temp, temp | (1 << count));
             break;
         case 0x30: /*BTR w,imm*/
-            temp &= ~(1 << count);
+            seteaw_rmw(temp, temp & ~(1 << count));
             break;
         case 0x38: /*BTC w,imm*/
-            temp ^= (1 << count);
+            seteaw_rmw(temp, temp ^ (1 << count));
             break;
 
         default: /* not reached: /0-/3 were refused above */
             break;
     }
-    seteaw(temp);
     if (cpu_state.abrt)
         return 1;
+    /* The bit as memory held it when the write landed (386_common.h). */
+    tempc = temp & (1 << count);
     if (tempc)
         cpu_state.flags |= C_FLAG;
     else
@@ -298,21 +307,22 @@ opBA_w_a32(uint32_t fetchdat)
             PREFETCH_RUN(3, 3, rmdat, (cpu_mod == 3) ? 0 : 1, 0, 0, 0, 1);
             return 0;
         case 0x28: /*BTS w,imm*/
-            temp |= (1 << count);
+            seteaw_rmw(temp, temp | (1 << count));
             break;
         case 0x30: /*BTR w,imm*/
-            temp &= ~(1 << count);
+            seteaw_rmw(temp, temp & ~(1 << count));
             break;
         case 0x38: /*BTC w,imm*/
-            temp ^= (1 << count);
+            seteaw_rmw(temp, temp ^ (1 << count));
             break;
 
         default: /* not reached: /0-/3 were refused above */
             break;
     }
-    seteaw(temp);
     if (cpu_state.abrt)
         return 1;
+    /* The bit as memory held it when the write landed (386_common.h). */
+    tempc = temp & (1 << count);
     if (tempc)
         cpu_state.flags |= C_FLAG;
     else
@@ -354,21 +364,22 @@ opBA_l_a16(uint32_t fetchdat)
             PREFETCH_RUN(3, 3, rmdat, 0, (cpu_mod == 3) ? 0 : 1, 0, 0, 0);
             return 0;
         case 0x28: /*BTS w,imm*/
-            temp |= (1u << count);
+            seteal_rmw(temp, temp | (1u << count));
             break;
         case 0x30: /*BTR w,imm*/
-            temp &= ~(1u << count);
+            seteal_rmw(temp, temp & ~(1u << count));
             break;
         case 0x38: /*BTC w,imm*/
-            temp ^= (1u << count);
+            seteal_rmw(temp, temp ^ (1u << count));
             break;
 
         default: /* not reached: /0-/3 were refused above */
             break;
     }
-    seteal(temp);
     if (cpu_state.abrt)
         return 1;
+    /* The bit as memory held it when the write landed (386_common.h). */
+    tempc = (temp & (1u << count)) != 0;
     if (tempc)
         cpu_state.flags |= C_FLAG;
     else
@@ -409,21 +420,22 @@ opBA_l_a32(uint32_t fetchdat)
             PREFETCH_RUN(3, 3, rmdat, 0, (cpu_mod == 3) ? 0 : 1, 0, 0, 1);
             return 0;
         case 0x28: /*BTS w,imm*/
-            temp |= (1u << count);
+            seteal_rmw(temp, temp | (1u << count));
             break;
         case 0x30: /*BTR w,imm*/
-            temp &= ~(1u << count);
+            seteal_rmw(temp, temp & ~(1u << count));
             break;
         case 0x38: /*BTC w,imm*/
-            temp ^= (1u << count);
+            seteal_rmw(temp, temp ^ (1u << count));
             break;
 
         default: /* not reached: /0-/3 were refused above */
             break;
     }
-    seteal(temp);
     if (cpu_state.abrt)
         return 1;
+    /* The bit as memory held it when the write landed (386_common.h). */
+    tempc = (temp & (1u << count)) != 0;
     if (tempc)
         cpu_state.flags |= C_FLAG;
     else

@@ -22,6 +22,10 @@
 #include <stddef.h>
 #include <inttypes.h>
 
+/* Another processor could be running beside this one (cpu_mp.c): memory
+   read-modify-writes are compare-and-swaps (SETEA_RMW below). */
+extern int cpu_mp_atomic;
+
 #ifdef OPS_286_386
 #    define readmemb_n(s, a, b)     readmembl_no_mmut_2386((s) + (a), b)
 #    define readmemw_n(s, a, b)     readmemwl_no_mmut_2386((s) + (a), b)
@@ -802,6 +806,24 @@ seteaq(uint64_t v)
 #    define seteab_mem(v) writemembl_2386(easeg + cpu_state.eaaddr, v);
 #    define seteaw_mem(v) writememwl_2386(easeg + cpu_state.eaaddr, v);
 #    define seteal_mem(v) writememll_2386(easeg + cpu_state.eaaddr, v);
+
+/* This interpreter never runs beside another processor: plain stores. */
+#    define seteab_rmw(var, expr) seteab(expr)
+#    define seteaw_rmw(var, expr) seteaw(expr)
+#    define seteal_rmw(var, expr) seteal(expr)
+#    define CMPXCHG_RMW(TYPE, SIZE, plain, temp, acc, src)                    \
+        do {                                                                  \
+            /* The destination is written either way: the old value goes back \
+               on a mismatch (SDM 1999, CMPXCHG), so a write fault comes      \
+               first */                                                       \
+            if ((acc) == (temp)) {                                            \
+                plain((src));                                                 \
+            } else {                                                          \
+                plain((temp));                                                \
+                if (!cpu_state.abrt)                                          \
+                    (acc) = (temp);                                           \
+            }                                                                 \
+        } while (0)
 #else
 /* The eal_r/eal_w effective-address fast path dereferences a cached host
    pointer directly, bypassing the debug-register checks that the readmem and
@@ -975,6 +997,99 @@ seteaq(uint64_t v)
             *eal_w = v;   \
         else              \
             writememll(easeg + cpu_state.eaaddr, v);
+
+/* A read-modify-write of a memory operand that another processor running
+   beside this one sees whole (cpu_mp_atomic): a compare-and-swap, `var`
+   reloaded with what memory holds and `expr` worked out again until it
+   lands -- a LOCK, or an XCHG, as the bus gives it. `var` must hold what
+   the handler just read; after, it holds the value that was replaced.
+   Device memory gets the plain store; an operand in RAM crossing a page or
+   a line (MEM_ATOMIC_SPAN) is read again and stored under the split lock,
+   and never as a host split lock. The direct write entry (eal_w) serves
+   only an operand inside one line. Otherwise (no other processor running
+   beside it, or a register operand) the plain store. */
+#    define RMW_IN_LINE(SIZE) ((((easeg + cpu_state.eaaddr) & (MEM_ATOMIC_SPAN - 1)) + (SIZE)) <= MEM_ATOMIC_SPAN)
+
+/* The operand read again, whole, for the split path. */
+#    define SPLIT_REREAD(SIZE) (((SIZE) == 1) ? (uint32_t) geteab() : ((SIZE) == 2) ? (uint32_t) geteaw() : (uint32_t) geteal())
+
+#    define SETEA_RMW(TYPE, SIZE, plain, var, expr)                                                             \
+        do {                                                                                                    \
+            TYPE *ap_     = NULL;                                                                               \
+            int   split_  = 0;                                                                                  \
+            int   direct_ = 0;                                                                                  \
+            if (cpu_mp_atomic && (cpu_mod != 3) && !cpu_state.abrt) {                                           \
+                CHECK_WRITE_COMMON(cpu_state.ea_seg, cpu_state.eaaddr, cpu_state.eaaddr + (SIZE) - 1);          \
+                direct_ = eal_w && RMW_IN_LINE(SIZE);                                                           \
+                ap_     = direct_ ? (TYPE *) eal_w : (TYPE *) mem_atomic_ptr(easeg + cpu_state.eaaddr, (SIZE)); \
+                split_  = !ap_ && !direct_ && mem_atomic_split;                                                 \
+            }                                                                                                   \
+            if (ap_) {                                                                                          \
+                TYPE ex_ = (TYPE) (var);                                                                        \
+                while (!__atomic_compare_exchange_n(ap_, &ex_, (TYPE) (expr), 0, __ATOMIC_SEQ_CST,              \
+                                                    __ATOMIC_SEQ_CST))                                          \
+                    (var) = ex_;                                                                                \
+                if (!direct_)                                                                                   \
+                    mem_atomic_written((const uint8_t *) ap_, (SIZE));                                          \
+            } else if (split_ && !cpu_state.abrt) {                                                             \
+                mem_split_lock_take();                                                                          \
+                (var) = (TYPE) SPLIT_REREAD(SIZE);                                                              \
+                if (!cpu_state.abrt) {                                                                          \
+                    plain((expr));                                                                              \
+                }                                                                                               \
+                mem_split_lock_give();                                                                          \
+            } else if (!cpu_state.abrt) {                                                                       \
+                plain((expr));                                                                                  \
+            }                                                                                                   \
+        } while (0)
+
+/* CMPXCHG the same way: `acc` compared with memory, `src` stored on a
+   match; `temp` is what memory held, and `acc` takes it on a mismatch. */
+#    define CMPXCHG_RMW(TYPE, SIZE, plain, temp, acc, src)                                                      \
+        do {                                                                                                    \
+            TYPE *ap_     = NULL;                                                                               \
+            int   split_  = 0;                                                                                  \
+            int   direct_ = 0;                                                                                  \
+            if (cpu_mp_atomic && (cpu_mod != 3) && !cpu_state.abrt) {                                           \
+                direct_ = eal_w && RMW_IN_LINE(SIZE);                                                           \
+                ap_     = direct_ ? (TYPE *) eal_w : (TYPE *) mem_atomic_ptr(easeg + cpu_state.eaaddr, (SIZE)); \
+                split_  = !ap_ && !direct_ && mem_atomic_split;                                                 \
+            }                                                                                                   \
+            if (ap_) {                                                                                          \
+                TYPE ex_ = (TYPE) (acc);                                                                        \
+                if (__atomic_compare_exchange_n(ap_, &ex_, (TYPE) (src), 0, __ATOMIC_SEQ_CST,                   \
+                                                __ATOMIC_SEQ_CST)) {                                            \
+                    (temp) = (TYPE) (acc);                                                                      \
+                    if (!direct_)                                                                               \
+                        mem_atomic_written((const uint8_t *) ap_, (SIZE));                                      \
+                } else {                                                                                        \
+                    (temp) = ex_;                                                                               \
+                    (acc)  = ex_;                                                                               \
+                }                                                                                               \
+            } else if (!cpu_state.abrt) {                                                                       \
+                if (split_) {                                                                                   \
+                    mem_split_lock_take();                                                                      \
+                    (temp) = (TYPE) SPLIT_REREAD(SIZE);                                                         \
+                }                                                                                               \
+                /* The destination is written either way: the old value goes back on a mismatch (SDM            \
+                   1999, CMPXCHG), so a write fault comes first. The atomic path above needs no                 \
+                   write-back: it only runs on memory it can write. */                                          \
+                if (cpu_state.abrt) {                                                                           \
+                } else if ((acc) == (temp)) {                                                                   \
+                    plain((src));                                                                               \
+                } else {                                                                                        \
+                    plain((temp));                                                                              \
+                    if (!cpu_state.abrt)                                                                        \
+                        (acc) = (temp);                                                                         \
+                }                                                                                               \
+                if (split_)                                                                                     \
+                    mem_split_lock_give();                                                                      \
+            }                                                                                                   \
+        } while (0)
+
+#    define seteab_rmw(var, expr) SETEA_RMW(uint8_t, 1, seteab, var, expr)
+#    define seteaw_rmw(var, expr) SETEA_RMW(uint16_t, 2, seteaw, var, expr)
+#    define seteal_rmw(var, expr) SETEA_RMW(uint32_t, 4, seteal, var, expr)
 #endif
 
 #define getbytef()          \

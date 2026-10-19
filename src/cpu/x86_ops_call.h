@@ -195,7 +195,7 @@ opFF_w_a16(uint32_t fetchdat)
             if (cpu_mod != 3) {
                 CHECK_WRITE(cpu_state.ea_seg, cpu_state.eaaddr, cpu_state.eaaddr + 1UL);
             }
-            seteaw(temp + 1);
+            seteaw_rmw(temp, temp + 1);
             if (cpu_state.abrt)
                 return 1;
             setadd16nc(temp, 1);
@@ -215,7 +215,7 @@ opFF_w_a16(uint32_t fetchdat)
             if (cpu_mod != 3) {
                 CHECK_WRITE(cpu_state.ea_seg, cpu_state.eaaddr, cpu_state.eaaddr + 1UL);
             }
-            seteaw(temp - 1);
+            seteaw_rmw(temp, temp - 1);
             if (cpu_state.abrt)
                 return 1;
             setsub16nc(temp, 1);
@@ -350,7 +350,7 @@ opFF_w_a32(uint32_t fetchdat)
             if (cpu_mod != 3) {
                 CHECK_WRITE(cpu_state.ea_seg, cpu_state.eaaddr, cpu_state.eaaddr + 1UL);
             }
-            seteaw(temp + 1);
+            seteaw_rmw(temp, temp + 1);
             if (cpu_state.abrt)
                 return 1;
             setadd16nc(temp, 1);
@@ -370,7 +370,7 @@ opFF_w_a32(uint32_t fetchdat)
             if (cpu_mod != 3) {
                 CHECK_WRITE(cpu_state.ea_seg, cpu_state.eaaddr, cpu_state.eaaddr + 1UL);
             }
-            seteaw(temp - 1);
+            seteaw_rmw(temp, temp - 1);
             if (cpu_state.abrt)
                 return 1;
             setsub16nc(temp, 1);
@@ -506,7 +506,7 @@ opFF_l_a16(uint32_t fetchdat)
             if (cpu_mod != 3) {
                 CHECK_WRITE(cpu_state.ea_seg, cpu_state.eaaddr, cpu_state.eaaddr + 3UL);
             }
-            seteal(temp + 1);
+            seteal_rmw(temp, temp + 1);
             if (cpu_state.abrt)
                 return 1;
             setadd32nc(temp, 1);
@@ -526,7 +526,7 @@ opFF_l_a16(uint32_t fetchdat)
             if (cpu_mod != 3) {
                 CHECK_WRITE(cpu_state.ea_seg, cpu_state.eaaddr, cpu_state.eaaddr + 3UL);
             }
-            seteal(temp - 1);
+            seteal_rmw(temp, temp - 1);
             if (cpu_state.abrt)
                 return 1;
             setsub32nc(temp, 1);
@@ -661,7 +661,7 @@ opFF_l_a32(uint32_t fetchdat)
             if (cpu_mod != 3) {
                 CHECK_WRITE(cpu_state.ea_seg, cpu_state.eaaddr, cpu_state.eaaddr + 3UL);
             }
-            seteal(temp + 1);
+            seteal_rmw(temp, temp + 1);
             if (cpu_state.abrt)
                 return 1;
             setadd32nc(temp, 1);
@@ -681,7 +681,7 @@ opFF_l_a32(uint32_t fetchdat)
             if (cpu_mod != 3) {
                 CHECK_WRITE(cpu_state.ea_seg, cpu_state.eaaddr, cpu_state.eaaddr + 3UL);
             }
-            seteal(temp - 1);
+            seteal_rmw(temp, temp - 1);
             if (cpu_state.abrt)
                 return 1;
             setsub32nc(temp, 1);
