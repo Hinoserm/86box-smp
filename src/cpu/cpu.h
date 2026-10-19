@@ -616,6 +616,12 @@ extern int smi_latched;
 extern int smm_in_hlt;
 /* The processor waits for a STARTUP (cpu_core.c). */
 extern int cpu_core_waiting;
+/* The code held after a locked instruction (386_common.c). */
+extern uint32_t cpu_fa_state;
+extern uint32_t cpu_fa_lin;
+extern uint32_t cpu_fa_len;
+extern uint32_t cpu_fa_resume;
+extern uint8_t  cpu_fa_buf[48];
 extern int smi_block;
 /* The processor stopped in HLT, its PC on the HLT (opHLT): an interrupt
    taken from there returns past it. */

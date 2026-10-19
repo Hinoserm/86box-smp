@@ -389,6 +389,34 @@ extern int cpu_mp_atomic;
         return 1;                                     \
     }
 
+/* The code a processor had fetched when it began a locked instruction
+   (386_common.c, cpu_fetch_ahead_take): the one instruction after it is
+   decoded from those bytes, whatever another processor wrote there since.
+   Answers where n bytes at linear address a are held for the instruction
+   being fetched now, or NULL; the held bytes are let go once another
+   instruction is fetched. */
+extern void cpu_fetch_ahead_take(void);
+extern int  cpu_fetch_ahead_after(void);
+extern int  cpu_fetch_ahead_take_op(uint32_t fetchdat);
+extern int  cpu_fetch_ahead_after_op(uint32_t fetchdat);
+
+static __inline const uint8_t *
+cpu_fa_held(uint32_t a, uint32_t n)
+{
+    uint32_t off;
+
+    if (__builtin_expect(cpu_fa_state != 2, 1))
+        return NULL;
+    if ((cs + cpu_state.oldpc) != cpu_fa_resume) {
+        cpu_fa_state = 0;
+        return NULL;
+    }
+    off = a - cpu_fa_lin;
+    if ((off >= cpu_fa_len) || ((cpu_fa_len - off) < n))
+        return NULL; /* past what was held: fetched as ever */
+    return &cpu_fa_buf[off];
+}
+
 #ifdef OPS_286_386
 /* TODO: Introduce functions to read exec. */
 static __inline uint8_t
@@ -437,6 +465,12 @@ fastreadb(uint32_t a)
     mem_debug_check_addr(a, read_type);
     read_type = 4;
 #    endif
+    {
+        const uint8_t *held = cpu_fa_held(a, 1);
+
+        if (held)
+            return *held;
+    }
     if ((a >> 12) == pccache)
         return *((uint8_t *) (((uintptr_t) &pccache2[a] & 0x00000000ffffffffULL) | ((uintptr_t) &pccache2[0] & 0xffffffff00000000ULL)));
 
@@ -462,6 +496,12 @@ fastreadw(uint32_t a)
     mem_debug_check_addr(a + 1, read_type);
     read_type = 4;
 #    endif
+    {
+        const uint8_t *held = cpu_fa_held(a, 2);
+
+        if (held)
+            return (uint16_t) (held[0] | (held[1] << 8));
+    }
     if ((a & 0xFFF) > 0xFFE) {
         val = fastreadb(a);
         val |= (fastreadb(a + 1) << 8);
@@ -495,6 +535,12 @@ fastreadl(uint32_t a)
     }
     read_type = 4;
 #    endif
+    {
+        const uint8_t *held = cpu_fa_held(a, 4);
+
+        if (held)
+            return held[0] | (held[1] << 8) | (held[2] << 16) | ((uint32_t) held[3] << 24);
+    }
     if ((a & 0xFFF) < 0xFFD) {
         if ((a >> 12) != pccache) {
             t = getpccache(a);
@@ -592,6 +638,12 @@ fastreadw_fetch(uint32_t a)
     mem_debug_check_addr(a + 1, read_type);
     read_type = 4;
 #    endif
+    {
+        const uint8_t *held = cpu_fa_held(a, 2);
+
+        if (held)
+            return (uint16_t) (held[0] | (held[1] << 8));
+    }
     if ((a & 0xFFF) > 0xFFE) {
         val = fastreadb(a);
         if (opcode_length[val & 0xff] > 1)
@@ -626,6 +678,12 @@ fastreadl_fetch(uint32_t a)
     }
     read_type = 4;
 #    endif
+    {
+        const uint8_t *held = cpu_fa_held(a, 4);
+
+        if (held)
+            return held[0] | (held[1] << 8) | (held[2] << 16) | ((uint32_t) held[3] << 24);
+    }
     if ((a & 0xFFF) < 0xFFD) {
         if ((a >> 12) != pccache) {
             t = getpccache(a);

@@ -745,6 +745,20 @@ exec386_dynarec_dyn(void)
     codegen_chain_link_stub   = NULL;
     codegen_chain_ind_pending = 0;
 #    endif
+    /* The instruction after a locked one, at the start of a block: decoded
+       from the code held when that one began (cpu_fetch_ahead_take), which
+       another processor may have rewritten since -- interpreted, one
+       instruction, and never compiled from those bytes. */
+    if (__builtin_expect(cpu_fa_state == 2, 0)) {
+        if ((cs + cpu_state.pc) == cpu_fa_resume) {
+            if (!cpu_end_block_after_ins)
+                cpu_end_block_after_ins = 1;
+            exec386_dynarec_int();
+            return;
+        }
+        cpu_fa_state = 0;
+    }
+
     uint32_t start_pc  = 0;
     uint32_t phys_addr = get_phys(cs + cpu_state.pc);
     int      hash      = HASH(phys_addr);
@@ -1225,6 +1239,13 @@ exec386_dynarec_blocks(void)
     uint64_t delta;
 
     while (cycles > 0) {
+        /* The code held after a locked instruction is for the one right
+           after it, and only while nothing else has run: a block that went
+           elsewhere lets it go (cpu_fetch_ahead_take). */
+        if (__builtin_expect(cpu_fa_state != 0, 0) &&
+            ((cpu_fa_state == 1) || ((cs + cpu_state.pc) != cpu_fa_resume)))
+            cpu_fa_state = 0;
+
         /* Waiting for a STARTUP it runs nothing ("wait for SIPI", Pentium
            Pro Vol. 3, 7.5.4): an SMI that reaches it there is taken at
            once, before any instruction of the state RESET or INIT left,

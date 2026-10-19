@@ -477,6 +477,9 @@ reset_common(int hard)
     /* Out of any HLT: the block end must not step past the reset vector's
        first byte (386_dynarec.c). */
     cpu_halted = 0;
+    /* Nothing fetched ahead of a locked instruction survives it
+       (386_common.c). */
+    cpu_fa_state = 0;
     /* Out of SMM however it got here (and with a Cyrix's SMAC cleared): its
        view of the map, its compiled blocks' key and its part in SMIACT# go
        with it. */

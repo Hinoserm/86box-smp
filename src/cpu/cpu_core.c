@@ -142,6 +142,12 @@ cpu_core_register_state(void)
     CPU_CORE_REG(oldsslimitw);
     CPU_CORE_REG_KEEP(cpu_tsc_offset);
     CPU_CORE_REG(cpu_core_waiting);
+    /* The code held after a locked instruction (386_common.c). */
+    CPU_CORE_REG(cpu_fa_state);
+    CPU_CORE_REG(cpu_fa_lin);
+    CPU_CORE_REG(cpu_fa_len);
+    CPU_CORE_REG(cpu_fa_resume);
+    CPU_CORE_REG(cpu_fa_buf);
 
     /* The ones that live as statics in their own files. */
 #ifdef USE_DYNAREC

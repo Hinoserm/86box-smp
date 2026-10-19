@@ -1047,7 +1047,8 @@ generate_call:
     /* A locked read-modify-write, and XCHG with a memory operand, is one
        bus operation another processor must see whole: with more than one
        processor its handler runs it, as a compare-and-swap while another
-       could be running beside this one (386_common.h). */
+       could be running beside this one (386_common.h), and the code after
+       it is what was fetched when it began (cpu_fetch_ahead_take). */
     if ((cpu_mp_count > 1) &&
         (in_lock || ((recomp_op_table == recomp_opcodes) && ((opcode & 0xfe) == 0x86) && ((fetchdat & 0xc0) != 0xc0))))
         goto codegen_skip;
@@ -1190,6 +1191,14 @@ codegen_skip:
         uop_MOV_PTR(ir, IREG_ea_seg, (void *) op_ea_seg);
     if (op_ssegs != last_op_ssegs)
         uop_MOV_IMM(ir, IREG_ssegs, op_ssegs);
+    /* A locked instruction's following code is what was fetched when it
+       began: held around it, and if another processor rewrote it
+       meanwhile the block ends after it, so the next instruction is
+       decoded from what was held (exec386_dynarec_dyn). XCHG's handler
+       does this itself; LOCK's does only when interpreted, as here the
+       prefix is not called. */
+    if (in_lock && (cpu_mp_count > 1))
+        uop_CALL_INSTRUCTION_FUNC(ir, cpu_fetch_ahead_take_op, 0);
     /* REP MOVS and REP STOS (x86_ops_rep_dyn.h) write only the count, the
        two index registers, the cycles, and the PC when they stop early,
        which leaves the block: the cached registers stay loaded and those
@@ -1202,6 +1211,8 @@ codegen_skip:
         uop_MOV_REG_PTR(ir, IREG_EDI, &EDI);
     } else
         uop_CALL_INSTRUCTION_FUNC(ir, op, fetchdat);
+    if (in_lock && (cpu_mp_count > 1))
+        uop_CALL_INSTRUCTION_FUNC(ir, cpu_fetch_ahead_after_op, 0);
     /*An interpreted x87 or 0F instruction can undo what the block took as
       done (FNINIT, FRSTOR, FXRSTOR and FEMMS empty the tags and leave MMX
       mode, CLTS changes CR0): the next compiled FPU or MMX instruction

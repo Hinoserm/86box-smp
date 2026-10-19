@@ -1,5 +1,23 @@
-static int
-opXCHG_b_a16(uint32_t fetchdat)
+/* XCHG with memory is locked whether or not LOCK is written (Pentium
+   Vol. 3, 19.1.2). Like any locked instruction, the code after it is what
+   was fetched when it began (cpu_fetch_ahead_take, 386_common.c); another
+   processor rewriting that code after the exchange ends compiled code's
+   block here, so the next instruction is decoded from what was fetched.
+   With a register operand (mod 3) nothing is locked. */
+#define XCHG_MEM_OP(name)                      \
+    static int name##_body(uint32_t fetchdat); \
+    static int name(uint32_t fetchdat)         \
+    {                                          \
+        int r_;                                \
+        if ((fetchdat & 0xc0) == 0xc0)         \
+            return name##_body(fetchdat);      \
+        cpu_fetch_ahead_take();                \
+        r_ = name##_body(fetchdat);            \
+        return cpu_fetch_ahead_after() | r_;   \
+    }                                          \
+    static int name##_body(uint32_t fetchdat)
+
+XCHG_MEM_OP(opXCHG_b_a16)
 {
     uint8_t temp;
 
@@ -17,8 +35,7 @@ opXCHG_b_a16(uint32_t fetchdat)
     PREFETCH_RUN((cpu_mod == 3) ? 3 : 5, 2, rmdat, (cpu_mod == 3) ? 0 : 1, 0, (cpu_mod == 3) ? 0 : 1, 0, 0);
     return 0;
 }
-static int
-opXCHG_b_a32(uint32_t fetchdat)
+XCHG_MEM_OP(opXCHG_b_a32)
 {
     uint8_t temp;
 
@@ -37,8 +54,7 @@ opXCHG_b_a32(uint32_t fetchdat)
     return 0;
 }
 
-static int
-opXCHG_w_a16(uint32_t fetchdat)
+XCHG_MEM_OP(opXCHG_w_a16)
 {
     uint16_t temp;
 
@@ -56,8 +72,7 @@ opXCHG_w_a16(uint32_t fetchdat)
     PREFETCH_RUN((cpu_mod == 3) ? 3 : 5, 2, rmdat, (cpu_mod == 3) ? 0 : 1, 0, (cpu_mod == 3) ? 0 : 1, 0, 0);
     return 0;
 }
-static int
-opXCHG_w_a32(uint32_t fetchdat)
+XCHG_MEM_OP(opXCHG_w_a32)
 {
     uint16_t temp;
 
@@ -76,8 +91,7 @@ opXCHG_w_a32(uint32_t fetchdat)
     return 0;
 }
 
-static int
-opXCHG_l_a16(uint32_t fetchdat)
+XCHG_MEM_OP(opXCHG_l_a16)
 {
     uint32_t temp;
 
@@ -95,8 +109,7 @@ opXCHG_l_a16(uint32_t fetchdat)
     PREFETCH_RUN((cpu_mod == 3) ? 3 : 5, 2, rmdat, 0, (cpu_mod == 3) ? 0 : 1, 0, (cpu_mod == 3) ? 0 : 1, 0);
     return 0;
 }
-static int
-opXCHG_l_a32(uint32_t fetchdat)
+XCHG_MEM_OP(opXCHG_l_a32)
 {
     uint32_t temp;
 

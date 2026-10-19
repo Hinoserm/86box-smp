@@ -797,7 +797,17 @@ opLOCK(uint32_t fetchdat)
 
     CLOCK_CYCLES(4);
     PREFETCH_PREFIX();
-    return x86_opcodes[(fetchdat & 0xff) | cpu_state.op32](fetchdat >> 8);
+    {
+        /* The code after it is what was fetched when it began
+           (cpu_fetch_ahead_take, 386_common.c). Compiled code calls the
+           locked instruction without this prefix, and takes and ends the
+           held bytes around it itself (codegen.c). */
+        int r;
+
+        cpu_fetch_ahead_take();
+        r = x86_opcodes[(fetchdat & 0xff) | cpu_state.op32](fetchdat >> 8);
+        return cpu_fetch_ahead_after() | r;
+    }
 }
 #endif
 

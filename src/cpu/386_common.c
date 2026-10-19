@@ -81,6 +81,99 @@ int soft_reset_mask = 0;
 int smi_latched = 0;
 int smm_in_hlt  = 0;
 int smi_block   = 0;
+
+/* ---- the code a processor had fetched when it began a locked instruction --
+
+   When a locked instruction's write reaches the other processors, the
+   instructions after it are already fetched: another processor's write
+   only invalidates the cache line, while the prefetched instructions are
+   checked against the processor's own writes alone, by linear address
+   (Pentium Pro Vol. 3, 11.7), and "software has never been able to
+   deterministically predict the behavior of instruction prefetch" (11.8).
+   A processor that waits for that write and then rewrites the code after
+   it is too late on a real board, and a BIOS may count on it: one copies
+   the next processor's SMBASE relocation stub over the one a processor is
+   running the moment that processor's LOCK XCHG sets its done flag, and
+   that processor's next instruction, the one that sets its SMBASE, is
+   already its own. Here another processor may run between any two
+   instructions, for longer than the other takes to copy, so the
+   instruction after a locked one is decoded from the bytes held when that
+   one began: the rest of its 16-byte line and two lines more, every byte
+   of the next instruction, whatever the locked one's length. With one
+   processor nothing else writes its code, and nothing is held. */
+uint32_t cpu_fa_state  = 0; /* 0 none; 1 a locked instruction runs; 2 held for the one at cpu_fa_resume */
+uint32_t cpu_fa_lin    = 0; /* the linear address of cpu_fa_buf[0] */
+uint32_t cpu_fa_len    = 0;
+uint32_t cpu_fa_resume = 0;
+uint8_t  cpu_fa_buf[48];
+
+/* As a locked instruction begins, before its memory operation; pc is past
+   its opcode. */
+void
+cpu_fetch_ahead_take(void)
+{
+    const uint32_t lin  = cs + cpu_state.pc;
+    const uint32_t left = 0x1000 - (lin & 0xfff);
+    uint32_t       len  = ((lin & ~15u) + 48) - lin;
+
+    cpu_fa_state = 0;
+    /* Fetched through a device's handlers, with no host copy of the page:
+       nothing is held (the recompiler interprets such code every time). */
+    if ((cpu_mp_count < 2) || ((lin >> 12) != pccache))
+        return;
+    if (len > left)
+        len = left; /* the next page may not be mapped: the bytes there are fetched when reached */
+    memcpy(cpu_fa_buf, get_ram_ptr(lin), len);
+    cpu_fa_lin   = lin;
+    cpu_fa_len   = len;
+    cpu_fa_state = 1;
+}
+
+/* After it: the bytes are for the instruction now at pc. Answers whether
+   another processor has written them meanwhile; compiled code then leaves
+   its block, and the next instruction is decoded from what was held
+   (exec386_dynarec_dyn). */
+int
+cpu_fetch_ahead_after(void)
+{
+    uint32_t resume;
+    uint32_t off;
+    uint32_t ea;
+
+    if (cpu_fa_state != 1)
+        return 0;
+    resume = cs + cpu_state.pc;
+    off    = resume - cpu_fa_lin;
+    if (cpu_state.abrt || (off >= cpu_fa_len) || ((resume >> 12) != pccache)) {
+        cpu_fa_state = 0; /* a fault: its handler runs next */
+        return 0;
+    }
+    /* Its own write into them is seen: the processor refetches what its
+       writes reach (Vol. 3, 11.7). The operand, up to eight bytes
+       (CMPXCHG8B), anywhere over the held bytes. */
+    ea = cpu_state.ea_seg->base + cpu_state.eaaddr;
+    if (((ea - resume) < (cpu_fa_len - off)) || ((resume - ea) < 8))
+        memcpy(&cpu_fa_buf[off], get_ram_ptr(resume), cpu_fa_len - off);
+    cpu_fa_resume = resume;
+    cpu_fa_state  = 2;
+    return memcmp(&cpu_fa_buf[off], get_ram_ptr(resume), cpu_fa_len - off) != 0;
+}
+
+/* The same two, called from compiled code around a locked instruction
+   (codegen.c): as instruction handlers, so the processor's state is in
+   memory, and a non-zero answer ends the block. */
+int
+cpu_fetch_ahead_take_op(UNUSED(uint32_t fetchdat))
+{
+    cpu_fetch_ahead_take();
+    return 0;
+}
+
+int
+cpu_fetch_ahead_after_op(UNUSED(uint32_t fetchdat))
+{
+    return cpu_fetch_ahead_after();
+}
 int cpu_halted  = 0;
 
 /* RSM restarted a HLT and a latched SMI is about to be entered. */

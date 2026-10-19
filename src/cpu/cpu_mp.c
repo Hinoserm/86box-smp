@@ -838,6 +838,7 @@ cpu_mp_after_reset(int self, int hard)
            them is loaded from this image for either, and the first never
            is. */
         cpu_core_waiting = 1;
+        cpu_fa_state     = 0; /* nothing fetched ahead of anything */
         cpu_mp_save_blob(cpu_mp_reset_blob);
         cpu_core_waiting = 0;
         CPUID            = saved;
