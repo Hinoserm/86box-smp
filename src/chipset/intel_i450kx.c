@@ -8,10 +8,15 @@
  *
  *          Implementation of the Intel 450KX Mars and 450GX Orion
  *          chipsets: the 82454KX/GX PCI bridge (PB) and the 82453KX/GX
- *          memory controller (MC, the GX's DC). Register defaults are the
- *          data sheet's (Intel 290523-001) as corrected by the
- *          specification update (Intel 243109-015, Documentation
- *          Changes 1).
+ *          memory controller (MC, the GX's DC).
+ *
+ *          The 450GX may have two PBs, each to a PCI bus of its own
+ *          (Intel 290523-001, 82454KX/GX 2.1): the compatibility PB, host
+ *          device 19h, which has the boot ROM and the ISA/EISA bridge
+ *          behind it, and the auxiliary PB, host device 1Ah, to a peer bus
+ *          whose number it holds in PBNUM (4Ah). Register defaults are the
+ *          data sheet's as corrected by the specification update (Intel
+ *          243109-015, Documentation Changes 1).
  *
  * Authors: Miran Grca, <mgrca8@gmail.com>
  *          Tiseno100,
@@ -56,20 +61,32 @@ i450kx_log(const char *fmt, ...)
 #    define i450kx_log(fmt, ...)
 #endif
 
-/* Which chip set. */
-#define I450_KX 0
-#define I450_GX 1
+/* Which chip set, and on the 450GX how many PBs. */
+#define I450_KX   0
+#define I450_GX   1
+#define I450_GX_2 2 /* the 450GX with an auxiliary PB */
 
-/* TODO: Finish the bus index stuff. */
+struct i450kx_t;
+
+/* One PB: its configuration space, and on the 450GX which of the two it is
+   (PBID, BDNUM bits 1:0: 01 compatibility, 10 auxiliary). */
+typedef struct i450kx_pb_t {
+    struct i450kx_t *dev;
+    uint8_t          slot;
+    uint8_t          aux;
+    uint8_t          bus_index; /* its PCI bus, as 86Box counts them */
+    uint8_t          regs[256];
+} i450kx_pb_t;
+
 typedef struct i450kx_t {
     smram_t *smram[2];
 
-    uint8_t bus_index;
-    uint8_t pb_slot;
-    uint8_t mc_slot;
     uint8_t gx;
+    uint8_t mc_slot;
 
-    uint8_t pb_pci_conf[256];
+    i450kx_pb_t pb;  /* the compatibility PB (the 450KX's only one) */
+    i450kx_pb_t aux; /* the auxiliary PB (450GX with two) */
+
     uint8_t mc_pci_conf[256];
 
     uint8_t mem_state[2][256];
@@ -116,7 +133,7 @@ i450kx_map(i450kx_t *dev, int bus, uint32_t addr, uint32_t size, int state)
 static void
 i450kx_smram_recalc(i450kx_t *dev, int bus)
 {
-    const uint8_t *regs = bus ? dev->pb_pci_conf : dev->mc_pci_conf;
+    const uint8_t *regs = bus ? dev->pb.regs : dev->mc_pci_conf;
     uint32_t       addr;
     uint32_t       size;
     int            enable = bus ? !(regs[0x57] & 0x08) : (regs[0x57] & 0x08);
@@ -139,7 +156,7 @@ i450kx_smram_recalc(i450kx_t *dev, int bus)
 static void
 i450kx_vid_buf_recalc(i450kx_t *dev, int bus)
 {
-    const uint8_t *regs = bus ? dev->pb_pci_conf : dev->mc_pci_conf;
+    const uint8_t *regs = bus ? dev->pb.regs : dev->mc_pci_conf;
 
     int state = (regs[0x58] & 0x02) ? (MEM_READ_INTERNAL | MEM_WRITE_INTERNAL) :
                                       (MEM_READ_EXTANY | MEM_WRITE_EXTANY);
@@ -152,294 +169,285 @@ i450kx_vid_buf_recalc(i450kx_t *dev, int bus)
     flushmmucache_nopc();
 }
 
+/* A PB's PAM register: the memory attributes are the compatibility PB's to
+   set (the MC keeps its own, i450kx_map bus 0); the auxiliary PB's claim
+   a region for its own bus, which is all one bus here. */
+static void
+pb_pam(i450kx_pb_t *pb, int addr, uint8_t val)
+{
+    static const uint32_t base[7][2] = {
+        { 0x80000, 0xf0000 }, { 0xc0000, 0xc4000 }, { 0xc8000, 0xcc000 }, { 0xd0000, 0xd4000 },
+        { 0xd8000, 0xdc000 }, { 0xe0000, 0xe4000 }, { 0xe8000, 0xec000 }
+    };
+    const int n   = addr - 0x59;
+    uint8_t   old = pb->regs[addr];
+
+    pb->regs[addr] = val & 0x33;
+    if (pb->aux)
+        return;
+    if ((old ^ val) & 0x0f)
+        i450kx_map(pb->dev, 1, base[n][0], n ? 0x04000 : 0x20000, val & 0x0f);
+    if ((old ^ val) & 0xf0) {
+        i450kx_map(pb->dev, 1, base[n][1], n ? 0x04000 : 0x10000, val >> 4);
+        if (n == 0)
+            shadowbios = (val & 0x10);
+    }
+}
+
 static void
 pb_write(int func, int addr, UNUSED(int len), uint8_t val, void *priv)
 {
-    i450kx_t *dev = (i450kx_t *) priv;
-    const int gx  = (dev->gx != I450_KX);
+    i450kx_pb_t *pb   = (i450kx_pb_t *) priv;
+    i450kx_t    *dev  = pb->dev;
+    uint8_t     *regs = pb->regs;
+    const int    gx   = (dev->gx != I450_KX);
 
-    if (func == 0) {
-        i450kx_log("[%04X:%08X] i450KX-PB: [W] dev->pb_pci_conf[%02X] = %02X\n", CS, cpu_state.pc,
-                   addr, val);
+    if (func != 0)
+        return;
 
-        switch (addr) {
-            case 0x04: /* PCICMD: bus master (2) hardwired to 1 */
-                dev->pb_pci_conf[addr] = (dev->pb_pci_conf[addr] & 0x04) | (val & 0x53);
-                break;
-            case 0x05:
-                dev->pb_pci_conf[addr] = val & 0x01;
-                break;
+    i450kx_log("[%04X:%08X] i450KX-PB%s: [W] regs[%02X] = %02X\n", CS, cpu_state.pc, pb->aux ? " (aux)" : "",
+               addr, val);
 
-            case 0x07: /* PCISTS: R/WC */
-                dev->pb_pci_conf[addr] &= ~(val & 0xf9);
-                break;
+    switch (addr) {
+        case 0x04: /* PCICMD: bus master (2) hardwired to 1 */
+            regs[addr] = (regs[addr] & 0x04) | (val & 0x53);
+            break;
+        case 0x05:
+            regs[addr] = val & 0x01;
+            break;
 
-            case 0x0d:
-                dev->pb_pci_conf[addr] = val;
-                break;
+        case 0x07: /* PCISTS: R/WC */
+            regs[addr] &= ~(val & 0xf9);
+            break;
 
-            case 0x0f: /* BIST: "Writes to this register have no effect" */
-                break;
+        case 0x0d:
+            regs[addr] = val;
+            break;
 
-            case 0x40:
-            case 0x41:
-                dev->pb_pci_conf[addr] = val;
-                break;
-            case 0x43:
-                dev->pb_pci_conf[addr] = val & 0x80;
-                break;
+        case 0x0f: /* BIST: "Writes to this register have no effect" */
+            break;
 
-            case 0x48:
-                dev->pb_pci_conf[addr] = val & 0x06;
-                break;
+        case 0x40:
+        case 0x41:
+            regs[addr] = val;
+            break;
+        case 0x43:
+            regs[addr] = val & 0x80;
+            break;
 
-            case 0x4a:
-            case 0x4b:
-                dev->pb_pci_conf[addr] = val;
-#if 0
-                if (addr == 0x4a)
-                    pci_remap_bus(dev->bus_index, val);
-#endif
-                break;
+        case 0x48:
+            regs[addr] = val & 0x06;
+            break;
 
-            case 0x4c:
-                /* PBC. Bits 1:0 are the 82454GX's arbitration mode, and "must
-                   be set to 01" on the 82454KX. */
-                if (gx)
-                    dev->pb_pci_conf[addr] = val & 0xdb;
-                else
-                    dev->pb_pci_conf[addr] = (dev->pb_pci_conf[addr] & 0x01) | (val & 0xd8);
-                break;
+        case 0x4a:
+            regs[addr] = val;
+            /* The auxiliary PB's bus: configuration cycles for that number
+               go to it (82454GX 2.4.14). The compatibility PB's is bus 0,
+               where the 450GX leaves it. */
+            if (pb->aux)
+                pci_remap_bus(pb->bus_index, val);
+            break;
+        case 0x4b:
+            regs[addr] = val;
+            break;
 
-            case 0x51:
-                dev->pb_pci_conf[addr] = val;
-                break;
+        case 0x4c:
+            /* PBC. Bits 1:0 are the 82454GX's arbitration mode, and "must be
+               set to 01" on the 82454KX. */
+            if (gx)
+                regs[addr] = val & 0xdb;
+            else
+                regs[addr] = (regs[addr] & 0x01) | (val & 0xd8);
+            break;
 
-            case 0x53:
-                dev->pb_pci_conf[addr] = val & 0x02;
-                break;
+        case 0x51: /* DCC: the compatibility PB's only */
+            if (!pb->aux)
+                regs[addr] = val;
+            break;
 
-            case 0x54:
-                dev->pb_pci_conf[addr] = val & 0x7b;
-                break;
-            case 0x55:
-                dev->pb_pci_conf[addr] = val & 0x03;
-                break;
+        case 0x53:
+            regs[addr] = val & 0x02;
+            break;
 
-            case 0x57:
-                dev->pb_pci_conf[addr] = val & 0x08;
+        case 0x54:
+            regs[addr] = val & 0x7b;
+            break;
+        case 0x55:
+            regs[addr] = val & 0x03;
+            break;
+
+        case 0x57:
+            regs[addr] = val & 0x08;
+            if (!pb->aux)
                 i450kx_smram_recalc(dev, 1);
-                break;
+            break;
 
-            case 0x58:
-                dev->pb_pci_conf[addr] = val & 0x02;
+        case 0x58:
+            regs[addr] = val & 0x02;
+            if (!pb->aux)
                 i450kx_vid_buf_recalc(dev, 1);
-                break;
+            break;
 
-            case 0x59: /* PAM0 */
-                if ((dev->pb_pci_conf[0x59] ^ val) & 0x0f)
-                    i450kx_map(dev, 1, 0x80000, 0x20000, val & 0x0f);
-                if ((dev->pb_pci_conf[0x59] ^ val) & 0xf0) {
-                    i450kx_map(dev, 1, 0xf0000, 0x10000, val >> 4);
-                    shadowbios = (val & 0x10);
-                }
-                dev->pb_pci_conf[0x59] = val & 0x33;
-                break;
-            case 0x5a: /* PAM1 */
-                if ((dev->pb_pci_conf[0x5a] ^ val) & 0x0f)
-                    i450kx_map(dev, 1, 0xc0000, 0x04000, val & 0xf);
-                if ((dev->pb_pci_conf[0x5a] ^ val) & 0xf0)
-                    i450kx_map(dev, 1, 0xc4000, 0x04000, val >> 4);
-                dev->pb_pci_conf[0x5a] = val & 0x33;
-                break;
-            case 0x5b: /*PAM2 */
-                if ((dev->pb_pci_conf[0x5b] ^ val) & 0x0f)
-                    i450kx_map(dev, 1, 0xc8000, 0x04000, val & 0xf);
-                if ((dev->pb_pci_conf[0x5b] ^ val) & 0xf0)
-                    i450kx_map(dev, 1, 0xcc000, 0x04000, val >> 4);
-                dev->pb_pci_conf[0x5b] = val & 0x33;
-                break;
-            case 0x5c: /*PAM3 */
-                if ((dev->pb_pci_conf[0x5c] ^ val) & 0x0f)
-                    i450kx_map(dev, 1, 0xd0000, 0x04000, val & 0xf);
-                if ((dev->pb_pci_conf[0x5c] ^ val) & 0xf0)
-                    i450kx_map(dev, 1, 0xd4000, 0x04000, val >> 4);
-                dev->pb_pci_conf[0x5c] = val & 0x33;
-                break;
-            case 0x5d: /* PAM4 */
-                if ((dev->pb_pci_conf[0x5d] ^ val) & 0x0f)
-                    i450kx_map(dev, 1, 0xd8000, 0x04000, val & 0xf);
-                if ((dev->pb_pci_conf[0x5d] ^ val) & 0xf0)
-                    i450kx_map(dev, 1, 0xdc000, 0x04000, val >> 4);
-                dev->pb_pci_conf[0x5d] = val & 0x33;
-                break;
-            case 0x5e: /* PAM5 */
-                if ((dev->pb_pci_conf[0x5e] ^ val) & 0x0f)
-                    i450kx_map(dev, 1, 0xe0000, 0x04000, val & 0xf);
-                if ((dev->pb_pci_conf[0x5e] ^ val) & 0xf0)
-                    i450kx_map(dev, 1, 0xe4000, 0x04000, val >> 4);
-                dev->pb_pci_conf[0x5e] = val & 0x33;
-                break;
-            case 0x5f: /* PAM6 */
-                if ((dev->pb_pci_conf[0x5f] ^ val) & 0x0f)
-                    i450kx_map(dev, 1, 0xe8000, 0x04000, val & 0xf);
-                if ((dev->pb_pci_conf[0x5f] ^ val) & 0xf0)
-                    i450kx_map(dev, 1, 0xec000, 0x04000, val >> 4);
-                dev->pb_pci_conf[0x5f] = val & 0x33;
-                break;
+        case 0x59 ... 0x5f: /* PAM0-PAM6 */
+            pb_pam(pb, addr, val);
+            break;
 
-            case 0x70:
-                dev->pb_pci_conf[addr] = val & 0xf8;
-                break;
+        case 0x70:
+            regs[addr] = val & 0xf8;
+            break;
 
-            case 0x71: /* ERRSTS: R/WC */
-                dev->pb_pci_conf[addr] &= ~(val & 0x71);
-                break;
+        case 0x71: /* ERRSTS: R/WC; bit 0 the compatibility PB's only */
+            regs[addr] &= ~(val & (pb->aux ? 0x70 : 0x71));
+            break;
 
-            case 0x78:
-                dev->pb_pci_conf[addr] = val & 0xf0;
-                break;
-            case 0x79:
-                dev->pb_pci_conf[addr] = val & 0xfc;
-                break;
-            case 0x7a:
-                dev->pb_pci_conf[addr] = val;
-                break;
-            case 0x7b:
-                dev->pb_pci_conf[addr] = val & 0x0f;
-                break;
+        case 0x78:
+            regs[addr] = val & 0xf0;
+            break;
+        case 0x79:
+            regs[addr] = val & 0xfc;
+            break;
+        case 0x7a:
+            regs[addr] = val;
+            break;
+        case 0x7b:
+            regs[addr] = val & 0x0f;
+            break;
 
-            case 0x7c:
-                dev->pb_pci_conf[addr] = val & 0x9f;
-                break;
-            case 0x7d:
-                dev->pb_pci_conf[addr] = val & 0x1a;
-                break;
-            case 0x7e:
-                dev->pb_pci_conf[addr] = val & 0xf0;
-                break;
-            case 0x7f:
-                dev->pb_pci_conf[addr] = val;
-                break;
+        case 0x7c:
+            regs[addr] = val & 0x9f;
+            break;
+        case 0x7d:
+            regs[addr] = val & 0x1a;
+            break;
+        case 0x7e:
+            regs[addr] = val & 0xf0;
+            break;
+        case 0x7f:
+            regs[addr] = val;
+            break;
 
-            case 0x88:
-            case 0x89:
-                dev->pb_pci_conf[addr] = val;
-                break;
-            case 0x8b:
-                dev->pb_pci_conf[addr] = val & 0x80;
-                break;
-            case 0x8c:
-            case 0x8d:
-                dev->pb_pci_conf[addr] = val;
-                break;
+        case 0x88:
+        case 0x89:
+            regs[addr] = val;
+            break;
+        case 0x8b:
+            regs[addr] = val & 0x80;
+            break;
+        case 0x8c:
+        case 0x8d:
+            regs[addr] = val;
+            break;
 
-            /* IOSR1 (98h-9Bh) and IOSR2 (A0h-A3h), the 82454GX's: the start
-               address in bits 15:4, the end in bits 31:20, the enable in bit
-               0. Reserved on the 82454KX. */
-            case 0x98:
-            case 0xa0:
-                if (gx)
-                    dev->pb_pci_conf[addr] = val & 0xf1;
-                break;
-            case 0x99:
-            case 0xa1:
-            case 0x9b:
-            case 0xa3:
-                if (gx)
-                    dev->pb_pci_conf[addr] = val;
-                break;
-            case 0x9a:
-            case 0xa2:
-                if (gx)
-                    dev->pb_pci_conf[addr] = val & 0xf0;
-                break;
+        /* IOSR1 (98h-9Bh) and IOSR2 (A0h-A3h), the 82454GX's: the start
+           address in bits 15:4, the end in bits 31:20, the enable in bit 0.
+           Reserved on the 82454KX. */
+        case 0x98:
+        case 0xa0:
+            if (gx)
+                regs[addr] = val & 0xf1;
+            break;
+        case 0x99:
+        case 0xa1:
+        case 0x9b:
+        case 0xa3:
+            if (gx)
+                regs[addr] = val;
+            break;
+        case 0x9a:
+        case 0xa2:
+            if (gx)
+                regs[addr] = val & 0xf0;
+            break;
 
-            case 0x9c:
-                dev->pb_pci_conf[addr] = val & 0x01;
-                break;
+        case 0x9c:
+            regs[addr] = val & 0x01;
+            break;
 
-            /* APICR: the enable in bit 0, the highest unit ID in bits 7:4,
-               the starting unit ID in bits 11:8, the base in bits 27:12. */
-            case 0xa4:
-                dev->pb_pci_conf[addr] = val & 0xf1;
-                i450kx_apicr_log("PB", dev->pb_pci_conf);
-                break;
-            case 0xa5:
-            case 0xa6:
-                dev->pb_pci_conf[addr] = val;
-                i450kx_apicr_log("PB", dev->pb_pci_conf);
-                break;
-            case 0xa7:
-                dev->pb_pci_conf[addr] = val & 0x0f;
-                i450kx_apicr_log("PB", dev->pb_pci_conf);
-                break;
+        /* APICR: the enable in bit 0, the highest unit ID in bits 7:4, the
+           starting unit ID in bits 11:8, the base in bits 27:12. */
+        case 0xa4:
+            regs[addr] = val & 0xf1;
+            i450kx_apicr_log("PB", regs);
+            break;
+        case 0xa5:
+        case 0xa6:
+            regs[addr] = val;
+            i450kx_apicr_log("PB", regs);
+            break;
+        case 0xa7:
+            regs[addr] = val & 0x0f;
+            i450kx_apicr_log("PB", regs);
+            break;
 
-            case 0xb0:
-                dev->pb_pci_conf[addr] = val & 0xe0;
-                break;
-            case 0xb1: /* CONFVR: bits 10 and 8 the 82454GX's */
-                dev->pb_pci_conf[addr] = val & (gx ? 0x1f : 0x1a);
-                break;
+        /* CONFVR: the compatibility PB's only on the 450GX. */
+        case 0xb0:
+            if (!pb->aux)
+                regs[addr] = val & 0xe0;
+            break;
+        case 0xb1: /* bits 10 and 8 the 82454GX's */
+            if (!pb->aux)
+                regs[addr] = val & (gx ? 0x1f : 0x1a);
+            break;
 
-            case 0xb8:
-            case 0xb9:
-                dev->pb_pci_conf[addr] = val;
+        case 0xb8:
+        case 0xb9:
+            regs[addr] = val;
+            if (!pb->aux)
                 i450kx_smram_recalc(dev, 1);
-                break;
-            case 0xbb:
-                dev->pb_pci_conf[addr] = val & 0xf0;
+            break;
+        case 0xbb:
+            regs[addr] = val & 0xf0;
+            if (!pb->aux)
                 i450kx_smram_recalc(dev, 1);
-                break;
+            break;
 
-            case 0xbc:
-                dev->pb_pci_conf[addr] = val & 0x11;
-                break;
+        case 0xbc:
+            regs[addr] = val & 0x11;
+            break;
 
-            /* EXERRCMD: bits 1 and 5 reserved; 11:10 the 82454GX's. */
-            case 0xc0:
-                dev->pb_pci_conf[addr] = val & 0xdd;
-                break;
-            case 0xc1:
-                dev->pb_pci_conf[addr] = val & (gx ? 0x3f : 0x33);
-                break;
+        /* EXERRCMD: bits 1 and 5 reserved; 11:10 the 82454GX's. */
+        case 0xc0:
+            regs[addr] = val & 0xdd;
+            break;
+        case 0xc1:
+            regs[addr] = val & (gx ? 0x3f : 0x33);
+            break;
 
-            /* EXERRSTS: R/WC; bits 11 and 17 the 82454GX's. */
-            case 0xc4:
-                dev->pb_pci_conf[addr] &= ~(val & 0x0d);
-                break;
-            case 0xc5:
-                dev->pb_pci_conf[addr] &= ~(val & (gx ? 0x0a : 0x02));
-                break;
-            case 0xc6:
-                dev->pb_pci_conf[addr] &= ~(val & (gx ? 0x1f : 0x1d));
-                break;
+        /* EXERRSTS: R/WC; bits 11 and 17 the 82454GX's. */
+        case 0xc4:
+            regs[addr] &= ~(val & 0x0d);
+            break;
+        case 0xc5:
+            regs[addr] &= ~(val & (gx ? 0x0a : 0x02));
+            break;
+        case 0xc6:
+            regs[addr] &= ~(val & (gx ? 0x1f : 0x1d));
+            break;
 
-            case 0xc8:
-                dev->pb_pci_conf[addr] = val & 0x1f;
-                break;
+        case 0xc8:
+            regs[addr] = val & 0x1f;
+            break;
 
-            case 0xca:
-            case 0xcb:
-                dev->pb_pci_conf[addr] = val;
-                break;
+        case 0xca:
+        case 0xcb:
+            regs[addr] = val;
+            break;
 
-            default:
-                break;
-        }
+        default:
+            break;
     }
 }
 
 static uint8_t
 pb_read(int func, int addr, UNUSED(int len), void *priv)
 {
-    const i450kx_t *dev = (i450kx_t *) priv;
-    uint8_t   ret = 0xff;
+    const i450kx_pb_t *pb  = (i450kx_pb_t *) priv;
+    uint8_t            ret = 0xff;
 
     if (func == 0) {
-        ret = dev->pb_pci_conf[addr];
+        ret = pb->regs[addr];
 
-        i450kx_log("[%04X:%08X] i450KX-PB: [R] dev->pb_pci_conf[%02X] = %02X\n", CS, cpu_state.pc,
+        i450kx_log("[%04X:%08X] i450KX-PB%s: [R] regs[%02X] = %02X\n", CS, cpu_state.pc, pb->aux ? " (aux)" : "",
                    addr, ret);
     }
 
@@ -692,109 +700,130 @@ mc_read(int func, int addr, UNUSED(int len), void *priv)
     return ret;
 }
 
+/* A PB's defaults (82454KX/GX 2.4, with the specification update's
+   corrections). Each register is set as it is listed, the PAMs through
+   their write, which remaps only what changes: a programmed hard reset
+   (TRC) comes through here with the PB's registers as the BIOS left them.
+   The auxiliary PB starts with every range it would claim off, and its
+   PBID in BDNUM and PBC. */
+static void
+i450kx_pb_reset(i450kx_pb_t *pb)
+{
+    uint8_t *regs = pb->regs;
+
+    regs[0x00] = 0x86;
+    regs[0x01] = 0x80;
+    regs[0x02] = 0xc4;
+    regs[0x03] = 0x84;
+    regs[0x04] = 0x07;
+    regs[0x05] = 0x00;
+    regs[0x06] = 0x40;
+    regs[0x07] = 0x02;
+    regs[0x08] = 0x02;
+    regs[0x09] = 0x00;
+    regs[0x0a] = 0x00;
+    regs[0x0b] = 0x06;
+    regs[0x0c] = 0x08;
+    regs[0x0d] = 0x20;
+    regs[0x0e] = 0x00;
+    regs[0x0f] = 0x00;
+    regs[0x40] = 0x00;
+    regs[0x41] = 0x00;
+    regs[0x42] = 0x00;
+    regs[0x43] = 0x00;
+    regs[0x48] = 0x06;
+    regs[0x49] = pb->aux ? 0x1a : 0x19;
+    regs[0x4a] = 0x00;
+    regs[0x4b] = 0x00;
+    regs[0x4c] = pb->aux ? 0x1a : 0x19;
+    regs[0x51] = pb->aux ? 0x00 : 0x80;
+    regs[0x53] = 0x00;
+    regs[0x54] = 0x00;
+    regs[0x55] = 0x00;
+    regs[0x57] = 0x00;
+    regs[0x58] = pb->aux ? 0x00 : 0x02;
+    regs[0x70] = 0x00;
+    regs[0x71] = 0x00;
+    regs[0x78] = 0x00;
+    regs[0x79] = 0x00;
+    regs[0x7a] = 0x00;
+    regs[0x7b] = 0x00;
+    regs[0x7c] = 0x00;
+    regs[0x7d] = 0x00;
+    regs[0x7e] = 0x00;
+    regs[0x7f] = 0x00;
+    regs[0x88] = 0x00;
+    regs[0x89] = 0x00;
+    regs[0x8a] = 0x00;
+    regs[0x8b] = 0x00;
+    regs[0x8c] = 0x00;
+    regs[0x8d] = 0x00;
+    regs[0x8e] = 0x00;
+    regs[0x8f] = 0x00;
+    if (pb->dev->gx != I450_KX) {
+        /* IOSR1 and IOSR2: FFF0 0001h, enabled on the compatibility PB. */
+        regs[0x98] = regs[0xa0] = pb->aux ? 0x00 : 0x01;
+        regs[0x99] = regs[0xa1] = 0x00;
+        regs[0x9a] = regs[0xa2] = 0xf0;
+        regs[0x9b] = regs[0xa3] = 0xff;
+    }
+    regs[0x9c] = 0x00;
+    regs[0xa4] = pb->aux ? 0x00 : 0x01;
+    regs[0xa5] = 0xc0;
+    regs[0xa6] = 0xfe;
+    regs[0xa7] = 0x00;
+    /* Note: Do NOT reset these two registers on programmed (TRC) hard reset! */
+#if 0
+    regs[0xb0] = 0x00;
+    regs[0xb1] = 0x00;
+#endif
+    /* CSCONFV captures the values the PB drives on A[12:5]# out of CONFVR at every
+       rising edge of RESET#. */
+    regs[0xb4] = regs[0xb0];
+    regs[0xb5] = regs[0xb1];
+    regs[0xb8] = 0x05;
+    regs[0xb9] = 0x00;
+    regs[0xba] = 0x00;
+    regs[0xbb] = 0x00;
+    regs[0xbc] = pb->aux ? 0x00 : 0x01;
+    regs[0xc0] = 0x10; /* EXERRCMD: 0000 0010h */
+    regs[0xc1] = 0x00;
+    regs[0xc2] = 0x00;
+    regs[0xc3] = 0x00;
+    regs[0xc4] = 0x00;
+    regs[0xc5] = 0x00;
+    regs[0xc6] = 0x00;
+    regs[0xc7] = 0x00;
+    regs[0xc8] = 0x03;
+    regs[0xc9] = 0x00;
+    regs[0xca] = 0x00;
+    regs[0xcb] = 0x00;
+
+    if (pb->aux) {
+        /* PAM[0:6] 00h: the auxiliary PB claims none of the regions; and
+           its bus has no number until the BIOS gives it one. */
+        for (int i = 0x59; i <= 0x5f; i++)
+            regs[i] = 0x00;
+        pci_remap_bus(pb->bus_index, 0x00);
+        return;
+    }
+
+    i450kx_smram_recalc(pb->dev, 1);
+    i450kx_vid_buf_recalc(pb->dev, 1);
+    pb_write(0, 0x59, 1, 0x30, pb);
+    for (int i = 0x5a; i <= 0x5f; i++)
+        pb_write(0, i, 1, 0x33, pb);
+}
+
 static void
 i450kx_reset(void *priv)
 {
     i450kx_t *dev = (i450kx_t *) priv;
     uint32_t  i;
 
-    /* Defaults PB */
-    dev->pb_pci_conf[0x00] = 0x86;
-    dev->pb_pci_conf[0x01] = 0x80;
-    dev->pb_pci_conf[0x02] = 0xc4;
-    dev->pb_pci_conf[0x03] = 0x84;
-    dev->pb_pci_conf[0x04] = 0x07;
-    dev->pb_pci_conf[0x05] = 0x00;
-    dev->pb_pci_conf[0x06] = 0x40;
-    dev->pb_pci_conf[0x07] = 0x02;
-    dev->pb_pci_conf[0x08] = 0x02;
-    dev->pb_pci_conf[0x09] = 0x00;
-    dev->pb_pci_conf[0x0a] = 0x00;
-    dev->pb_pci_conf[0x0b] = 0x06;
-    dev->pb_pci_conf[0x0c] = 0x08;
-    dev->pb_pci_conf[0x0d] = 0x20;
-    dev->pb_pci_conf[0x0e] = 0x00;
-    dev->pb_pci_conf[0x0f] = 0x00;
-    dev->pb_pci_conf[0x40] = 0x00;
-    dev->pb_pci_conf[0x41] = 0x00;
-    dev->pb_pci_conf[0x42] = 0x00;
-    dev->pb_pci_conf[0x43] = 0x00;
-    dev->pb_pci_conf[0x48] = 0x06;
-    dev->pb_pci_conf[0x49] = 0x19;
-    dev->pb_pci_conf[0x4a] = 0x00;
-    dev->pb_pci_conf[0x4b] = 0x00;
-    dev->pb_pci_conf[0x4c] = 0x19;
-    dev->pb_pci_conf[0x51] = 0x80;
-    dev->pb_pci_conf[0x53] = 0x00;
-    dev->pb_pci_conf[0x54] = 0x00;
-    dev->pb_pci_conf[0x55] = 0x00;
-    dev->pb_pci_conf[0x57] = 0x00;
-    dev->pb_pci_conf[0x58] = 0x02;
-    dev->pb_pci_conf[0x70] = 0x00;
-    dev->pb_pci_conf[0x71] = 0x00;
-    dev->pb_pci_conf[0x78] = 0x00;
-    dev->pb_pci_conf[0x79] = 0x00;
-    dev->pb_pci_conf[0x7a] = 0x00;
-    dev->pb_pci_conf[0x7b] = 0x00;
-    dev->pb_pci_conf[0x7c] = 0x00;
-    dev->pb_pci_conf[0x7d] = 0x00;
-    dev->pb_pci_conf[0x7e] = 0x00;
-    dev->pb_pci_conf[0x7f] = 0x00;
-    dev->pb_pci_conf[0x88] = 0x00;
-    dev->pb_pci_conf[0x89] = 0x00;
-    dev->pb_pci_conf[0x8a] = 0x00;
-    dev->pb_pci_conf[0x8b] = 0x00;
-    dev->pb_pci_conf[0x8c] = 0x00;
-    dev->pb_pci_conf[0x8d] = 0x00;
-    dev->pb_pci_conf[0x8e] = 0x00;
-    dev->pb_pci_conf[0x8f] = 0x00;
-    if (dev->gx != I450_KX) {
-        /* IOSR1 and IOSR2: FFF0 0001h, the compatibility PB's. */
-        dev->pb_pci_conf[0x98] = dev->pb_pci_conf[0xa0] = 0x01;
-        dev->pb_pci_conf[0x99] = dev->pb_pci_conf[0xa1] = 0x00;
-        dev->pb_pci_conf[0x9a] = dev->pb_pci_conf[0xa2] = 0xf0;
-        dev->pb_pci_conf[0x9b] = dev->pb_pci_conf[0xa3] = 0xff;
-    }
-    dev->pb_pci_conf[0x9c] = 0x00;
-    dev->pb_pci_conf[0xa4] = 0x01;
-    dev->pb_pci_conf[0xa5] = 0xc0;
-    dev->pb_pci_conf[0xa6] = 0xfe;
-    dev->pb_pci_conf[0xa7] = 0x00;
-    /* Note: Do NOT reset these two registers on programmed (TRC) hard reset! */
-#if 0
-    dev->pb_pci_conf[0xb0] = 0x00;
-    dev->pb_pci_conf[0xb1] = 0x00;
-#endif
-    /* CSCONFV captures the values the PB drives on A[12:5]# out of CONFVR at every
-       rising edge of RESET#. */
-    dev->pb_pci_conf[0xb4] = dev->pb_pci_conf[0xb0];
-    dev->pb_pci_conf[0xb5] = dev->pb_pci_conf[0xb1];
-    dev->pb_pci_conf[0xb8] = 0x05;
-    dev->pb_pci_conf[0xb9] = 0x00;
-    dev->pb_pci_conf[0xba] = 0x00;
-    dev->pb_pci_conf[0xbb] = 0x00;
-    dev->pb_pci_conf[0xbc] = 0x01;
-    dev->pb_pci_conf[0xc0] = 0x10; /* EXERRCMD: 0000 0010h */
-    dev->pb_pci_conf[0xc1] = 0x00;
-    dev->pb_pci_conf[0xc2] = 0x00;
-    dev->pb_pci_conf[0xc3] = 0x00;
-    dev->pb_pci_conf[0xc4] = 0x00;
-    dev->pb_pci_conf[0xc5] = 0x00;
-    dev->pb_pci_conf[0xc6] = 0x00;
-    dev->pb_pci_conf[0xc7] = 0x00;
-    dev->pb_pci_conf[0xc8] = 0x03;
-    dev->pb_pci_conf[0xc9] = 0x00;
-    dev->pb_pci_conf[0xca] = 0x00;
-    dev->pb_pci_conf[0xcb] = 0x00;
-
-#if 0
-    pci_remap_bus(dev->bus_index, 0x00);
-#endif
-    i450kx_smram_recalc(dev, 1);
-    i450kx_vid_buf_recalc(dev, 1);
-    pb_write(0, 0x59, 1, 0x30, dev);
-    for (i = 0x5a; i <= 0x5f; i++)
-        pb_write(0, i, 1, 0x33, dev);
+    i450kx_pb_reset(&dev->pb);
+    if (dev->gx == I450_GX_2)
+        i450kx_pb_reset(&dev->aux);
 
     /* Defaults MC */
     dev->mc_pci_conf[0x00] = 0x86;
@@ -891,12 +920,21 @@ i450kx_init(const device_t *info)
 {
     i450kx_t *dev = (i450kx_t *) calloc(1, sizeof(i450kx_t));
 
-    dev->gx = info->local;
+    dev->gx      = info->local;
+    dev->pb.dev  = dev;
+    dev->aux.dev = dev;
+    dev->aux.aux = 1;
 
-    pci_add_card(PCI_ADD_NORTHBRIDGE, pb_read, pb_write, dev, &dev->pb_slot);        /* Device 19h: Intel 450KX PCI Bridge PB */
-    /* CF9h is its TRC (2.2.2). */
+    pci_add_card(PCI_ADD_NORTHBRIDGE, pb_read, pb_write, &dev->pb, &dev->pb.slot); /* Device 19h: the (compatibility) PB */
+    /* CF9h is its TRC, "Compatibility PB only" (2.2.2). */
     pci_add_flags(FLAG_TRC_450KX);
-    pci_add_card(PCI_ADD_NORTHBRIDGE_SEC, mc_read, mc_write, dev, &dev->mc_slot);    /* Device 14h: Intel 450KX Memory Controller MC */
+    pci_add_card(PCI_ADD_NORTHBRIDGE_SEC, mc_read, mc_write, dev, &dev->mc_slot); /* Device 14h: the MC */
+    if (dev->gx == I450_GX_2) {
+        /* Device 1Ah: the auxiliary PB, and the peer bus behind it, which
+           has no number until the BIOS gives it one. */
+        dev->aux.bus_index = pci_register_bus();
+        pci_add_card(PCI_ADD_NORTHBRIDGE_AUX, pb_read, pb_write, &dev->aux, &dev->aux.slot);
+    }
 
     dev->smram[0] = smram_add();
     dev->smram[1] = smram_add();
@@ -908,6 +946,15 @@ i450kx_init(const device_t *info)
     i450kx_reset(dev);
 
     return dev;
+}
+
+/* The auxiliary PB's bus, for the board to put its slots on. */
+uint8_t
+i450gx_aux_bus_index(void *priv)
+{
+    const i450kx_t *dev = (const i450kx_t *) priv;
+
+    return ((dev != NULL) && (dev->gx == I450_GX_2)) ? dev->aux.bus_index : PCI_BUS_INVALID;
 }
 
 const device_t i450kx_device = {
@@ -929,6 +976,21 @@ const device_t i450gx_device = {
     .internal_name = "i450gx",
     .flags         = DEVICE_PCI,
     .local         = I450_GX,
+    .init          = i450kx_init,
+    .close         = i450kx_close,
+    .reset         = i450kx_reset,
+    .available     = NULL,
+    .speed_changed = NULL,
+    .force_redraw  = NULL,
+    .config        = NULL
+};
+
+/* With the auxiliary PB and its peer PCI bus. */
+const device_t i450gx_dual_device = {
+    .name          = "Intel 450GX (Orion), two PCI bridges",
+    .internal_name = "i450gx_dual",
+    .flags         = DEVICE_PCI,
+    .local         = I450_GX_2,
     .init          = i450kx_init,
     .close         = i450kx_close,
     .reset         = i450kx_reset,

@@ -823,11 +823,12 @@ choices(int only, const QString &bus, const Card *replacing)
 }
 
 /* A board layout entry with a PCI bus number of its own behind it: an AGP
-   or PCI-to-PCI bridge. */
+   or PCI-to-PCI bridge, or a second host bridge. */
 static bool
 boardBusBridge(const machine_slot_t *s)
 {
-    return (s->kind == SLOT_PCI) && ((s->pci_type == PCI_CARD_AGPBRIDGE) || (s->pci_type == PCI_CARD_BRIDGE));
+    return (s->kind == SLOT_PCI) &&
+           ((s->pci_type == PCI_CARD_AGPBRIDGE) || (s->pci_type == PCI_CARD_BRIDGE) || (s->pci_type == PCI_CARD_NORTHBRIDGE_AUX));
 }
 
 /* How many slots of each bus the board's layout has, bridges included;
@@ -1626,7 +1627,7 @@ layout(const QList<Card> &cards)
                                 walk(item, s->bus, behind);
                             break;
                         }
-                        case PCI_CARD_BRIDGE: {
+                        case PCI_CARD_BRIDGE:
                             /* A board's own PCI-to-PCI bridge, its slots
                                declared (the OptiPlex riser's 21152); one
                                without is just a device. */
@@ -1634,7 +1635,13 @@ layout(const QList<Card> &cards)
                                 add(Node::DEVICE, parent, QCoreApplication::translate("SettingsCards", "PCI bridge (device %1)").arg(dev), QString(), s->pci_type);
                                 break;
                             }
-                            const int item   = add(Node::BRIDGE, parent, QCoreApplication::translate("SettingsCards", "PCI-to-PCI bridge (device %1)").arg(dev));
+                            [[fallthrough]];
+                        case PCI_CARD_NORTHBRIDGE_AUX: {
+                            /* A bus of its own behind the bridge: the 450GX's
+                               auxiliary host bridge, or a PCI-to-PCI one. */
+                            const int item   = add(Node::BRIDGE, parent, (s->pci_type == PCI_CARD_BRIDGE) ?
+                                                   QCoreApplication::translate("SettingsCards", "PCI-to-PCI bridge (device %1)").arg(dev) :
+                                                   QCoreApplication::translate("SettingsCards", "Second host bridge (device %1)").arg(dev));
                             const int behind = nextBus++;
                             if (s->bus != nullptr) {
                                 const int busNode = add(Node::BUS, item, QCoreApplication::translate("SettingsCards", "PCI bus %1").arg(behind));
@@ -1746,7 +1753,7 @@ layout(const QList<Card> &cards)
                 registered++;
                 if (boardBusBridge(s))
                     firstBus++;
-                if ((s->bus != nullptr) && (s->pci_type == PCI_CARD_BRIDGE))
+                if ((s->bus != nullptr) && ((s->pci_type == PCI_CARD_NORTHBRIDGE_AUX) || (s->pci_type == PCI_CARD_BRIDGE)))
                     count(s->bus);
             }
         };

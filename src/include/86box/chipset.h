@@ -109,6 +109,8 @@ extern const device_t i440gx_device;
 extern const device_t i440zx_device;
 extern const device_t i450kx_device;
 extern const device_t i450gx_device;
+extern const device_t i450gx_dual_device;
+extern uint8_t        i450gx_aux_bus_index(void *priv);
 
 extern const device_t pceb_device;
 extern const device_t esc_device;

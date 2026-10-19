@@ -215,6 +215,7 @@ enum {
     PCI_CARD_SOUTHBRIDGE_IDE = 4,
     PCI_CARD_SOUTHBRIDGE_PMU = 5,
     PCI_CARD_SOUTHBRIDGE_USB = 6,
+    PCI_CARD_NORTHBRIDGE_AUX = 7, /* a second host bridge, to a peer bus (450GX) */
     PCI_CARD_AGP             = 0x0f,
     PCI_CARD_NORMAL          = 0x10,
     PCI_CARD_VIDEO           = 0x11,
@@ -237,6 +238,7 @@ enum {
     PCI_ADD_SOUTHBRIDGE_IDE = 4,
     PCI_ADD_SOUTHBRIDGE_PMU = 5,
     PCI_ADD_SOUTHBRIDGE_USB = 6,
+    PCI_ADD_NORTHBRIDGE_AUX = 7,
     PCI_ADD_AGP             = 0x0f,
     PCI_ADD_NORMAL          = 0x10,
     PCI_ADD_VIDEO           = 0x11,
