@@ -148,6 +148,9 @@ codegen_check_seg_read(UNUSED(codeblock_t *block), ir_data_t *ir, x86seg *seg)
         return;
     if (seg == &cpu_state.seg_es && codegen_flat_es && !(cpu_cur_status & CPU_STATUS_NOTFLATES))
         return;
+    /*Base 0, so not the null selector's -1*/
+    if (codegen_seg_flat64k(seg))
+        return;
 
     uop_CMP_IMM_JZ(ir, ireg_seg_base(seg), (uint32_t) -1, codegen_gpf_rout);
 
@@ -185,7 +188,7 @@ codegen_check_seg_write(UNUSED(codeblock_t *block), ir_data_t *ir, x86seg *seg)
     /*checked: 1 = null selector ruled out, 2 = writable too*/
     if (seg->checked == 2)
         return;
-    if (!seg->checked && !(seg == &cpu_state.seg_ds && codegen_flat_ds && !(cpu_cur_status & CPU_STATUS_NOTFLATDS)) && !(seg == &cpu_state.seg_es && codegen_flat_es && !(cpu_cur_status & CPU_STATUS_NOTFLATES)))
+    if (!seg->checked && !(seg == &cpu_state.seg_ds && codegen_flat_ds && !(cpu_cur_status & CPU_STATUS_NOTFLATDS)) && !(seg == &cpu_state.seg_es && codegen_flat_es && !(cpu_cur_status & CPU_STATUS_NOTFLATES)) && !codegen_seg_flat64k(seg))
         uop_CMP_IMM_JZ(ir, ireg_seg_base(seg), (uint32_t) -1, codegen_gpf_rout);
 
     codegen_check_seg_writable(ir, seg);

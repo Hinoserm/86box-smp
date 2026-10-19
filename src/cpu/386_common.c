@@ -690,12 +690,14 @@ smm_seg_load(x86seg *s)
             cpu_cur_status &= ~CPU_STATUS_NOTFLATDS;
         else
             cpu_cur_status |= CPU_STATUS_NOTFLATDS;
+        cpu_seg_flat64k(s, CPU_STATUS_NOTFLAT64KDS);
     }
     if (s == &cpu_state.seg_es) {
         if (s->base == 0 && s->limit_low == 0 && s->limit_high == 0xffffffff)
             cpu_cur_status &= ~CPU_STATUS_NOTFLATES;
         else
             cpu_cur_status |= CPU_STATUS_NOTFLATES;
+        cpu_seg_flat64k(s, CPU_STATUS_NOTFLAT64KES);
     }
 
     if (s == &cpu_state.seg_ss) {
@@ -703,6 +705,7 @@ smm_seg_load(x86seg *s)
             cpu_cur_status &= ~CPU_STATUS_NOTFLATSS;
         else
             cpu_cur_status |= CPU_STATUS_NOTFLATSS;
+        cpu_seg_flat64k(s, CPU_STATUS_NOTFLAT64KSS);
         set_stack32((s->ar_high & 0x40) ? 1 : 0);
     }
 }
@@ -2107,6 +2110,7 @@ sysenter(UNUSED(uint32_t fetchdat))
 #endif
 
     cpu_cur_status &= ~(CPU_STATUS_NOTFLATSS | CPU_STATUS_V86);
+    cpu_cur_status |= CPU_STATUS_NOTFLAT64KSS;
     cpu_cur_status |= (CPU_STATUS_USE32 | CPU_STATUS_STACK32 /* | CPU_STATUS_PMODE*/);
     set_use32(1);
     set_stack32(1);
@@ -2191,6 +2195,7 @@ sysexit(UNUSED(uint32_t fetchdat))
 #endif
 
     cpu_cur_status &= ~(CPU_STATUS_NOTFLATSS /* | CPU_STATUS_V86*/);
+    cpu_cur_status |= CPU_STATUS_NOTFLAT64KSS;
     cpu_cur_status |= (CPU_STATUS_USE32 | CPU_STATUS_STACK32 | CPU_STATUS_PMODE);
     flushmmucache_cpl();
     set_use32(1);
@@ -2250,6 +2255,7 @@ syscall_op(UNUSED(uint32_t fetchdat))
 #endif
 
     cpu_cur_status &= ~(CPU_STATUS_NOTFLATSS | CPU_STATUS_V86);
+    cpu_cur_status |= CPU_STATUS_NOTFLAT64KSS;
     cpu_cur_status |= (CPU_STATUS_USE32 | CPU_STATUS_STACK32 | CPU_STATUS_PMODE);
     set_use32(1);
     set_stack32(1);
@@ -2308,6 +2314,7 @@ sysret(UNUSED(uint32_t fetchdat))
 #endif
 
     cpu_cur_status &= ~(CPU_STATUS_NOTFLATSS /* | CPU_STATUS_V86*/);
+    cpu_cur_status |= CPU_STATUS_NOTFLAT64KSS;
     cpu_cur_status |= (CPU_STATUS_USE32 | CPU_STATUS_STACK32 | CPU_STATUS_PMODE);
     flushmmucache_cpl();
     set_use32(1);

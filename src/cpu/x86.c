@@ -458,7 +458,8 @@ reset_common(int hard)
 #ifdef USE_DYNAREC
     /* The data segments come out of reset with a 64K limit: not flat, so
        the recompiler keeps their limit checks */
-    cpu_cur_status |= CPU_STATUS_NOTFLATDS | CPU_STATUS_NOTFLATSS | CPU_STATUS_NOTFLATES;
+    cpu_cur_status |= CPU_STATUS_NOTFLATDS | CPU_STATUS_NOTFLATSS | CPU_STATUS_NOTFLATES |
+                      CPU_STATUS_NOTFLAT64KDS | CPU_STATUS_NOTFLAT64KSS | CPU_STATUS_NOTFLAT64KES;
 #endif
 #ifdef USE_DYNAREC
     /* A reset raised from inside a recompiled block (a timer run by RDTSC)

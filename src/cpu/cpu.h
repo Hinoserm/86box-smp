@@ -504,6 +504,13 @@ typedef struct {
 #define CPU_STATUS_NOTFLATDS (1 << 8)
 #define CPU_STATUS_NOTFLATSS (1 << 9)
 #define CPU_STATUS_NOTFLATES (1 << 10)
+/* Clear while the segment is flat but for its first 64 KB: base 0, limit
+   4 GB, expand-down from 10000h -- Windows 9x's data segment for Win32
+   code, which faults a null pointer. Accesses then need only the lower
+   bound tested, against a constant (CHECK_SEG_LIMITS). */
+#define CPU_STATUS_NOTFLAT64KDS (1 << 11)
+#define CPU_STATUS_NOTFLAT64KSS (1 << 12)
+#define CPU_STATUS_NOTFLAT64KES (1 << 13)
 #define CPU_STATUS_MASK      0xff00
 
 
@@ -630,6 +637,16 @@ extern int cpu_is_p5(void);
 extern int cpu_init_keeps_state(void);
 
 extern uint16_t cpu_cur_status;
+
+/* A data segment's CPU_STATUS_NOTFLAT64K bit, from what it holds now. */
+static inline void
+cpu_seg_flat64k(const x86seg *s, uint16_t bit)
+{
+    if ((s->base == 0) && (s->limit_low == 0x10000) && (s->limit_high == 0xffffffff))
+        cpu_cur_status &= ~bit;
+    else
+        cpu_cur_status |= bit;
+}
 extern uint64_t cpu_CR4_mask;
 extern uint64_t cpu_CR4_ignore;
 extern uint64_t tsc;

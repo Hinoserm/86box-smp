@@ -75,6 +75,17 @@ fpu_PUSH(codeblock_t *block, ir_data_t *ir)
         uop_SUB_IMM(ir, IREG_FPU_TOP, IREG_FPU_TOP, 1);
 }
 
+/*The segment flat but for its first 64 KB, as the block started and as it
+  is at this instruction (a load inside the block may have changed it).*/
+static inline int
+codegen_seg_flat64k(const x86seg *seg)
+{
+    if (!((seg == &cpu_state.seg_ds && codegen_flat64k_ds) || (seg == &cpu_state.seg_ss && codegen_flat64k_ss) ||
+          (seg == &cpu_state.seg_es && codegen_flat64k_es)))
+        return 0;
+    return (seg->base == 0) && (seg->limit_low == 0x10000) && (seg->limit_high == 0xffffffff);
+}
+
 static inline void
 CHECK_SEG_LIMITS(UNUSED(codeblock_t *block), ir_data_t *ir, x86seg *seg, int addr_reg, int end_offset)
 {
@@ -83,6 +94,15 @@ CHECK_SEG_LIMITS(UNUSED(codeblock_t *block), ir_data_t *ir, x86seg *seg, int add
 
     /*#SS(0) through SS, #GP(0) through the others*/
     void *rout = (seg == &cpu_state.seg_ss) ? codegen_ss_rout : codegen_gpf_rout;
+
+    /*Base 0 and an upper limit of 4 GB: only the lower bound to test, a
+      constant. The upper one is left as CMP_JNWITHIN leaves it, an access
+      wrapping past 4 GB not being caught there either.*/
+    if (codegen_seg_flat64k(seg)) {
+        uop_MOV_IMM(ir, IREG_temp3, 0x10000);
+        uop_CMP_JB(ir, addr_reg, IREG_temp3, rout);
+        return;
+    }
 
 #if defined __aarch64__ || defined _M_ARM64 || defined __amd64__ || defined _M_X64
     uop_CMP_JNWITHIN(ir, addr_reg, ireg_seg_limit_low(seg), ireg_seg_limit_high(seg), end_offset, rout);

@@ -176,9 +176,9 @@ null_data_seg(x86seg *s)
     s->ar_high = 0x10;
     s->base    = -1;
     if (s == &cpu_state.seg_ds)
-        cpu_cur_status |= CPU_STATUS_NOTFLATDS;
+        cpu_cur_status |= CPU_STATUS_NOTFLATDS | CPU_STATUS_NOTFLAT64KDS;
     if (s == &cpu_state.seg_es)
-        cpu_cur_status |= CPU_STATUS_NOTFLATES;
+        cpu_cur_status |= CPU_STATUS_NOTFLATES | CPU_STATUS_NOTFLAT64KES;
 }
 
 /* An exception's error code, sized by the gate it was delivered through, or
@@ -339,18 +339,21 @@ do_seg_load(x86seg *s, uint16_t *segdat)
             cpu_cur_status &= ~CPU_STATUS_NOTFLATDS;
         else
             cpu_cur_status |= CPU_STATUS_NOTFLATDS;
+        cpu_seg_flat64k(s, CPU_STATUS_NOTFLAT64KDS);
     }
     if (s == &cpu_state.seg_es) {
         if ((s->base == 0) && (s->limit_low == 0) && (s->limit_high == 0xffffffff))
             cpu_cur_status &= ~CPU_STATUS_NOTFLATES;
         else
             cpu_cur_status |= CPU_STATUS_NOTFLATES;
+        cpu_seg_flat64k(s, CPU_STATUS_NOTFLAT64KES);
     }
     if (s == &cpu_state.seg_ss) {
         if ((s->base == 0) && (s->limit_low == 0) && (s->limit_high == 0xffffffff))
             cpu_cur_status &= ~CPU_STATUS_NOTFLATSS;
         else
             cpu_cur_status |= CPU_STATUS_NOTFLATSS;
+        cpu_seg_flat64k(s, CPU_STATUS_NOTFLAT64KSS);
     }
 }
 #endif
@@ -447,9 +450,9 @@ loadseg(uint16_t seg, x86seg *s)
             s->ar_high = 0x10;
             s->base    = -1;
             if (s == &cpu_state.seg_ds)
-                cpu_cur_status |= CPU_STATUS_NOTFLATDS;
+                cpu_cur_status |= CPU_STATUS_NOTFLATDS | CPU_STATUS_NOTFLAT64KDS;
             if (s == &cpu_state.seg_es)
-                cpu_cur_status |= CPU_STATUS_NOTFLATES;
+                cpu_cur_status |= CPU_STATUS_NOTFLATES | CPU_STATUS_NOTFLAT64KES;
             return 0;
         }
         addr = seg & 0xfff8;
@@ -576,18 +579,21 @@ loadseg(uint16_t seg, x86seg *s)
             cpu_cur_status &= ~CPU_STATUS_NOTFLATDS;
         else
             cpu_cur_status |= CPU_STATUS_NOTFLATDS;
+        cpu_seg_flat64k(s, CPU_STATUS_NOTFLAT64KDS);
     }
     if (s == &cpu_state.seg_es) {
         if (s->base == 0 && s->limit_low == 0 && s->limit_high == 0xffffffff)
             cpu_cur_status &= ~CPU_STATUS_NOTFLATES;
         else
             cpu_cur_status |= CPU_STATUS_NOTFLATES;
+        cpu_seg_flat64k(s, CPU_STATUS_NOTFLAT64KES);
     }
     if (s == &cpu_state.seg_ss) {
         if (s->base == 0 && s->limit_low == 0 && s->limit_high == 0xffffffff)
             cpu_cur_status &= ~CPU_STATUS_NOTFLATSS;
         else
             cpu_cur_status |= CPU_STATUS_NOTFLATSS;
+        cpu_seg_flat64k(s, CPU_STATUS_NOTFLAT64KSS);
     }
 
     return cpu_state.abrt;
@@ -2149,7 +2155,7 @@ pmodeiret(int is32)
             do_seg_v86_init(&cpu_state.seg_es);
             op_loadseg(segs[1], &cpu_state.seg_ds);
             do_seg_v86_init(&cpu_state.seg_ds);
-            cpu_cur_status |= CPU_STATUS_NOTFLATDS | CPU_STATUS_NOTFLATES;
+            cpu_cur_status |= CPU_STATUS_NOTFLATDS | CPU_STATUS_NOTFLATES | CPU_STATUS_NOTFLAT64KDS | CPU_STATUS_NOTFLAT64KES;
             op_loadseg(segs[2], &cpu_state.seg_fs);
             do_seg_v86_init(&cpu_state.seg_fs);
             op_loadseg(segs[3], &cpu_state.seg_gs);
@@ -2170,7 +2176,7 @@ pmodeiret(int is32)
             ESP = newsp;
             op_loadseg(newss, &cpu_state.seg_ss);
             do_seg_v86_init(&cpu_state.seg_ss);
-            cpu_cur_status |= CPU_STATUS_NOTFLATSS;
+            cpu_cur_status |= CPU_STATUS_NOTFLATSS | CPU_STATUS_NOTFLAT64KSS;
             use32 = 0;
             cpu_cur_status &= ~CPU_STATUS_USE32;
             cpu_state.flags = (tempflags & 0xffd5) | 2;
@@ -2520,18 +2526,21 @@ task_load_seg(x86seg *s, uint16_t sel, const uint16_t *sd, uint32_t addr)
             cpu_cur_status &= ~CPU_STATUS_NOTFLATDS;
         else
             cpu_cur_status |= CPU_STATUS_NOTFLATDS;
+        cpu_seg_flat64k(s, CPU_STATUS_NOTFLAT64KDS);
     }
     if (s == &cpu_state.seg_es) {
         if ((s->base == 0) && (s->limit_low == 0) && (s->limit_high == 0xffffffff))
             cpu_cur_status &= ~CPU_STATUS_NOTFLATES;
         else
             cpu_cur_status |= CPU_STATUS_NOTFLATES;
+        cpu_seg_flat64k(s, CPU_STATUS_NOTFLAT64KES);
     }
     if (s == &cpu_state.seg_ss) {
         if ((s->base == 0) && (s->limit_low == 0) && (s->limit_high == 0xffffffff))
             cpu_cur_status &= ~CPU_STATUS_NOTFLATSS;
         else
             cpu_cur_status |= CPU_STATUS_NOTFLATSS;
+        cpu_seg_flat64k(s, CPU_STATUS_NOTFLAT64KSS);
     }
 }
 
@@ -3009,12 +3018,14 @@ cyrix_load_seg_descriptor(uint32_t addr, x86seg *seg)
                 cpu_cur_status &= ~CPU_STATUS_NOTFLATDS;
             else
                 cpu_cur_status |= CPU_STATUS_NOTFLATDS;
+            cpu_seg_flat64k(seg, CPU_STATUS_NOTFLAT64KDS);
         }
         if (seg == &cpu_state.seg_es) {
             if (seg->base == 0 && seg->limit_low == 0 && seg->limit_high == 0xffffffff)
                 cpu_cur_status &= ~CPU_STATUS_NOTFLATES;
             else
                 cpu_cur_status |= CPU_STATUS_NOTFLATES;
+            cpu_seg_flat64k(seg, CPU_STATUS_NOTFLAT64KES);
         }
 
         if (seg == &cpu_state.seg_cs)
@@ -3025,6 +3036,7 @@ cyrix_load_seg_descriptor(uint32_t addr, x86seg *seg)
                 cpu_cur_status &= ~CPU_STATUS_NOTFLATSS;
             else
                 cpu_cur_status |= CPU_STATUS_NOTFLATSS;
+            cpu_seg_flat64k(seg, CPU_STATUS_NOTFLAT64KSS);
             set_stack32((segdat[3] & 0x40) ? 1 : 0);
         }
     }

@@ -931,6 +931,11 @@ exec386_dynarec_dyn(void)
         cpu_cur_status &= ~CPU_STATUS_NOTFLATES;
     else
         cpu_cur_status |= CPU_STATUS_NOTFLATES;
+    cpu_seg_flat64k(&cpu_state.seg_es, CPU_STATUS_NOTFLAT64KES);
+    /* DS's and SS's flat-but-64K bits are kept as they load; taken again
+       here from what they hold, as ES's are, for any load that left them. */
+    cpu_seg_flat64k(&cpu_state.seg_ds, CPU_STATUS_NOTFLAT64KDS);
+    cpu_seg_flat64k(&cpu_state.seg_ss, CPU_STATUS_NOTFLAT64KSS);
 
     if (!cpu_state.abrt)
     {

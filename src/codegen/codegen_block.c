@@ -32,6 +32,11 @@ uint8_t *block_write_data = NULL;
 
 int      codegen_flat_ds;
 int      codegen_flat_ss;
+/* The data segments flat but for their first 64 KB as the block starts
+   (CPU_STATUS_NOTFLAT64K*): their accesses test the lower bound only. */
+int      codegen_flat64k_ds;
+int      codegen_flat64k_ss;
+int      codegen_flat64k_es;
 int      mmx_ebx_ecx_loaded;
 int      codegen_flags_changed = 0;
 int      codegen_fpu_entered   = 0;
@@ -1981,6 +1986,9 @@ codegen_block_start_recompile(codeblock_t *block)
     codegen_flat_ds = !(cpu_cur_status & CPU_STATUS_NOTFLATDS);
     codegen_flat_ss = !(cpu_cur_status & CPU_STATUS_NOTFLATSS);
     codegen_flat_es = !(cpu_cur_status & CPU_STATUS_NOTFLATES);
+    codegen_flat64k_ds = !(cpu_cur_status & CPU_STATUS_NOTFLAT64KDS);
+    codegen_flat64k_ss = !(cpu_cur_status & CPU_STATUS_NOTFLAT64KSS);
+    codegen_flat64k_es = !(cpu_cur_status & CPU_STATUS_NOTFLAT64KES);
 
     if (block->flags & CODEBLOCK_BYTE_MASK) {
         block->dirty_mask  = &page->byte_dirty_mask[(block->phys >> PAGE_BYTE_MASK_SHIFT) & PAGE_BYTE_MASK_OFFSET_MASK];
