@@ -339,15 +339,66 @@ codegen_CALL_INSTRUCTION_FUNC_ORDERED(codeblock_t *block, uop_t *uop)
 }
 
 
-/* The jumping path of a compare that leaves the block (the IR waits with
-   the stores a flush would make, CODEGEN_BACKEND_SLOW_EXITS): skip is the
-   jump over it, already emitted; here they are made, then the jump to p. */
-static void
-codegen_slow_exit(codeblock_t *block, uint32_t *skip, void *p)
+/* A block's cold code: the slow paths of its memory accesses and the stores
+   and jumps of its compares that leave for an exception, in chunks of its
+   own (on the block's chain, so they go with it), out of the way of the
+   code that runs, which then falls straight through each access instead of
+   jumping over what it seldom needs. */
+static uint8_t *cold_data; /* where the cold code goes on, NULL before the block has any */
+static int      cold_pos;
+static uint8_t *hot_data;
+static int      hot_pos;
+
+void
+codegen_backend_cold_reset(void)
 {
+    cold_data = NULL;
+}
+
+static void
+cold_begin(codeblock_t *block)
+{
+    hot_data = block_write_data;
+    hot_pos  = block_pos;
+    if (cold_data == NULL) {
+        struct mem_block_t *mb = codegen_allocator_allocate(block->head_mem_block, get_block_nr(block));
+
+        cold_data = codeblock_allocator_get_ptr(mb);
+        cold_pos  = 0;
+    }
+    block_write_data = cold_data;
+    block_pos        = cold_pos;
+}
+
+static void
+cold_end(void)
+{
+    cold_data        = block_write_data;
+    cold_pos         = block_pos;
+    block_write_data = hot_data;
+    block_pos        = hot_pos;
+}
+
+static void
+rel32_to(uint32_t *at, const uint8_t *target)
+{
+    *at = (uintptr_t) target - ((uintptr_t) at + 4);
+}
+
+/* The jumping path of a compare that leaves the block (the IR waits with
+   the stores a flush would make, CODEGEN_BACKEND_SLOW_EXITS), in the cold
+   code: the compare's jumps (taken, taken_2) go there, to those stores and
+   then to p. */
+static void
+codegen_slow_exit(codeblock_t *block, uint32_t *taken, uint32_t *taken_2, void *p)
+{
+    cold_begin(block);
+    rel32_to(taken, &block_write_data[block_pos]);
+    if (taken_2)
+        rel32_to(taken_2, &block_write_data[block_pos]);
     codegen_reg_emit_slow(block);
     host_x86_JMP(block, p);
-    *skip = (uintptr_t) &block_write_data[block_pos] - ((uintptr_t) skip + 4);
+    cold_end();
 }
 
 static int
@@ -364,7 +415,7 @@ codegen_CMP_IMM_JZ(codeblock_t *block, uop_t *uop)
         fatal("CMP_IMM_JZ %02x\n", uop->src_reg_a_real);
 #    endif
     if (codegen_reg_slow_size())
-        codegen_slow_exit(block, host_x86_JNZ_long(block), uop->p);
+        codegen_slow_exit(block, host_x86_JZ_long(block), NULL, uop->p);
     else {
         codegen_reg_emit_slow(block);
         host_x86_JZ(block, uop->p);
@@ -429,7 +480,7 @@ codegen_CMP_JB(codeblock_t *block, uop_t *uop)
         fatal("CMP_JB %02x\n", uop->src_reg_a_real);
 #    endif
     if (codegen_reg_slow_size())
-        codegen_slow_exit(block, host_x86_JNB_long(block), uop->p);
+        codegen_slow_exit(block, host_x86_JB_long(block), NULL, uop->p);
     else {
         codegen_reg_emit_slow(block);
         jump_p  = host_x86_JB_long(block);
@@ -455,7 +506,7 @@ codegen_CMP_JNBE(codeblock_t *block, uop_t *uop)
         fatal("CMP_JNBE %02x\n", uop->src_reg_a_real);
 #    endif
     if (codegen_reg_slow_size())
-        codegen_slow_exit(block, host_x86_JBE_long(block), uop->p);
+        codegen_slow_exit(block, host_x86_JNBE_long(block), NULL, uop->p);
     else {
         codegen_reg_emit_slow(block);
         jump_p  = host_x86_JNBE_long(block);
@@ -474,7 +525,6 @@ codegen_CMP_JNWITHIN(codeblock_t *block, uop_t *uop)
     int       src_size = IREG_GET_SIZE(uop->src_reg_a_real);
     int       lo_size  = IREG_GET_SIZE(uop->src_reg_b_real);
     int       hi_size  = IREG_GET_SIZE(uop->src_reg_c_real);
-    uint32_t *jump_p;
 
     if (REG_IS_L(src_size) && REG_IS_L(lo_size) && REG_IS_L(hi_size)) {
         const int slow = codegen_reg_slow_size();
@@ -493,13 +543,8 @@ codegen_CMP_JNWITHIN(codeblock_t *block, uop_t *uop)
         if (!slow) {
             for (int i = 0; i < 2; i++)
                 *out_p[i] = (uintptr_t) uop->p - ((uintptr_t) out_p[i] + 4);
-        } else {
-            /* Both to the stores, then to p; past them when within */
-            jump_p = host_x86_JMP_long(block);
-            for (int i = 0; i < 2; i++)
-                *out_p[i] = (uintptr_t) &block_write_data[block_pos] - ((uintptr_t) out_p[i] + 4);
-            codegen_slow_exit(block, jump_p, uop->p);
-        }
+        } else /* both to the stores, then to p */
+            codegen_slow_exit(block, out_p[0], out_p[1], uop->p);
     }
 #    ifdef RECOMPILER_DEBUG
     else
@@ -1250,7 +1295,7 @@ codegen_mem_load(codeblock_t *block, int kind, int dest_reg, void *rout)
 {
     uint32_t *misaligned_p = NULL;
     uint32_t *miss_p;
-    uint32_t *done_p;
+    uint8_t  *done;
 
     host_x86_MOV32_REG_REG(block, REG_ECX, REG_ESI);
     host_x86_SHR32_IMM(block, REG_ESI, 12);
@@ -1279,11 +1324,12 @@ codegen_mem_load(codeblock_t *block, int kind, int dest_reg, void *rout)
             host_x86_MOVQ_XREG_BASE_INDEX(block, dest_reg, REG_RSI, REG_RCX);
             break;
     }
-    done_p = host_x86_JMP_long(block);
-
+    /* The slow path in the cold code, and back */
+    done = &block_write_data[block_pos];
+    cold_begin(block);
     if (misaligned_p)
-        jump_here(misaligned_p);
-    jump_here(miss_p);
+        rel32_to(misaligned_p, &block_write_data[block_pos]);
+    rel32_to(miss_p, &block_write_data[block_pos]);
     host_x86_MOV32_REG_REG(block, REG_ESI, REG_ECX);
     codegen_reg_emit_slow(block); /* what the fast path never needs written back; may use ECX */
     host_x86_CALL(block, rout);
@@ -1303,7 +1349,8 @@ codegen_mem_load(codeblock_t *block, int kind, int dest_reg, void *rout)
             host_x86_MOVQ_XREG_XREG(block, dest_reg, REG_XMM_TEMP);
             break;
     }
-    jump_here(done_p);
+    rel32_to(host_x86_JMP_long(block), done);
+    cold_end();
 }
 
 static void
@@ -1311,7 +1358,7 @@ codegen_mem_store(codeblock_t *block, int kind, void *rout)
 {
     uint32_t *misaligned_p = NULL;
     uint32_t *miss_p;
-    uint32_t *done_p;
+    uint8_t  *done;
 
     host_x86_MOV32_REG_REG(block, REG_EDI, REG_ESI);
     host_x86_SHR32_IMM(block, REG_ESI, 12);
@@ -1340,11 +1387,12 @@ codegen_mem_store(codeblock_t *block, int kind, void *rout)
             host_x86_MOVQ_BASE_INDEX_XREG(block, REG_RSI, REG_RDI, REG_XMM_TEMP);
             break;
     }
-    done_p = host_x86_JMP_long(block);
-
+    /* The slow path in the cold code, and back */
+    done = &block_write_data[block_pos];
+    cold_begin(block);
     if (misaligned_p)
-        jump_here(misaligned_p);
-    jump_here(miss_p);
+        rel32_to(misaligned_p, &block_write_data[block_pos]);
+    rel32_to(miss_p, &block_write_data[block_pos]);
     host_x86_MOV32_REG_REG(block, REG_ESI, REG_EDI);
     /* What the fast path never needs written back, the value to store kept
        in EDI meanwhile (a stored FPU register takes ECX for its index). */
@@ -1357,7 +1405,8 @@ codegen_mem_store(codeblock_t *block, int kind, void *rout)
     host_x86_CALL(block, rout);
     host_x86_TEST32_REG(block, REG_ESI, REG_ESI);
     host_x86_JNZ(block, codegen_exit_rout);
-    jump_here(done_p);
+    rel32_to(host_x86_JMP_long(block), done);
+    cold_end();
 }
 
 static int

@@ -584,6 +584,7 @@ codegen_set_rounding_mode(int mode)
 void
 codegen_backend_prologue(codeblock_t *block)
 {
+    codegen_backend_cold_reset(); /* the block's cold code starts when first needed */
     block_pos = BLOCK_START; /*Entry code*/
     host_x86_PUSH(block, REG_RBX);
     host_x86_PUSH(block, REG_RBP);

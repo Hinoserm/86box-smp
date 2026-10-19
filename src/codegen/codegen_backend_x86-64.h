@@ -33,3 +33,5 @@
    MUL_HI. A backend without them leaves those instructions to the
    interpreter. */
 #define CODEGEN_BACKEND_HAS_INT_UOPS
+
+void codegen_backend_cold_reset(void);
