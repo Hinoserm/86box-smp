@@ -22,7 +22,6 @@ extern uint8_t ioapic_irq_path_active;
 extern uint32_t cpu_lapic_irr_live;
 extern int      cpu_lapic_highest_deliverable_irr_index(uint8_t lapic_index, int started);
 extern uint8_t  cpu_lapic_extint_live[];
-extern uint8_t  cpu_apic_int_fast_ok;
 
 #ifdef CPU_AP_CORE
 extern int ioapic_external_interrupt_pending_at(int index);
@@ -67,11 +66,9 @@ x86_external_interrupt_pending(void)
         return pic.int_pending;
 
     /* Nothing from the 8259, nothing in this processor's IRR, no ExtINT:
-       the full answer below would be no. The boot processor still takes
-       the full path once after its APIC is enabled or disabled, so the
-       I/O APIC sees the new enable state (ioapic_external_interrupt_pending). */
-    if (!pic.int_pending && !cpu_lapic_extint_live[cpu_mp_self] &&
-        (cpu_apic_int_fast_ok || cpu_mp_self)) {
+       the full answer below would be no, whatever the APIC's enable
+       state. */
+    if (!pic.int_pending && !cpu_lapic_extint_live[cpu_mp_self]) {
         if (!(cpu_lapic_irr_live & (1u << cpu_mp_self)))
             return 0;
 

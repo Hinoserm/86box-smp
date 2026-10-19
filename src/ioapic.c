@@ -79,8 +79,6 @@ typedef struct ioapic_t {
 
     uint8_t       lowest_priority_next;
     apic_platform_t *apic;
-    ioapic_smiout_handler_t smiout_handler;
-    void                   *smiout_priv;
 
     uint8_t       ioapic_id;
     uint8_t       ioapic_index;
@@ -165,7 +163,7 @@ static int  ioapic_redir_select_targets(ioapic_t *dev, uint32_t low, uint32_t hi
 static int  ioapic_pic_pending_adapter(void *priv);
 static int  ioapic_pic_interrupt_adapter(void *priv);
 static int  ioapic_pin_pending_after_redir_write(const ioapic_t *dev, uint8_t pin);
-static void ioapic_deliver_pin(ioapic_t *dev, uint8_t pin, int asserted, int retry);
+static void ioapic_deliver_pin(ioapic_t *dev, uint8_t pin, int asserted);
 static void ioapic_eoi(ioapic_t *dev, uint8_t vector);
 static void ioapic_update_intin23_smiout(ioapic_t *dev);
 static void ioapic_mp_legacy_irq_route(void *priv, uint8_t irq, uint8_t intin);
@@ -291,12 +289,6 @@ ioapic_pic_interrupt_adapter(void *priv)
    the 8259 exactly as they did before any APIC existed. */
 uint8_t ioapic_irq_path_active = 0;
 
-int
-ioapic_uniprocessor_apic_enabled(void)
-{
-    return (ioapic_global != NULL) && ioapic_global->uniprocessor_apic;
-}
-
 static int
 ioapic_external_interrupt_pending_locked(void)
 {
@@ -304,12 +296,6 @@ ioapic_external_interrupt_pending_locked(void)
 
     if ((dev == NULL) || !dev->uniprocessor_apic)
         return 0;
-
-    /* This enable state has been seen; until it changes the CPU's check
-       may answer "nothing pending" without coming here. The first
-       processor's flag, set only when it is the one asking. */
-    if (apic_bus_asker == 0)
-        cpu_apic_int_fast_ok = 1;
 
     return apic_platform_current_external_pending(dev->apic,
                                                   ioapic_pic_pending_adapter,
@@ -567,7 +553,7 @@ ioapic_retry_pending_pin(ioapic_t *dev, uint8_t pin)
             return;
     }
 
-    ioapic_deliver_pin(dev, pin, 1, 1);
+    ioapic_deliver_pin(dev, pin, 1);
 }
 
 /* One round of the rotating poll: every entry with a message to send (a
@@ -587,7 +573,7 @@ ioapic_retry_pending_transaction(ioapic_t *dev)
         if (ioapic_pin_delivery_pending(dev, pin))
             ioapic_retry_pending_pin(dev, pin);
         else
-            ioapic_deliver_pin(dev, pin, 1, 1);
+            ioapic_deliver_pin(dev, pin, 1);
         if (!ioapic_pin_delivery_pending(dev, pin))
             dev->ioapic_intin_poll_next = (pin + 1) % dev->pins;
     }
@@ -623,8 +609,6 @@ ioapic_set_smiout_asserted(ioapic_t *dev, int asserted)
         return;
 
     dev->ioapic_smiout_asserted = asserted;
-    if (dev->smiout_handler != NULL)
-        dev->smiout_handler(dev->smiout_priv, asserted);
 }
 
 static void
@@ -688,8 +672,12 @@ ioapic_log_masked_irq(ioapic_t *dev, uint8_t irq, uint8_t pin, int level, int se
                ioapic_82093aa_redir_delivery_name(low), low);
 }
 
+/* The entry's message sent. An edge on an entry whose message is still
+   to send is that same message: "a new edge on that Interrupt input pin
+   will not be recognized until" it is accepted (82093AA 3.2.4 bit 12).
+   Sending it again is its retry. */
 static void
-ioapic_deliver_pin(ioapic_t *dev, uint8_t pin, int asserted, int retry)
+ioapic_deliver_pin(ioapic_t *dev, uint8_t pin, int asserted)
 {
     uint32_t *lowp = &dev->ioapic_redir[pin * 2];
     uint32_t  low  = *lowp;
@@ -698,12 +686,6 @@ ioapic_deliver_pin(ioapic_t *dev, uint8_t pin, int asserted, int retry)
     uint32_t  delivery = low & IOAPIC_REDIR_DELIV;
     int       level  = ioapic_82093aa_redir_remote_irr_valid(low);
     lapic_target_info_t targets;
-
-    /* An edge on an entry whose message is still to send is that same
-       message: "a new edge on that Interrupt input pin will not be
-       recognized until" it is accepted (82093AA 3.2.4 bit 12). Trying now
-       is its retry. */
-    (void) retry;
 
     if (ioapic_redir_masked(low)) {
         ioapic_clear_pin_delivery_pending(dev, pin);
@@ -890,7 +872,7 @@ ioapic_raw_intin_device(ioapic_t *dev, uint8_t pin, int physical_high)
     }
 
     if (effective_level || (asserted && !was_asserted))
-        ioapic_deliver_pin(dev, pin, asserted, 0);
+        ioapic_deliver_pin(dev, pin, asserted);
 
     if (pin == dev->smi_pin)
         ioapic_update_intin23_smiout(dev);
@@ -1100,16 +1082,6 @@ ioapic_legacy_irq_enabled(void)
     return (dev != NULL) && dev->uniprocessor_apic;
 }
 
-int
-ioapic_legacy_irq_active(uint16_t mask, int level, int set)
-{
-    if (!ioapic_legacy_irq_enabled())
-        return 0;
-
-    ioapic_legacy_irq(mask, level, set);
-    return 1;
-}
-
 static void
 ioapic_sanitize_loaded_redir(ioapic_t *dev)
 {
@@ -1305,7 +1277,7 @@ ioapic_eoi(ioapic_t *dev, uint8_t vector)
                        dev->ioapic_eoi_log_count[pin]);
 
         if (ioapic_pin_asserted(dev, pin))
-            ioapic_deliver_pin(dev, pin, 1, 0);
+            ioapic_deliver_pin(dev, pin, 1);
     }
 }
 
@@ -1390,7 +1362,6 @@ ioapic_window_write(ioapic_t *dev, uint32_t val)
     if ((index >= 0x10) && (index < (0x10 + (dev->pins * 2)))) {
         uint8_t redir_index = index - 0x10;
         uint8_t pin         = redir_index >> 1;
-        uint32_t old_low    = dev->ioapic_redir[pin * 2];
 
         if (redir_index & 1) {
             val &= IOAPIC_REDIR_HIGH_WRITE_MASK;
@@ -1402,7 +1373,6 @@ ioapic_window_write(ioapic_t *dev, uint32_t val)
         if (!(redir_index & 1)) {
             /* Polarity and trigger mode are the entry's: the wire is seen
                through them afresh. */
-            (void) old_low;
             ioapic_wire_drive(dev, pin);
         }
 
@@ -1417,7 +1387,7 @@ ioapic_window_write(ioapic_t *dev, uint32_t val)
         }
 
         if (ioapic_pin_pending_after_redir_write(dev, pin))
-            ioapic_deliver_pin(dev, pin, 1, 0);
+            ioapic_deliver_pin(dev, pin, 1);
         return;
     }
 
@@ -1810,20 +1780,6 @@ ioapic_apic_path_active(const void *ioapic)
     const ioapic_t *dev = (const ioapic_t *) ioapic;
 
     return (dev != NULL) && dev->uniprocessor_apic;
-}
-
-void
-ioapic_set_smiout_handler(ioapic_smiout_handler_t handler, void *priv)
-{
-    ioapic_t *dev = ioapic_global;
-
-    if (dev == NULL)
-        return;
-
-    dev->smiout_handler = handler;
-    dev->smiout_priv = priv;
-    if (handler != NULL)
-        handler(priv, dev->ioapic_smiout_asserted);
 }
 
 static void
