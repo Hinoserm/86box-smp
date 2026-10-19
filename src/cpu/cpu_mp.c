@@ -113,9 +113,9 @@ typedef struct cpu_mp_ctx_t {
     uint8_t    init_pending; /* an INIT to it while it ran, or in SMM: taken at a slice's end */
 } cpu_mp_ctx_t;
 
-/* Memory read-modify-writes are compare-and-swaps (386_common.h) while
-   another processor could be running beside this one: never while they
-   take turns. */
+/* Memory read-modify-writes are compare-and-swaps, and serializing
+   instructions full fences (386_common.h), while another processor could
+   be running beside this one: never while they take turns. */
 int cpu_mp_atomic = 0;
 
 int cpu_mp_count         = 1;

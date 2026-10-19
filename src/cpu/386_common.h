@@ -1105,6 +1105,15 @@ seteaq(uint64_t v)
     ((uint16_t) (fetchdat >> 8)); \
     cpu_state.pc += 2
 
+/* A serializing instruction (Pentium Vol. 3, 18.8) with another processor
+   running beside this one: the guest's stores before it are seen before
+   its loads after it, as the processor's EWBE# wait makes them. */
+#define CPU_MP_SERIALIZE()                           \
+    do {                                             \
+        if (cpu_mp_atomic)                           \
+            __atomic_thread_fence(__ATOMIC_SEQ_CST); \
+    } while (0)
+
 /* The upper EFLAGS bits, as cpu_state.eflags holds them, that this CPU
    has: RF and VM on every 386, AC from the 486, VIF and VIP with VME, ID
    with CPUID. */

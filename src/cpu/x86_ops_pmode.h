@@ -217,6 +217,7 @@ static int op0F00_common(uint32_t fetchdat, UNUSED(int ea32))
             PREFETCH_RUN(4, 2, rmdat, 0, 0, (cpu_mod == 3) ? 0 : 1, 0, ea32);
             break;
         case 0x10: /*LLDT*/
+            CPU_MP_SERIALIZE(); /* serializing (Pentium Vol. 3, 18.8) */
             if ((CPL || cpu_state.eflags & VM_FLAG) && (cr0 & 1)) {
                 x86gpf(NULL, 0);
                 return 1;
@@ -277,6 +278,7 @@ static int op0F00_common(uint32_t fetchdat, UNUSED(int ea32))
             PREFETCH_RUN(20, 2, rmdat, (cpu_mod == 3) ? 0 : 1, 2, 0, 0, ea32);
             break;
         case 0x18: /*LTR*/
+            CPU_MP_SERIALIZE(); /* serializing (Pentium Vol. 3, 18.8) */
             if ((CPL || cpu_state.eflags & VM_FLAG) && (cr0 & 1)) {
                 x86gpf(NULL, 0);
                 break;
@@ -502,6 +504,7 @@ op0F01_common(UNUSED(uint32_t fetchdat), int is32, int is286, UNUSED(int ea32))
             PREFETCH_RUN(7, 2, rmdat, 0, 0, 1, 1, ea32);
             break;
         case 0x10: /*LGDT*/
+            CPU_MP_SERIALIZE(); /* serializing (Pentium Vol. 3, 18.8) */
             ILLEGAL_ON(cpu_mod == 3);
             if ((CPL || cpu_state.eflags & VM_FLAG) && (cr0 & 1)) {
                 x86gpf(NULL, 0);
@@ -521,6 +524,7 @@ op0F01_common(UNUSED(uint32_t fetchdat), int is32, int is286, UNUSED(int ea32))
             PREFETCH_RUN(11, 2, rmdat, 1, 1, 0, 0, ea32);
             break;
         case 0x18: /*LIDT*/
+            CPU_MP_SERIALIZE(); /* serializing (Pentium Vol. 3, 18.8) */
             ILLEGAL_ON(cpu_mod == 3);
             if ((CPL || cpu_state.eflags & VM_FLAG) && (cr0 & 1)) {
                 x86gpf(NULL, 0);
@@ -584,6 +588,7 @@ op0F01_common(UNUSED(uint32_t fetchdat), int is32, int is286, UNUSED(int ea32))
             break;
 
         case 0x38: /*INVLPG*/
+            CPU_MP_SERIALIZE(); /* serializing (Pentium Vol. 3, 18.8) */
             if (is486 || isibm486) {
                 ILLEGAL_ON(cpu_mod == 3);
                 if ((CPL || cpu_state.eflags & VM_FLAG) && (cr0 & 1)) {

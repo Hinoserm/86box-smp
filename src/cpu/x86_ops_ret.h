@@ -184,6 +184,8 @@ opIRET(UNUSED(uint32_t fetchdat))
     int cycles_old = cycles;
     UN_USED(cycles_old);
 
+    CPU_MP_SERIALIZE();
+
     if ((cr0 & 1) && (cpu_state.eflags & VM_FLAG) && (IOPL != 3)) {
         if (cr4 & CR4_VME) {
             uint16_t new_pc;
@@ -253,6 +255,8 @@ opIRETD(UNUSED(uint32_t fetchdat))
 {
     int cycles_old = cycles;
     UN_USED(cycles_old);
+
+    CPU_MP_SERIALIZE();
 
     if ((cr0 & 1) && (cpu_state.eflags & VM_FLAG) && (IOPL != 3)) {
         x86gpf_expected(NULL, 0);

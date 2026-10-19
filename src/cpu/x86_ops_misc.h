@@ -915,6 +915,7 @@ opCLTS(UNUSED(uint32_t fetchdat))
 static int
 opINVD(UNUSED(uint32_t fetchdat))
 {
+    CPU_MP_SERIALIZE();
     if ((CPL || (cpu_state.eflags & VM_FLAG)) && (cr0 & 1)) {
         x86gpf(NULL, 0);
         return 1;
@@ -926,6 +927,7 @@ opINVD(UNUSED(uint32_t fetchdat))
 static int
 opWBINVD(UNUSED(uint32_t fetchdat))
 {
+    CPU_MP_SERIALIZE();
     if ((CPL || (cpu_state.eflags & VM_FLAG)) && (cr0 & 1)) {
         x86gpf(NULL, 0);
         return 1;
@@ -1119,6 +1121,7 @@ opLOADALL386(UNUSED(uint32_t fetchdat))
 static int
 opCPUID(UNUSED(uint32_t fetchdat))
 {
+    CPU_MP_SERIALIZE();
     if (CPUID) {
         cpu_CPUID();
         CLOCK_CYCLES(9);
@@ -1145,6 +1148,7 @@ opRDMSR(UNUSED(uint32_t fetchdat))
 static int
 opWRMSR(UNUSED(uint32_t fetchdat))
 {
+    CPU_MP_SERIALIZE();
     if (cpu_has_feature(CPU_FEATURE_MSR)) {
         cpu_WRMSR();
         CLOCK_CYCLES(9);
@@ -1158,6 +1162,7 @@ opWRMSR(UNUSED(uint32_t fetchdat))
 static int
 opRSM(UNUSED(uint32_t fetchdat))
 {
+    CPU_MP_SERIALIZE();
     if (in_smm) {
         leave_smm();
         if (smi_latched)

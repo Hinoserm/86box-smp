@@ -26,7 +26,8 @@ extern int cpu_mp_count;
 extern int cpu_mp_cur;
 
 /* Another processor could be running beside this one: memory
-   read-modify-writes are compare-and-swaps (386_common.h). */
+   read-modify-writes are compare-and-swaps, and serializing instructions
+   full fences (386_common.h). */
 extern int cpu_mp_atomic;
 
 /* Which processor the code running now belongs to, as the processor core
