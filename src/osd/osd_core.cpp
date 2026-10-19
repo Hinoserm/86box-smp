@@ -36,6 +36,7 @@ extern "C"
 #include <86box/scsi.h>
 #include <86box/scsi_device.h>
 #include <86box/cdrom.h>
+#include <86box/hdd.h>
 #include <86box/hdc.h>
 #include <86box/rdisk.h>
 #include <86box/mo.h>
@@ -454,7 +455,7 @@ isFirstCdromAvailable(void)
     if ((cdrom[0].bus_type == CDROM_BUS_SONY || cdrom[0].bus_type == CDROM_BUS_MITSUMI || cdrom[0].bus_type == CDROM_BUS_MKE || cdrom[0].bus_type == CDROM_BUS_PHILIPS) && (cdrom_interface_current == 0) &&
         !((cdrom[0].bus_type == CDROM_BUS_MITSUMI) && (machines[machine].init == machine_at_tandy_vis_init)))
         return false;
-    if (cdrom[0].bus_type != 0) {
+    if ((cdrom[0].bus_type != 0) && (cdrom[0].bus_type != CDROM_BUS_DISCONNECTED)) {
         return true;
     }
     return false;
@@ -468,7 +469,7 @@ isFirstRdiskAvailable(void)
         return false;
     if ((rdisk_drives[0].bus_type == RDISK_BUS_SCSI) && !((machine_has_flags(machine, MACHINE_SCSI) > 0) || other_scsi_present) && (scsi_card_current[0] == 0) && (scsi_card_current[1] == 0) && (scsi_card_current[2] == 0) && (scsi_card_current[3] == 0))
         return false;
-    if (rdisk_drives[0].bus_type != 0) {
+    if ((rdisk_drives[0].bus_type != 0) && (rdisk_drives[0].bus_type != HDD_BUS_DISCONNECTED)) {
         return true;
     }
     return false;
@@ -482,7 +483,7 @@ isFirstMoAvailable(void)
         return false;
     if ((mo_drives[0].bus_type == RDISK_BUS_SCSI) && !((machine_has_flags(machine, MACHINE_SCSI) > 0) || other_scsi_present) && (scsi_card_current[0] == 0) && (scsi_card_current[1] == 0) && (scsi_card_current[2] == 0) && (scsi_card_current[3] == 0))
         return false;
-    if (mo_drives[0].bus_type != 0) {
+    if ((mo_drives[0].bus_type != 0) && (mo_drives[0].bus_type != HDD_BUS_DISCONNECTED)) {
         return true;
     }
     return false;

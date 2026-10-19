@@ -374,7 +374,7 @@ hdd_audio_init(void)
 
     /* Find all HDDs with valid audio profiles and initialize their states */
     for (int i = 0; i < HDD_NUM && active_drive_count < HDD_AUDIO_MAX_DRIVES; i++) {
-        if (hdd[i].bus_type != HDD_BUS_DISABLED && hdd[i].audio_profile > 0) {
+        if ((hdd[i].bus_type != HDD_BUS_DISABLED) && (hdd[i].bus_type != HDD_BUS_DISCONNECTED) && (hdd[i].audio_profile > 0)) {
             hdd_audio_log("HDD Audio Init: HDD %d bus_type=%d audio_profile=%d\n", 
                           i, hdd[i].bus_type, hdd[i].audio_profile);
             
@@ -462,7 +462,7 @@ hdd_audio_reset(void)
     
     /* Find all HDDs with valid audio profiles and initialize their states */
     for (int i = 0; i < HDD_NUM && active_drive_count < HDD_AUDIO_MAX_DRIVES; i++) {
-        if (hdd[i].bus_type != HDD_BUS_DISABLED && hdd[i].audio_profile > 0) {
+        if ((hdd[i].bus_type != HDD_BUS_DISABLED) && (hdd[i].bus_type != HDD_BUS_DISCONNECTED) && (hdd[i].audio_profile > 0)) {
             hdd_audio_log("HDD Audio Reset: HDD %d audio_profile=%d\n", i, hdd[i].audio_profile);
             
             hdd_audio_drive_state_t *state = &drive_states[active_drive_count];
