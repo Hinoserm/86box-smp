@@ -80,6 +80,18 @@ typedef struct {
 #endif
 } char_pipe_t;
 
+#ifdef _WIN32
+/* The client has closed its end. A server also sees this from a client it
+   never saw, one that opened the pipe and dropped it between two polls:
+   the instance then refuses every later client until it is disconnected
+   and listens again. */
+static int
+char_pipe_client_gone(DWORD err)
+{
+    return (err == ERROR_BROKEN_PIPE) || (err == ERROR_NO_DATA);
+}
+#endif
+
 static void
 char_pipe_disconnect(char_pipe_t *dev, int fds)
 {
@@ -352,10 +364,11 @@ retry:
         BOOL result = PeekNamedPipe(dev->fd, NULL, len, NULL, &ret, NULL);
         if (result && (ret > 0))
             result = ReadFile(dev->fd, buf, MIN(len, ret), &ret, NULL);
+        DWORD err = result ? 0 : GetLastError();
         if (result && !dev->connected) {
             dev->connected = 1;
-        } else if (!result && (!dev->server || dev->connected)) {
-            char_pipe_log(dev->log, "ReadFile failed (%08X)\n", GetLastError());
+        } else if (!result && (!dev->server || dev->connected || char_pipe_client_gone(err))) {
+            char_pipe_log(dev->log, "ReadFile failed (%08X)\n", err);
             dev->connected = 0;
             char_pipe_disconnect(dev, 1);
             /* A server listening again keeps its instance: creating one over
@@ -395,11 +408,12 @@ char_pipe_write(uint8_t *buf, size_t len, void *priv)
         char_pipe_connect(dev, 0);
 retry:
     if (CHAR_FD_VALID(dev->fd)) {
-        BOOL result = WriteFile(dev->fd, buf, len, &ret, NULL);
+        BOOL  result = WriteFile(dev->fd, buf, len, &ret, NULL);
+        DWORD err    = result ? 0 : GetLastError();
         if (result && !dev->connected) {
             dev->connected = 1;
-        } else if (!result && (!dev->server || dev->connected)) {
-            char_pipe_log(dev->log, "WriteFile failed (%08X)\n", GetLastError());
+        } else if (!result && (!dev->server || dev->connected || char_pipe_client_gone(err))) {
+            char_pipe_log(dev->log, "WriteFile failed (%08X)\n", err);
             dev->connected = 0;
             char_pipe_disconnect(dev, 2);
             if (!dev->block_connect && !connect)
