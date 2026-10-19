@@ -254,6 +254,19 @@ static const device_config_t d823_config[] = {
             { .files_no = 0 }
         }
     },
+    /* The processors' local APICs and the ESC's I/O APIC, as on the 54TDP:
+       turning this off leaves the 8259 alone, and one processor. */
+    {
+        .name           = "disable_apic",
+        .description    = "Disable APIC",
+        .type           = CONFIG_BINARY,
+        .default_string = NULL,
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
+        .bios           = { { 0 } }
+    },
     { .name = "", .description = "", .type = CONFIG_END }
     // clang-format on
 };
@@ -322,6 +335,33 @@ machine_at_d823_init(const machine_t *model)
     device_add(&esc_device);
     device_add_params(&fdc37c6xx_device, (void *) FDC37C665);
     device_add(machine_get_ide_device(machine));
+
+    /* The D823 has two Pentium sockets (MACHINE_DUAL_CPU), and the ESC
+       supplies the I/O APIC. Each processor fitted needs its local APIC for
+       the BIOS to start it with INIT and STARTUP; without the APIC, or with
+       a processor that does not pair (cpu_mp_pairable), one runs. */
+    {
+        static const ioapic_legacy_irq_routing_t esc_irq_routing = {
+            .irq_to_intin = IOAPIC_LEGACY_IRQ_ROUTE_ESC
+        };
+        uintptr_t topo = IOAPIC_TOPOLOGY_UP_APIC_DEFAULT;
+        void     *ioapic;
+
+        if ((cpu_count >= 2) && !machine_get_config_int("disable_apic") && cpu_mp_pairable(cpu_f, cpu_s)) {
+            cpu_mp_configure(2);
+            topo |= IOAPIC_TOPOLOGY_LAPIC_SLOTS(2) | IOAPIC_TOPOLOGY_SMP;
+        } else {
+            if (cpu_count >= 2)
+                pclog("D823: %i processors configured, one runs: %s\n", cpu_count,
+                      machine_get_config_int("disable_apic") ? "the APIC is disabled" :
+                                                               "this processor does not pair");
+            topo |= IOAPIC_TOPOLOGY_LAPIC_SLOTS(1);
+        }
+
+        ioapic = device_add_params(&ioapic_esc_device, (void *) topo);
+        ioapic_set_legacy_irq_routing(ioapic, &esc_irq_routing);
+        esc_set_ioapic(ioapic);
+    }
 
     /* What the firmware writes into the ESC's identifier registers anyway,
        so that anything reading the slots before it has run sees the board. */

@@ -16799,7 +16799,7 @@ const machine_t machines[] = {
             .max_multi   = 2.0
         },
         .bus_flags = MACHINE_PCIE | MACHINE_BUS_PS2,
-        .flags     = MACHINE_IDE_DUAL | MACHINE_APM | MACHINE_UART_PRI | MACHINE_UART_SEC | MACHINE_LPT_PRI,
+        .flags     = MACHINE_IDE_DUAL | MACHINE_APM | MACHINE_DUAL_CPU | MACHINE_UART_PRI | MACHINE_UART_SEC | MACHINE_LPT_PRI,
         .ram       = {
             .min  = 8192,
             .max  = 262144,
