@@ -14,8 +14,9 @@
  *          first processor -- does their device work for them: port I/O
  *          and any memory that is not plain RAM are handed to it and
  *          carried out between two of the first processor's blocks, so
- *          device code only ever runs there. Plain RAM each core reaches
- *          itself.
+ *          device code only ever runs there; writes to device memory are
+ *          posted ahead, as a PCI bridge posts them. Plain RAM each core
+ *          reaches itself.
  *
  *          TIME. The machine's clock is the first core's tsc; each other
  *          core keeps its own. None may be more than the bound W (the SMP
@@ -125,6 +126,19 @@ typedef struct cpu_thread_req_t {
     int            discarded; /* dropped: a RESET is on its way */
 } cpu_thread_req_t;
 
+/* A device-memory write posted ahead (cpu_thread_post_write). */
+typedef struct cpu_thread_posted_t {
+    int            kind;
+    mem_mapping_t *map;
+    uint32_t       addr;
+    uint32_t       val;
+    uint32_t       map_gen;
+} cpu_thread_posted_t;
+
+/* How many writes a processor may have posted and not yet applied: one
+   that finds the ring full is handed over and waited for. */
+#define CPU_THREAD_POSTED 256
+
 /* One of the other processors: its core, its thread, and everything the
    machine's thread and its own share about it. */
 typedef struct cpu_ap_t {
@@ -143,6 +157,17 @@ typedef struct cpu_ap_t {
     int                   hold_parked; /* the hold asked for the park */
     int                   hold_quiet;  /* the hold found it asleep idle and did not wake it */
     cpu_thread_req_t      req;
+
+    /* Its device-memory writes, posted ahead as a PCI bridge posts a
+       processor's memory writes (cpu_thread_post_write): a ring its thread
+       fills and the machine's thread empties in order, before anything
+       else the processor asks for (cpu_thread_drain). The cycles the
+       devices charge for them are owed to it, and paid at its next post
+       or request. */
+    cpu_thread_posted_t posted[CPU_THREAD_POSTED];
+    uint32_t            posted_head;
+    uint32_t            posted_tail;
+    int32_t             posted_charge;
 
     /* Something for it to look at: bumped by whoever posts to it; its
        thread leaves its blocks when the count moves. */
@@ -455,8 +480,78 @@ cpu_thread_serve(int index)
     st(&r->state, REQ_DONE);
 }
 
-/* Serve whatever the others have asked for; answers whether anything
-   was. */
+/* Applies the device-memory writes processor `index` has posted, in
+   order and as its own accesses, as cpu_thread_serve does one: before
+   anything else it asks for, between the machine's blocks and in its
+   waits, and when it parks for the machine's leave -- not while it is held
+   (a map rebuilt under a device's write, inside device code): a write
+   still posted then is looked up again under the new map, as a request
+   is. */
+static int cpu_thread_draining; /* the machine's thread is inside cpu_thread_drain */
+
+static int
+cpu_thread_drain(int index)
+{
+    cpu_ap_t *ap   = &cpu_aps[index];
+    uint32_t  tail = ap->posted_tail;
+    uint32_t  head = __atomic_load_n(&ap->posted_head, __ATOMIC_ACQUIRE);
+    int       was;
+    int32_t   cyc;
+    void (*fill_r)(uint32_t);
+    void (*fill_w)(uint32_t);
+
+    /* A device one of them reaches may itself go through a port or the
+       memory map, which drains: the ring is already being emptied here. */
+    if ((tail == head) || cpu_thread_draining)
+        return 0;
+    cpu_thread_draining = 1;
+
+    was                    = cpu_mp_cur;
+    fill_r                 = mem_fill_read_running;
+    fill_w                 = mem_fill_write_running;
+    cyc                    = cycles;
+    cpu_mp_cur             = index;
+    mem_fill_read_running  = ap->core->fill_read;
+    mem_fill_write_running = ap->core->fill_write;
+
+    for (; tail != head; tail++) {
+        const cpu_thread_posted_t *p   = &ap->posted[tail % CPU_THREAD_POSTED];
+        mem_mapping_t             *map = p->map;
+
+        /* Posted before a RESET of the processor: cut off with it. */
+        if (cpu_mp_ap_hard_reset_outstanding(index))
+            continue;
+        /* The map rebuilt since: looked up again, as a request is; nothing
+           there takes the write. */
+        if (p->map_gen != __atomic_load_n(&mem_mapping_gen, __ATOMIC_SEQ_CST))
+            map = mem_mapping_at(index, 1, p->addr);
+        if (map == NULL)
+            continue;
+        if (p->kind == FWD_MAP_WB) {
+            if (map->write_b)
+                map->write_b(p->addr, (uint8_t) p->val, map->priv);
+        } else if (p->kind == FWD_MAP_WW) {
+            if (map->write_w)
+                map->write_w(p->addr, (uint16_t) p->val, map->priv);
+        } else if (map->write_l)
+            map->write_l(p->addr, p->val, map->priv);
+    }
+
+    cpu_mp_cur             = was;
+    mem_fill_read_running  = fill_r;
+    mem_fill_write_running = fill_w;
+    __atomic_fetch_add(&ap->posted_charge, cyc - cycles, __ATOMIC_RELAXED);
+    cycles = cyc;
+    __atomic_store_n(&ap->posted_tail, tail, __ATOMIC_RELEASE);
+    cpu_thread_draining = 0;
+
+    /* A reset, NMI or SMI one of them raised. */
+    cpu_mp_after_serve();
+    return 1;
+}
+
+/* Serve whatever the others have asked for, their posted writes first;
+   answers whether anything was. */
 static int
 cpu_thread_serve_posted(void)
 {
@@ -465,6 +560,7 @@ cpu_thread_serve_posted(void)
     for (int i = 1; i < CPU_MP_MAX; i++) {
         if (!cpu_aps[i].core)
             continue;
+        served |= cpu_thread_drain(i);
         if (ld(&cpu_aps[i].req.state) == REQ_POSTED) {
             cpu_thread_serve(i);
             served = 1;
@@ -560,12 +656,61 @@ cpu_thread_forward(int kind, mem_mapping_t *map, uint32_t addr, uint32_t val)
     ap->core->tlb_outside(0);
     if (r->charge > 0)
         ap->core->charge(r->charge);
+    {
+        const int32_t owed = __atomic_exchange_n(&ap->posted_charge, 0, __ATOMIC_RELAXED);
+
+        if (owed > 0)
+            ap->core->charge(owed);
+    }
     /* Dropped for a RESET on its way: its run ends here, not after more
        instructions on data that never came. */
     if (r->discarded)
         ap->core->discard();
 
     return r->result;
+}
+
+/* A device-memory write from this processor's thread, posted ahead: the
+   processor goes on at once, and the machine's thread applies it in order
+   before anything else this processor asks for (cpu_thread_drain), as a
+   PCI bridge posts a processor's memory writes. Inside a locked
+   instruction it is handed over and waited for, part of the one bus
+   operation. */
+static void
+cpu_thread_post_write(int kind, mem_mapping_t *map, uint32_t addr, uint32_t val)
+{
+    cpu_ap_t            *ap   = &cpu_aps[cpu_thread_self_index];
+    const uint32_t       head = ap->posted_head;
+    cpu_thread_posted_t *p;
+    int32_t              owed;
+
+    /* Full, too: handed over and waited for, after the ring (the machine's
+       thread empties a processor's ring before serving what it asks for).
+       Waiting on a request is a state every wait of the machine's thread
+       knows -- outside its blocks for a TLB handshake, stopped for a hold
+       -- where a wait for room here would be one it does not, and each
+       would wait for the other. */
+    if (ap->locked_ins || ((head - __atomic_load_n(&ap->posted_tail, __ATOMIC_ACQUIRE)) >= CPU_THREAD_POSTED)) {
+        (void) cpu_thread_forward(kind, map, addr, val);
+        return;
+    }
+
+    p          = &ap->posted[head % CPU_THREAD_POSTED];
+    p->kind    = kind;
+    p->map     = map;
+    p->addr    = addr;
+    p->val     = val;
+    p->map_gen = __atomic_load_n(&mem_mapping_gen, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&ap->posted_head, head + 1, __ATOMIC_RELEASE);
+
+    /* The first in an empty ring tells the machine's thread; the rest
+       follow it there. */
+    if (__atomic_load_n(&ap->posted_tail, __ATOMIC_ACQUIRE) == head)
+        cpu_thread_machine_attn();
+
+    owed = __atomic_exchange_n(&ap->posted_charge, 0, __ATOMIC_RELAXED);
+    if (owed > 0)
+        ap->core->charge(owed);
 }
 
 /* Plain RAM the other cores take themselves (mem_cpu.c MAP_READ_*); what
@@ -821,7 +966,7 @@ cpu_ap_map_write_b(mem_mapping_t *m, uint32_t a, uint8_t v)
     else if (m->write_b == lapic_writeb)
         lapic_writeb_as(cpu_thread_self_index, a, v, m->priv);
     else
-        (void) cpu_thread_forward(FWD_MAP_WB, m, a, v);
+        cpu_thread_post_write(FWD_MAP_WB, m, a, v);
 }
 
 void
@@ -832,7 +977,7 @@ cpu_ap_map_write_w(mem_mapping_t *m, uint32_t a, uint16_t v)
     else if (m->write_w == lapic_writew)
         lapic_writew_as(cpu_thread_self_index, a, v, m->priv);
     else
-        (void) cpu_thread_forward(FWD_MAP_WW, m, a, v);
+        cpu_thread_post_write(FWD_MAP_WW, m, a, v);
 }
 
 void
@@ -867,7 +1012,7 @@ cpu_ap_map_write_l(mem_mapping_t *m, uint32_t a, uint32_t v)
     if (m->write_l == lapic_writel)
         lapic_writel_as(self, a, v, m->priv);
     else
-        (void) cpu_thread_forward(FWD_MAP_WL, m, a, v);
+        cpu_thread_post_write(FWD_MAP_WL, m, a, v);
 }
 
 /* ---- the other processors' threads -------------------------------------- */
@@ -1155,7 +1300,8 @@ cpu_thread_machine_wait(int (*done)(void))
             int posted = 0;
 
             for (int i = 1; i < CPU_MP_MAX; i++)
-                posted |= cpu_aps[i].core && (ld(&cpu_aps[i].req.state) == REQ_POSTED);
+                posted |= cpu_aps[i].core && ((ld(&cpu_aps[i].req.state) == REQ_POSTED) ||
+                                              (__atomic_load_n(&cpu_aps[i].posted_head, __ATOMIC_ACQUIRE) != cpu_aps[i].posted_tail));
             if (!done() && !posted) {
                 (void) thread_wait_event(cpu_thread_notify, 1);
                 thread_reset_event(cpu_thread_notify); /* manual-reset on unix */
@@ -1289,6 +1435,11 @@ cpu_thread_leave(void)
         cpu_thread_poke(i);
     }
     cpu_thread_machine_wait(cpu_thread_all_parked);
+    /* What they posted before they parked lands now, before the machine
+       is touched from here. */
+    for (int i = 1; i < CPU_MP_MAX; i++)
+        if (cpu_aps[i].core)
+            (void) cpu_thread_drain(i);
 }
 
 /* The machine's thread keeps the processors in mask out of the machine's
@@ -1490,6 +1641,9 @@ cpu_thread_start(int index, const cpu_core_ops_t *core)
     ap->locked_ins   = 0;
     ap->locked_split = 0;
     ap->cfg_taken    = 0;
+    ap->posted_head  = 0;
+    ap->posted_tail  = 0;
+    ap->posted_charge = 0;
     memset(&ap->req, 0, sizeof(ap->req));
     if (ap->wake == NULL)
         ap->wake = thread_create_event();
