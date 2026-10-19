@@ -73,6 +73,7 @@
 #include <86box/apic_lock.h>
 #include "cpu_core.h"
 #include "cpu_thread.h"
+#include "x86_idle.h"
 
 /* Spins before a waiting side sleeps on its event. */
 #define CPU_THREAD_SPINS 20000
@@ -222,6 +223,11 @@ static mem_tlb_t *cpu_thread_c0_tlb;
 
 /* Which processor the calling thread runs: 0 on the machine's thread. */
 static __thread int cpu_thread_self_index;
+
+/* Accesses the others have handed to the machine's thread: an idle loop's
+   proof on one of their threads holds only while this stays as it was
+   (x86_idle.c). */
+static uint64_t cpu_thread_forwarded;
 
 /* Sequentially consistent: each side stores "asleep" then looks for
    work, the other stores work then looks for "asleep"; with anything
@@ -436,6 +442,8 @@ cpu_thread_serve(int index)
     /* What the device charged was the asking processor's time. */
     r->charge = cyc - cycles;
     cycles    = cyc;
+
+    __atomic_fetch_add(&cpu_thread_forwarded, 1, __ATOMIC_RELAXED);
 
     /* A reset, NMI or SMI the access raised, done before the processor
        goes on: a reset it caused reaches its mailbox first, and a RESET
@@ -1174,6 +1182,34 @@ cpu_thread_all_parked(void)
     return 1;
 }
 
+/* The clock the machine's processor may run to (x86_idle.c): no further
+   past any running processor's than the bound, the rule the machine's
+   thread keeps them to (cpu_thread_ap_in_bound). */
+int64_t
+cpu_thread_ap_limit(void)
+{
+    int64_t limit = INT64_MAX;
+
+    for (int i = 1; i < CPU_MP_MAX; i++) {
+        const cpu_ap_t *ap = &cpu_aps[i];
+        int64_t         t;
+
+        if (!cpu_ap_live(i) || ld(&ap->exited) || ((ld(&ap->idle) != AP_RUNNING) && !ld(&ap->woken)))
+            continue;
+        t = (int64_t) __atomic_load_n(&ap->time, __ATOMIC_SEQ_CST) + ld64(&cpu_thread_bound);
+        if (t < limit)
+            limit = t;
+    }
+    return limit;
+}
+
+/* Accesses the others have handed to the machine's thread (x86_idle.c). */
+uint64_t
+cpu_thread_forwards(void)
+{
+    return __atomic_load_n(&cpu_thread_forwarded, __ATOMIC_RELAXED);
+}
+
 /* Not so far behind the machine's clock that the machine has to wait. */
 static int
 cpu_thread_ap_in_bound(const cpu_ap_t *ap)
@@ -1428,6 +1464,7 @@ cpu_thread_start(int index, const cpu_core_ops_t *core)
         cpu_thread_c0_tlb         = cpu_core_ops()->tlb_set();
         cpu_thread_bound          = 2;
         cpu_thread_cfg_seq        = 0;
+        cpu_thread_forwarded      = 0;
         memset(&cpu_thread_cfg, 0, sizeof(cpu_thread_cfg));
         if (cpu_thread_notify == NULL)
             cpu_thread_notify = thread_create_event();

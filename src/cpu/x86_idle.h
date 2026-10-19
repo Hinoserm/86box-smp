@@ -31,4 +31,10 @@ extern void x86_idle_in(uint32_t eip);
 /* The processor's clock now, inside a compiled block (386_dynarec.c). */
 extern uint64_t exec386_now_tsc(void);
 
+/* With the other processors on threads of their own (cpu_thread.c): the
+   clock the first may run to, and the accesses they have handed to the
+   machine's thread so far. */
+extern int64_t  cpu_thread_ap_limit(void);
+extern uint64_t cpu_thread_forwards(void);
+
 #endif

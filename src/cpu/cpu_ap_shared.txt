@@ -221,7 +221,8 @@ lapic_index_board_reset
 # What another processor asks of the machine's thread when it runs on a
 # thread of its own (cpu_thread.c): device memory, its port I/O and the
 # machine work it reaches by name (cpu_ap_rename.cmake redirects those),
-# taking an interrupt, and its locked instructions' bus hold.
+# taking an interrupt, its locked instructions' bus hold, and how many
+# accesses were handed over (an idle loop's proof, x86_idle.c).
 cpu_ap_cpu_apic_base_msr_read_current
 cpu_ap_cpu_apic_base_msr_write_current
 cpu_ap_cpu_cpuid_apic_id_ebx
@@ -243,6 +244,7 @@ cpu_ap_outw
 cpu_ap_picint_common
 cpu_ap_smram_backup_all
 cpu_ap_smram_recalc_all
+cpu_thread_forwards
 cpu_thread_locked_begin
 cpu_thread_locked_end
 

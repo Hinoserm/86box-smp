@@ -261,6 +261,19 @@ idle_state_same(const idle_state_t *s)
     return 1;
 }
 
+/* Port accesses this processor has made, and, on another processor's own
+   thread, every access the others' threads handed to the machine's (a
+   proof there only fails for one that was not its own). */
+static uint64_t
+idle_io_count(void)
+{
+#    if defined(CPU_AP_CORE)
+    return __atomic_load_n(&io_port_count[cpu_core_self], __ATOMIC_RELAXED) + cpu_thread_forwards();
+#    else
+    return __atomic_load_n(&io_port_count[cpu_core_self], __ATOMIC_RELAXED);
+#    endif
+}
+
 /* The access's bytes in RAM, or NULL: anything but plain RAM -- the adapter
    and BIOS area, a device mapped in, beyond RAM, across a page -- cannot be
    proven. */
@@ -421,16 +434,29 @@ idle_prove(uint32_t eip, int period, int keep)
     idle_start_tsc   = exec386_now_tsc();
     idle_pass        = cycles;
     idle_mmuflush    = mmuflush;
-    idle_io          = io_port_count;
+    idle_io          = idle_io_count();
     idle_masked_from = idle_masked_now();
     x86_idle_watch   = 1;
 }
 
-/* The cycles passes may be charged now: up to the chain's floor. */
+/* The cycles passes may be charged now: up to the chain's floor, and on
+   the first processor, with the others on threads of their own, no
+   further past any running one's clock than it may be past the first's
+   (cpu_thread.c). */
 static int64_t
 idle_avail(void)
 {
-    return (int64_t) cycles - cpu_state.chain_floor - 1;
+    int64_t avail = (int64_t) cycles - cpu_state.chain_floor - 1;
+
+#    if defined(CPU_MP_SECOND_CORE) && !defined(CPU_AP_CORE)
+    if ((avail > 0) && (cpu_mp_count > 1)) {
+        const int64_t room = cpu_thread_ap_limit() - (int64_t) exec386_now_tsc();
+
+        if (room < avail)
+            avail = room;
+    }
+#    endif
+    return avail;
 }
 
 static void
@@ -449,8 +475,9 @@ static void
 idle_visit(uint32_t eip, int period)
 {
     /* Processors taking turns in one core (cpu_mp.c) would share the proof
-       below, and a pass could end on another processor: one at a time. */
-    if (!inrecomp || (cpu_mp_count > 1))
+       below, and a pass could end on another processor: one at a time.
+       With a core each, each has its proof to itself. */
+    if (!inrecomp || ((cpu_mp_count > 1) && !cpu_mp_copy_mode_active()))
         return;
 
     switch (idle_mode) {
@@ -462,7 +489,7 @@ idle_visit(uint32_t eip, int period)
             /* The port I/O of the passes: none at a PAUSE; at a polling IN
                its own reads, one a pass. */
             if ((eip != idle_site) || (period != idle_period) || idle_bad || (mmuflush != idle_mmuflush) ||
-                ((io_port_count - idle_io) != (uint64_t) ((period > 1) ? period : 0)) ||
+                ((idle_io_count() - idle_io) != (uint64_t) ((period > 1) ? period : 0)) ||
                 !idle_state_same(&idle_snap) || ((idle_pass - cycles) <= 0)) {
                 idle_fail();
                 return;
@@ -559,11 +586,14 @@ x86_pause(uint32_t eip)
 }
 
 /* An IN AL,DX at eip has read a port whose reads only repeat
-   (io_poll_pure). */
+   (io_poll_pure). The first processor's only: the flag is the machine's,
+   and another processor's reads are served on the machine's thread,
+   beside the first's own. */
 void
 x86_idle_in(uint32_t eip)
 {
-    idle_visit(eip, 2);
+    if (cpu_core_self == 0)
+        idle_visit(eip, 2);
 }
 #else
 /* Without chains nothing is ever proven: the hooks in mem.c and the IN
