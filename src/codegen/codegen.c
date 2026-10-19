@@ -921,8 +921,10 @@ generate_call:
     /*An instruction starting on a byte the guest keeps rewriting
       (codegen_hot_byte), read from guest memory as the block runs: the
       block leaves before it when that byte is no longer the one compiled,
-      as at a taken branch, with the cycles so far counted, and the
-      dispatcher interprets what is there. The byte is not marked as code,
+      as at a taken branch, with the cycles so far counted, for the block
+      starting there or the dispatcher interpreting what is there. An
+      unrolled loop cut at a span's end by a RET leaves this way wherever
+      the span it was recorded for ended. The byte is not marked as code,
       so the writes leave the block be. On the block's first page only,
       where the byte can be read through a pointer bound now. As the
       block's first instruction too: the dispatcher runs the block only
@@ -945,7 +947,15 @@ generate_call:
             uop_MOVZX_REG_PTR_8(ir, IREG_temp3, get_ram_ptr(cs + old_pc));
             jump_uop = uop_CMP_IMM_JZ_DEST(ir, IREG_temp3, fastreadb(cs + old_pc));
             uop_MOV_IMM(ir, IREG_pc, old_pc);
-            uop_JMP(ir, codegen_exit_rout);
+#ifdef CODEGEN_CHAIN
+            /* Past the first instruction, the way out may be a link: to
+               the block starting on the byte, compiled for what is there
+               then. Not from the first, whose block that would be. */
+            if (((cs + old_pc) != block->pc) && !cpu_end_block_after_ins)
+                uop_JMP_LINK(ir);
+            else
+#endif
+                uop_JMP(ir, codegen_exit_rout);
             uop_set_jump_dest(ir, jump_uop);
         }
     }
