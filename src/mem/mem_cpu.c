@@ -1128,7 +1128,10 @@ mmutranslatereal(uint32_t addr, int rw)
     else
         r = mmutranslatereal_normal(addr, rw);
 
-    if ((r != 0xffffffffffffffffULL) && ((size_t) (r & ~0xfffULL) >= mem_ram_size())) {
+    /* Outside RAM, or in the hole below 1 MB under RAM's addresses: the
+       VGA window at A0000h, the adapter ROMs and their device registers. */
+    if ((r != 0xffffffffffffffffULL) &&
+        (((size_t) (r & ~0xfffULL) >= mem_ram_size()) || ((r >= 0xa0000ULL) && (r < 0x100000ULL)))) {
         mem_mmio_tlb[e].gen   = mem_mmio_tlb_gen;
         mem_mmio_tlb[e].vpage = vpage;
         mem_mmio_tlb[e].phys  = r & ~0xfffULL;

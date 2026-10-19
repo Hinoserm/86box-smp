@@ -136,6 +136,11 @@ rep_fast_movs(const x86seg *sseg, uint32_t soff, uint32_t doff, uint32_t esz, ui
 
     if (dr[7] & 0xff)
         return 0;
+    /* A destination outside RAM (the VGA window, a frame buffer) fails the
+       write side whatever the source; found before the source is looked at,
+       as a copy to one fails here at every element. */
+    if (writelookup2[(uint32_t) (cpu_state.seg_es.base + doff) >> 12] == (uintptr_t) LOOKUP_INV)
+        return 0;
     if (budget < n)
         n = budget;
     n = rep_fast_side(sseg, soff, esz, down, amask, 0, n, &s);
