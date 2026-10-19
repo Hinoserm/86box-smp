@@ -635,6 +635,33 @@ exec386_chain_floor(void)
 }
 #    endif
 
+/* A REP string instruction's handler (x86_ops_rep_dyn.h) has spent the
+   cycles it runs for before it stops: whether it may go straight on for as
+   many again. Stopping ends the block with the instruction to run again,
+   and the loop would come straight back to it unless something is due, so
+   the test is the one a link between two blocks makes: the signal word,
+   which the service answers as it answers a link; the cycles above the
+   chain's floor, where the next timer is due; and no trap flag. Only in a
+   compiled block, where the floor and the signal word are the running
+   chain's; never without chains. */
+int
+rep_chunk_continue(void)
+{
+#    ifdef CODEGEN_CHAIN
+    if (!inrecomp)
+        return 0;
+    if (__atomic_load_n((uint32_t *) cpu_state.chain_signal, __ATOMIC_SEQ_CST) && codegen_chain_service())
+        return 0;
+    if (cycles <= cpu_state.chain_floor)
+        return 0;
+    if (cpu_state.flags & T_FLAG)
+        return 0;
+    return 1;
+#    else
+    return 0;
+#    endif
+}
+
 #if defined(__linux__) && !defined(__clang__)
 static inline void __attribute__((optimize("O2")))
 #else

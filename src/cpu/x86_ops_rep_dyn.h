@@ -1,3 +1,14 @@
+/* Whether a REP string instruction that has spent the cycles it runs for
+   goes straight on for as many again, rather than end the block to be run
+   again (386_dynarec.c). REP_CHUNK_ON asks it where MOVS, STOS and SCAS
+   stop, while runs are on and the trap flag is clear, and moves cycles_end
+   on when the answer is yes; CMPS asks it after its run and its element. */
+extern int rep_chunk_continue(void);
+
+#define REP_CHUNK_SIZE ((is386 && cpu_use_dynarec) ? 1000 : 100)
+#define REP_CHUNK_ON(cycles_end) \
+    ((rep_host_mode && !trap && rep_chunk_continue()) ? ((cycles_end) = cycles - REP_CHUNK_SIZE, 1) : 0)
+
 #define REP_OPS(size, CNT_REG, SRC_REG, DEST_REG)                                                                 \
     static int opREP_INSB_##size(UNUSED(uint32_t fetchdat))                                                       \
     {                                                                                                             \
@@ -216,7 +227,7 @@
                     }                                                                                             \
                     CNT_REG -= run;                                                                               \
                     cycles -= run * (is486 ? 3 : 4);                                                              \
-                    if (cycles < cycles_end)                                                                      \
+                    if ((cycles < cycles_end) && !REP_CHUNK_ON(cycles_end))                                       \
                         break;                                                                                    \
                     continue;                                                                                     \
                 }                                                                                                 \
@@ -249,7 +260,7 @@
             }                                                                                                     \
             CNT_REG--;                                                                                            \
             cycles -= is486 ? 3 : 4;                                                                              \
-            if (cycles < cycles_end)                                                                              \
+            if ((cycles < cycles_end) && !REP_CHUNK_ON(cycles_end))                                               \
                 break;                                                                                            \
         }                                                                                                         \
         if (CNT_REG > 0) {                                                                                        \
@@ -280,7 +291,7 @@
                     }                                                                                             \
                     CNT_REG -= run;                                                                               \
                     cycles -= run * (is486 ? 3 : 4);                                                              \
-                    if (cycles < cycles_end)                                                                      \
+                    if ((cycles < cycles_end) && !REP_CHUNK_ON(cycles_end))                                       \
                         break;                                                                                    \
                     continue;                                                                                     \
                 }                                                                                                 \
@@ -313,7 +324,7 @@
             }                                                                                                     \
             CNT_REG--;                                                                                            \
             cycles -= is486 ? 3 : 4;                                                                              \
-            if (cycles < cycles_end)                                                                              \
+            if ((cycles < cycles_end) && !REP_CHUNK_ON(cycles_end))                                               \
                 break;                                                                                            \
         }                                                                                                         \
         if (CNT_REG > 0) {                                                                                        \
@@ -344,7 +355,7 @@
                     }                                                                                             \
                     CNT_REG -= run;                                                                               \
                     cycles -= run * (is486 ? 3 : 4);                                                              \
-                    if (cycles < cycles_end)                                                                      \
+                    if ((cycles < cycles_end) && !REP_CHUNK_ON(cycles_end))                                       \
                         break;                                                                                    \
                     continue;                                                                                     \
                 }                                                                                                 \
@@ -377,7 +388,7 @@
             }                                                                                                     \
             CNT_REG--;                                                                                            \
             cycles -= is486 ? 3 : 4;                                                                              \
-            if (cycles < cycles_end)                                                                              \
+            if ((cycles < cycles_end) && !REP_CHUNK_ON(cycles_end))                                               \
                 break;                                                                                            \
         }                                                                                                         \
         if (CNT_REG > 0) {                                                                                        \
@@ -405,7 +416,7 @@
                     }                                                                                             \
                     CNT_REG -= run;                                                                               \
                     cycles -= run * (is486 ? 4 : 5);                                                              \
-                    if (cycles < cycles_end)                                                                      \
+                    if ((cycles < cycles_end) && !REP_CHUNK_ON(cycles_end))                                       \
                         break;                                                                                    \
                     continue;                                                                                     \
                 }                                                                                                 \
@@ -423,7 +434,7 @@
                 DEST_REG++;                                                                                       \
             CNT_REG--;                                                                                            \
             cycles -= is486 ? 4 : 5;                                                                              \
-            if (cycles < cycles_end)                                                                              \
+            if ((cycles < cycles_end) && !REP_CHUNK_ON(cycles_end))                                               \
                 break;                                                                                            \
         }                                                                                                         \
         if (CNT_REG > 0) {                                                                                        \
@@ -450,7 +461,7 @@
                     }                                                                                             \
                     CNT_REG -= run;                                                                               \
                     cycles -= run * (is486 ? 4 : 5);                                                              \
-                    if (cycles < cycles_end)                                                                      \
+                    if ((cycles < cycles_end) && !REP_CHUNK_ON(cycles_end))                                       \
                         break;                                                                                    \
                     continue;                                                                                     \
                 }                                                                                                 \
@@ -468,7 +479,7 @@
                 DEST_REG += 2;                                                                                    \
             CNT_REG--;                                                                                            \
             cycles -= is486 ? 4 : 5;                                                                              \
-            if (cycles < cycles_end)                                                                              \
+            if ((cycles < cycles_end) && !REP_CHUNK_ON(cycles_end))                                               \
                 break;                                                                                            \
         }                                                                                                         \
         if (CNT_REG > 0) {                                                                                        \
@@ -495,7 +506,7 @@
                     }                                                                                             \
                     CNT_REG -= run;                                                                               \
                     cycles -= run * (is486 ? 4 : 5);                                                              \
-                    if (cycles < cycles_end)                                                                      \
+                    if ((cycles < cycles_end) && !REP_CHUNK_ON(cycles_end))                                       \
                         break;                                                                                    \
                     continue;                                                                                     \
                 }                                                                                                 \
@@ -513,7 +524,7 @@
                 DEST_REG += 4;                                                                                    \
             CNT_REG--;                                                                                            \
             cycles -= is486 ? 4 : 5;                                                                              \
-            if (cycles < cycles_end)                                                                              \
+            if ((cycles < cycles_end) && !REP_CHUNK_ON(cycles_end))                                               \
                 break;                                                                                            \
         }                                                                                                         \
         if (CNT_REG > 0) {                                                                                        \
@@ -622,6 +633,7 @@
         addr64 = addr64_2 = 0x00000000;                                                                           \
                                                                                                                   \
         tempz = FV;                                                                                               \
+rep_again:                                                                                                        \
         if ((CNT_REG > 0) && (FV == tempz) && rep_host_mode && !trap) {                                           \
             const int cycles_end = cycles - ((is386 && cpu_use_dynarec) ? 1000 : 100);                            \
             const uint32_t run = rep_fast_cmps(cpu_state.ea_seg, SRC_REG, DEST_REG, 1, REP_AMASK_##size, FV,      \
@@ -673,6 +685,8 @@
             tempz = (ZF_SET()) ? 1 : 0;                                                                           \
         }                                                                                                         \
         if ((CNT_REG > 0) && (FV == tempz)) {                                                                     \
+            if (rep_host_mode && !trap && !cpu_state.abrt && rep_chunk_continue())                                \
+                goto rep_again;                                                                                   \
             CPU_BLOCK_END();                                                                                      \
             cpu_state.pc = cpu_state.oldpc;                                                                       \
             return 1;                                                                                             \
@@ -686,6 +700,7 @@
         addr64a_2[0] = addr64a_2[1] = 0x00000000;                                                                 \
                                                                                                                   \
         tempz = FV;                                                                                               \
+rep_again:                                                                                                        \
         if ((CNT_REG > 0) && (FV == tempz) && rep_host_mode && !trap) {                                           \
             const int cycles_end = cycles - ((is386 && cpu_use_dynarec) ? 1000 : 100);                            \
             const uint32_t run = rep_fast_cmps(cpu_state.ea_seg, SRC_REG, DEST_REG, 2, REP_AMASK_##size, FV,      \
@@ -737,6 +752,8 @@
             tempz = (ZF_SET()) ? 1 : 0;                                                                           \
         }                                                                                                         \
         if ((CNT_REG > 0) && (FV == tempz)) {                                                                     \
+            if (rep_host_mode && !trap && !cpu_state.abrt && rep_chunk_continue())                                \
+                goto rep_again;                                                                                   \
             CPU_BLOCK_END();                                                                                      \
             cpu_state.pc = cpu_state.oldpc;                                                                       \
             return 1;                                                                                             \
@@ -750,6 +767,7 @@
         addr64a_2[0] = addr64a_2[1] = addr64a_2[2] = addr64a_2[3] = 0x00000000;                                   \
                                                                                                                   \
         tempz = FV;                                                                                               \
+rep_again:                                                                                                        \
         if ((CNT_REG > 0) && (FV == tempz) && rep_host_mode && !trap) {                                           \
             const int cycles_end = cycles - ((is386 && cpu_use_dynarec) ? 1000 : 100);                            \
             const uint32_t run = rep_fast_cmps(cpu_state.ea_seg, SRC_REG, DEST_REG, 4, REP_AMASK_##size, FV,      \
@@ -801,6 +819,8 @@
             tempz = (ZF_SET()) ? 1 : 0;                                                                           \
         }                                                                                                         \
         if ((CNT_REG > 0) && (FV == tempz)) {                                                                     \
+            if (rep_host_mode && !trap && !cpu_state.abrt && rep_chunk_continue())                                \
+                goto rep_again;                                                                                   \
             CPU_BLOCK_END();                                                                                      \
             cpu_state.pc = cpu_state.oldpc;                                                                       \
             return 1;                                                                                             \
@@ -844,7 +864,7 @@
                 DEST_REG++;                                                                                       \
             CNT_REG--;                                                                                            \
             cycles -= is486 ? 5 : 8;                                                                              \
-            if (cycles < cycles_end)                                                                              \
+            if ((cycles < cycles_end) && !REP_CHUNK_ON(cycles_end))                                               \
                 break;                                                                                            \
         }                                                                                                         \
         if ((CNT_REG > 0) && (FV == tempz)) {                                                                     \
@@ -890,7 +910,7 @@
                 DEST_REG += 2;                                                                                    \
             CNT_REG--;                                                                                            \
             cycles -= is486 ? 5 : 8;                                                                              \
-            if (cycles < cycles_end)                                                                              \
+            if ((cycles < cycles_end) && !REP_CHUNK_ON(cycles_end))                                               \
                 break;                                                                                            \
         }                                                                                                         \
         if ((CNT_REG > 0) && (FV == tempz)) {                                                                     \
@@ -936,7 +956,7 @@
                 DEST_REG += 4;                                                                                    \
             CNT_REG--;                                                                                            \
             cycles -= is486 ? 5 : 8;                                                                              \
-            if (cycles < cycles_end)                                                                              \
+            if ((cycles < cycles_end) && !REP_CHUNK_ON(cycles_end))                                               \
                 break;                                                                                            \
         }                                                                                                         \
         if ((CNT_REG > 0) && (FV == tempz)) {                                                                     \
