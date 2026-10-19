@@ -135,14 +135,12 @@ pclog
 plat_mmap
 startblit
 
-# Memory: RAM, the map and its views, A20, SMRAM, every processor's TLB set
-# and page table copy (mem.c), and the chain signal word all cores share
-# while they take turns.
+# Memory: RAM, the map and its views, A20, SMRAM, and every processor's TLB
+# set and page table copy (mem.c).
 mem_a20_alt
 mem_a20_key
 mem_a20_recalc
 mem_a20_state
-mem_chain_signal
 mem_exec_view
 mem_in_recompile
 mem_mark_written_byte

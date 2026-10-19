@@ -14,6 +14,7 @@
 
 #include <86box/86box.h> /* cpu_use_dynarec */
 #include <86box/mem.h>
+#include <86box/cpu_mp.h>
 #include <86box/device.h>
 #include <86box/chipset.h> /* ioapic_retry_deliveries */
 
@@ -363,7 +364,7 @@ lapic_writel(uint32_t addr, uint32_t val, void *priv)
        rewritten can only hold back what could be taken (the NT HAL raises
        and lowers it at every IRQL change): nothing to look at. */
     if ((reg != LAPIC_REG_TPR) || ((val & 0xff) < (cpu_lapic_tpr_read_index(lapic->index) & 0xff)))
-        mem_chain_break();
+        cpu_mp_chain_signal(lapic->index);
 
     if (!lapic_mmio_reg_defined(reg)) {
         lapic_mmio_illegal_reg(lapic);

@@ -57,6 +57,10 @@ extern int cpu_count;
 extern int cpu_smp_drift_us;
 
 extern void cpu_mp_note_interaction(void);
+
+/* Processor index leaves any chain of compiled blocks at its next link
+   (mem.h mem_chain_break for the one in place). */
+extern void cpu_mp_chain_signal(int index);
 extern int  cpu_mp_next_slice_us(void);
 
 extern void cpu_mp_configure(int count);

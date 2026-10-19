@@ -470,8 +470,8 @@ typedef struct {
 #endif
 
     /* Chains of linked blocks (the new recompiler): the signal word a link
-       stub tests (mem.h mem_chain_signal), the cycles value a chain runs
-       down to (the next timer), and the cycles it entered with. */
+       stub tests (its core's, mem.h mem_tlb_t.pending), the cycles value a
+       chain runs down to (the next timer), and the cycles it entered with. */
     void *chain_signal;
     int   chain_floor;
     int   chain_cycles;

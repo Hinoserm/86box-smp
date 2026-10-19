@@ -273,7 +273,17 @@ typedef struct mem_tlb_t {
     int        writelookup[256];
     int        readlnext[2];
     int        writelnext;
-    uint8_t    stale; /* MEM_TLB_STALE_* bits another set's flush left */
+    /* The core's signal word, read at every link of a chain of compiled
+       blocks, which leaves the chain while any byte of it is set. */
+    union {
+        struct {
+            uint8_t stale; /* MEM_TLB_STALE_* bits another set's flush left */
+            uint8_t attn;  /* work posted to its core from another thread (cpu_thread.c) */
+            uint8_t brk;   /* the loop has something to look at */
+            uint8_t code;  /* MEM_CHAIN_CODE_*: the loop drops or checks links */
+        };
+        uint32_t pending;
+    };
     /* The tables above hold what the processor may reach at CPL 0-2; these
        (a set of which only the tables are used) what it may reach at CPL 3,
        made when first needed. A privilege change selects the other bank, as
@@ -545,32 +555,28 @@ extern void flushmmucache_invlpg(uint32_t addr);
 extern void mem_tlb_empty(void);
 
 /* Chains of linked blocks (the new recompiler): a link stub leaves for the
-   dispatcher while this word is not 0. brk: something the loop must look
-   at (port I/O, an interrupt pending, NMI, SMI, a sooner timer, a reset);
-   code: every link must go (RELINK), or translations may have changed
-   (REVALIDATE). Set from anywhere; harmless when nothing is chained. */
-typedef union mem_chain_signal_t {
-    struct {
-        uint8_t brk;
-        uint8_t code;
-        uint8_t pad[2];
-    };
-    uint32_t pending;
-} mem_chain_signal_t;
-extern mem_chain_signal_t mem_chain_signal;
+   dispatcher while its core's signal word (mem_tlb_t.pending, of the set
+   in place) is not 0. brk: something the loop must look at (port I/O, an
+   interrupt pending, NMI, SMI, a sooner timer, a reset); code: every link
+   must go (RELINK), or translations may have changed (REVALIDATE).
+   Harmless when nothing is chained. Each core's own: device code breaks
+   the first core's chain, and another processor's through
+   cpu_mp_chain_signal. */
 #define MEM_CHAIN_CODE_RELINK     2
 #define MEM_CHAIN_CODE_REVALIDATE 4
+
+extern mem_tlb_t *mem_tlb_cur;
 
 static __inline void
 mem_chain_break(void)
 {
-    __atomic_store_n(&mem_chain_signal.brk, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&mem_tlb_cur->brk, 1, __ATOMIC_RELAXED);
 }
 
 static __inline void
 mem_chain_code(uint8_t why)
 {
-    __atomic_fetch_or(&mem_chain_signal.code, why, __ATOMIC_SEQ_CST);
+    __atomic_fetch_or(&mem_tlb_cur->code, why, __ATOMIC_SEQ_CST);
 }
 
 /* The page entry a linear page translates to now, for checking linked

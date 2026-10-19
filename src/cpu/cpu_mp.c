@@ -459,6 +459,28 @@ cpu_mp_runnable(int index)
     return 1;
 }
 
+/* Processor index leaves any chain of compiled blocks at its next link:
+   something its loop must look at (an interrupt for it, a port it
+   reached) arrived from outside its core. */
+void
+cpu_mp_chain_signal(int index)
+{
+    mem_tlb_t *t = NULL;
+
+    if (cpu_mp_count < 2) {
+        mem_chain_break();
+        return;
+    }
+    if ((index < 0) || (index >= cpu_mp_count))
+        return;
+    if (cpu_mp_copy_mode)
+        t = cpu_mp_core[index]->tlb_set();
+    else
+        t = cpu_mp_ctx[index].tlb;
+    if (t)
+        __atomic_store_n(&t->brk, 1, __ATOMIC_SEQ_CST);
+}
+
 void
 cpu_mp_note_interaction(void)
 {

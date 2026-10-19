@@ -25,6 +25,7 @@
 #include <86box/86box.h>
 #include <86box/io.h>
 #include <86box/mem.h>
+#include <86box/cpu_mp.h>
 #include <86box/device.h>
 #include <86box/timer.h>
 #include <86box/machine.h>
@@ -362,7 +363,7 @@ inb(uint16_t port)
 #endif
 
     io_port_count++;
-    mem_chain_break(); /* a chain leaves: the access may change what the loop looks at */
+    cpu_mp_chain_signal(cpu_mp_cur); /* a chain leaves: the access may change what the processor's loop looks at */
     io_port      = port;
     io_poll_pure = 0;
 
@@ -438,7 +439,7 @@ outb(uint16_t port, uint8_t val)
 #endif
 
     io_port_count++;
-    mem_chain_break(); /* a chain leaves: the access may change what the loop looks at */
+    cpu_mp_chain_signal(cpu_mp_cur); /* a chain leaves: the access may change what the processor's loop looks at */
     io_port = port;
     io_val  = val;
 
@@ -500,7 +501,7 @@ inw(uint16_t port)
     uint8_t  ret8[2];
 
     io_port_count++;
-    mem_chain_break(); /* a chain leaves: the access may change what the loop looks at */
+    cpu_mp_chain_signal(cpu_mp_cur); /* a chain leaves: the access may change what the processor's loop looks at */
     io_port = port;
 
 #ifdef USE_DEBUG_REGS_486
@@ -583,7 +584,7 @@ outw(uint16_t port, uint16_t val)
 #endif
 
     io_port_count++;
-    mem_chain_break(); /* a chain leaves: the access may change what the loop looks at */
+    cpu_mp_chain_signal(cpu_mp_cur); /* a chain leaves: the access may change what the processor's loop looks at */
     io_port = port;
     io_val  = val;
 
@@ -661,7 +662,7 @@ inl(uint16_t port)
 #endif
 
     io_port_count++;
-    mem_chain_break(); /* a chain leaves: the access may change what the loop looks at */
+    cpu_mp_chain_signal(cpu_mp_cur); /* a chain leaves: the access may change what the processor's loop looks at */
     io_port = port;
 
 #ifdef USE_DEBUG_REGS_486
@@ -775,7 +776,7 @@ outl(uint16_t port, uint32_t val)
 #endif
 
     io_port_count++;
-    mem_chain_break(); /* a chain leaves: the access may change what the loop looks at */
+    cpu_mp_chain_signal(cpu_mp_cur); /* a chain leaves: the access may change what the processor's loop looks at */
     io_port = port;
     io_val  = val;
 

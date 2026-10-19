@@ -92,7 +92,7 @@ page_t   **page_lookup  = page_lookup_0;
 uintptr_t *readlookup2  = readlookup2_0;
 uintptr_t *writelookup2 = writelookup2_0;
 
-static mem_tlb_t *mem_tlb_cur = &mem_tlb_0;
+mem_tlb_t *mem_tlb_cur = &mem_tlb_0;
 
 uint32_t mem_logical_addr;
 

@@ -343,6 +343,7 @@ cpu_core_ops(void)
         .tsc_set        = cpu_core_tsc_set,
         .tlb_flush_now  = mem_tlb_flush_now,
         .tlb_catch_up   = mem_tlb_catch_up,
+        .tlb_set        = mem_tlb_current,
         .fill_read      = mem_cpu_fill_read,
         .fill_write     = mem_cpu_fill_write,
 #ifdef USE_DYNAREC

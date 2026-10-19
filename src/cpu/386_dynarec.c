@@ -595,11 +595,11 @@ static uint64_t exec386_chain_tsc; /* tsc at the chain's entry, with cpu_state.c
 int
 codegen_chain_service(void)
 {
-    const uint32_t p = __atomic_load_n(&mem_chain_signal.pending, __ATOMIC_SEQ_CST);
+    const uint32_t p = __atomic_load_n(&mem_tlb_cur->pending, __ATOMIC_SEQ_CST);
 
-    __atomic_store_n(&mem_chain_signal.brk, 0, __ATOMIC_SEQ_CST); /* cleared before looking */
-    if (p & 0xffffff00)
-        return 1; /* a relink or a translation change: the loop's work */
+    __atomic_store_n(&mem_tlb_cur->brk, 0, __ATOMIC_SEQ_CST); /* cleared before looking */
+    if (p & 0xff00ffff)
+        return 1; /* a relink or a translation change, a flush or work posted: the loop's */
     if (cpu_init || new_ne || smi_line || NMI_TAKEABLE() || cpu_state.abrt || !CACHE_ON() ||
         x86_was_reset || cpu_force_interpreter || cpu_override_dynarec || cpu_flush_pending)
         return 1;
@@ -629,25 +629,14 @@ codegen_chain_service(void)
 static void
 exec386_chain_take_code(void)
 {
-    if (__atomic_load_n(&mem_chain_signal.code, __ATOMIC_RELAXED)) {
-        const uint8_t why = __atomic_exchange_n(&mem_chain_signal.code, 0, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&mem_tlb_cur->code, __ATOMIC_RELAXED)) {
+        const uint8_t why = __atomic_exchange_n(&mem_tlb_cur->code, 0, __ATOMIC_SEQ_CST);
 
         if (why & MEM_CHAIN_CODE_RELINK)
             codegen_links_drop_all(1);
         if (why & MEM_CHAIN_CODE_REVALIDATE)
             codegen_links_revalidate();
     }
-}
-
-/* Processors taking turns in cores of their own (cpu_mp.c): the signal
-   word is one for every core, the links each core's own. A core takes
-   what it asked of its own loop before another runs. A write to another
-   core's code drops that core's links itself (codegen_page_code_hit): the
-   other core is not running. */
-static void
-exec386_chain_leave(void)
-{
-    exec386_chain_take_code();
 }
 
 /* STI compiled in a block: an interrupt already pending breaks the chain,
@@ -896,7 +885,7 @@ exec386_dynarec_dyn(void)
                 codegen_ind_fill(block, target_gen);
         }
         codegen_ind_miss        = 0;
-        cpu_state.chain_signal  = &mem_chain_signal.pending;
+        cpu_state.chain_signal  = &mem_tlb_cur->pending;
         cpu_state.chain_floor   = exec386_chain_floor();
         cpu_state.chain_cycles  = cycles;
         exec386_chain_tsc       = tsc;
@@ -1283,8 +1272,8 @@ exec386_dynarec_blocks(void)
            cleared first, so one set from now on breaks the next chain.
            A relink and a translation change are taken here, before the
            next dispatch. */
-        if (__atomic_load_n(&mem_chain_signal.brk, __ATOMIC_RELAXED))
-            __atomic_store_n(&mem_chain_signal.brk, 0, __ATOMIC_SEQ_CST);
+        if (__atomic_load_n(&mem_tlb_cur->brk, __ATOMIC_RELAXED))
+            __atomic_store_n(&mem_tlb_cur->brk, 0, __ATOMIC_SEQ_CST);
         exec386_chain_take_code();
 #    endif
 
@@ -1442,10 +1431,6 @@ exec386_dynarec(int32_t cycs)
            (cpu_mp.c), the first back in place afterwards: exactly as many
            cycles as the first used, so none runs ahead of the machine's
            clock while it stands still. */
-#    ifdef CODEGEN_CHAIN
-        if (cpu_mp_copy_mode_active() && (ran > 0))
-            exec386_chain_leave();
-#    endif
         for (int i = 1; (i < cpu_mp_count) && (ran > 0); i++) {
             if (!cpu_mp_begin_slice(i, tsc_start))
                 continue;
@@ -1464,14 +1449,8 @@ exec386_dynarec(int32_t cycs)
 int
 cpu_core_run_chunk(int32_t cycs)
 {
-    int ret;
-
     cycles += cycs;
-    ret = exec386_dynarec_blocks();
-#    ifdef CODEGEN_CHAIN
-    exec386_chain_leave();
-#    endif
-    return ret;
+    return exec386_dynarec_blocks();
 }
 #endif
 

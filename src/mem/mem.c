@@ -74,10 +74,6 @@ uint32_t biosaddr;
 int shadowbios = 0;
 int shadowbios_write;
 
-/* Chains of linked blocks: what a link stub tests (mem.h). Set by the
-   hooks in every build; only the new recompiler reads it. */
-mem_chain_signal_t mem_chain_signal;
-
 int mem_a20_key     = 0;
 int mem_a20_alt     = 0;
 int mem_a20_chipset = 0;

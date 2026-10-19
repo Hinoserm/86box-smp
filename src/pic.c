@@ -31,6 +31,7 @@
 #include <86box/pci.h>
 #include <86box/pic.h>
 #include <86box/mem.h>
+#include <86box/cpu_mp.h>
 #include <86box/timer.h>
 #include <86box/pit.h>
 #include <86box/device.h>
@@ -292,6 +293,15 @@ pic_intr_report(void)
     }
 }
 
+/* An 8259 interrupt reaches the boot processor, and any other through its
+   LINT0 as ExtINT: every processor leaves its chain to look. */
+static void
+pic_chain_signal_all(void)
+{
+    for (int i = 0; i < cpu_mp_count; i++)
+        cpu_mp_chain_signal(i);
+}
+
 static __inline void
 pic_update_pending_xt(void)
 {
@@ -304,7 +314,7 @@ pic_update_pending_xt(void)
     if (pic.int_pending && (pic.flags & PIC_IBM5140) && ibm5140_wake)
         ibm5140_wake();
     if (pic.int_pending)
-        mem_chain_break(); /* a chain leaves for the loop to take it */
+        pic_chain_signal_all(); /* a chain leaves for the loop to take it */
     pic_intr_report();
 }
 
@@ -338,7 +348,7 @@ pic_update_pending_at(void)
 
         pic.int_pending = (find_best_interrupt(&pic) != -1);
         if (pic.int_pending)
-            mem_chain_break(); /* a chain leaves for the loop to take it */
+            pic_chain_signal_all(); /* a chain leaves for the loop to take it */
         pic_intr_report();
     }
 }

@@ -1153,7 +1153,7 @@ cpu_lapic_extint_live_set(uint8_t lapic_index, int pending)
     if (lapic_index < IOAPIC_STATE_MAX_LAPICS) {
         cpu_lapic_extint_live[lapic_index] = !!pending;
         if (pending)
-            mem_chain_break(); /* the loop has an interrupt to look at */
+            cpu_mp_chain_signal(lapic_index); /* its loop has an interrupt to look at */
     }
 }
 
@@ -1548,7 +1548,7 @@ cpu_lapic_accept_interrupt_index(uint8_t lapic_index, uint8_t vector, int level)
         cpu_lapic_set_vector(cpu_lapic_tmrs[lapic_index], vector);
     else
         cpu_lapic_clear_vector(cpu_lapic_tmrs[lapic_index], vector);
-    mem_chain_break(); /* the loop has an interrupt to look at */
+    cpu_mp_chain_signal(lapic_index); /* its loop has an interrupt to look at */
 
     return 1;
 }
@@ -2448,7 +2448,7 @@ cpu_apic_base_msr_write_current(uint64_t val)
     cpu_apic_int_fast_ok = 0;
     lapic_apic_base_msr_sync_index(lapic_index, cpu_apic_base_msrs[lapic_index]);
     /* Enabled or disabled: what the processor may take changes. */
-    mem_chain_break();
+    cpu_mp_chain_signal(lapic_index);
 }
 
 void

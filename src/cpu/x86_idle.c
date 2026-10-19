@@ -384,9 +384,9 @@ idle_pending(int masked)
        a timer armed sooner. A polling IN raises the break with its own
        read. When the service says the chain must leave, the break is raised
        again for the chain's next link to see. */
-    if (__atomic_load_n(&mem_chain_signal.pending, __ATOMIC_SEQ_CST) & 0xffffff00)
+    if (__atomic_load_n(&mem_tlb_cur->pending, __ATOMIC_SEQ_CST) & 0xff00ffff)
         return IDLE_PEND_OTHER;
-    if (__atomic_load_n(&mem_chain_signal.brk, __ATOMIC_SEQ_CST) && codegen_chain_service()) {
+    if (__atomic_load_n(&mem_tlb_cur->brk, __ATOMIC_SEQ_CST) && codegen_chain_service()) {
         mem_chain_break();
         return IDLE_PEND_OTHER;
     }

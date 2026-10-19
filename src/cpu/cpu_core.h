@@ -92,6 +92,8 @@ typedef struct cpu_core_ops_t {
        reached it while it did not (mem_cpu.c). */
     void (*tlb_flush_now)(void);
     void (*tlb_catch_up)(void);
+    /* Its TLB set: where its chains' signal word is. */
+    struct mem_tlb_t *(*tlb_set)(void);
 
     /* A RAM handler's TLB fill for this core's last access. */
     void (*fill_read)(uint32_t phys);
