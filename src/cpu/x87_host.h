@@ -270,8 +270,7 @@ x87_host_on(void)
 static __inline bool
 x87_host_for(const struct softfloat_status_t *status)
 {
-    return x87_host_on() && softfloat_isMaskedException(status, softfloat_flag_overflow) &&
-           softfloat_isMaskedException(status, softfloat_flag_underflow);
+    return x87_host_on() && softfloat_isMaskedException(status, softfloat_flag_overflow) && softfloat_isMaskedException(status, softfloat_flag_underflow);
 }
 
 /* Runs kernel k on the frame (which loads the control word and puts the
@@ -364,50 +363,42 @@ x87h_div(extFloat80_t a, extFloat80_t b, struct softfloat_status_t *status)
 static __inline extFloat80_t
 x87h_sqrt(extFloat80_t a, struct softfloat_status_t *status)
 {
-    return x87_host_for(status) ? x87_host_unary(X87_HOST_SQRT, a, status->softfloat_roundingMode, true, status) :
-                                  extF80_sqrt(a, status);
+    return x87_host_for(status) ? x87_host_unary(X87_HOST_SQRT, a, status->softfloat_roundingMode, true, status) : extF80_sqrt(a, status);
 }
 static __inline extFloat80_t
 x87h_round_to_int(extFloat80_t a, uint8_t rounding, bool exact, struct softfloat_status_t *status)
 {
-    return x87_host_for(status) ? x87_host_unary(X87_HOST_RNDINT, a, rounding, exact, status) :
-                                  extF80_roundToInt(a, rounding, exact, status);
+    return x87_host_for(status) ? x87_host_unary(X87_HOST_RNDINT, a, rounding, exact, status) : extF80_roundToInt(a, rounding, exact, status);
 }
 static __inline float32
 x87h_to_f32(extFloat80_t a, struct softfloat_status_t *status)
 {
-    return x87_host_for(status) ? (float32) x87_host_convert(X87_HOST_TO_F32, a, status->softfloat_roundingMode, true, status) :
-                                  extF80_to_f32(a, status);
+    return x87_host_for(status) ? (float32) x87_host_convert(X87_HOST_TO_F32, a, status->softfloat_roundingMode, true, status) : extF80_to_f32(a, status);
 }
 static __inline float64
 x87h_to_f64(extFloat80_t a, struct softfloat_status_t *status)
 {
-    return x87_host_for(status) ? (float64) x87_host_convert(X87_HOST_TO_F64, a, status->softfloat_roundingMode, true, status) :
-                                  extF80_to_f64(a, status);
+    return x87_host_for(status) ? (float64) x87_host_convert(X87_HOST_TO_F64, a, status->softfloat_roundingMode, true, status) : extF80_to_f64(a, status);
 }
 static __inline int32_t
 x87h_to_i32(extFloat80_t a, uint8_t rounding, bool exact, struct softfloat_status_t *status)
 {
-    return x87_host_for(status) ? (int32_t) (uint32_t) x87_host_convert(X87_HOST_TO_I32, a, rounding, exact, status) :
-                                  extF80_to_i32(a, rounding, exact, status);
+    return x87_host_for(status) ? (int32_t) (uint32_t) x87_host_convert(X87_HOST_TO_I32, a, rounding, exact, status) : extF80_to_i32(a, rounding, exact, status);
 }
 static __inline int64_t
 x87h_to_i64(extFloat80_t a, uint8_t rounding, bool exact, struct softfloat_status_t *status)
 {
-    return x87_host_for(status) ? (int64_t) x87_host_convert(X87_HOST_TO_I64, a, rounding, exact, status) :
-                                  extF80_to_i64(a, rounding, exact, status);
+    return x87_host_for(status) ? (int64_t) x87_host_convert(X87_HOST_TO_I64, a, rounding, exact, status) : extF80_to_i64(a, rounding, exact, status);
 }
 static __inline int32_t
 x87h_to_i32_r_minMag(extFloat80_t a, bool exact, struct softfloat_status_t *status)
 {
-    return x87_host_for(status) ? (int32_t) (uint32_t) x87_host_convert(X87_HOST_TO_I32, a, softfloat_round_minMag, exact, status) :
-                                  extF80_to_i32_r_minMag(a, exact, status);
+    return x87_host_for(status) ? (int32_t) (uint32_t) x87_host_convert(X87_HOST_TO_I32, a, softfloat_round_minMag, exact, status) : extF80_to_i32_r_minMag(a, exact, status);
 }
 static __inline int64_t
 x87h_to_i64_r_minMag(extFloat80_t a, bool exact, struct softfloat_status_t *status)
 {
-    return x87_host_for(status) ? (int64_t) x87_host_convert(X87_HOST_TO_I64, a, softfloat_round_minMag, exact, status) :
-                                  extF80_to_i64_r_minMag(a, exact, status);
+    return x87_host_for(status) ? (int64_t) x87_host_convert(X87_HOST_TO_I64, a, softfloat_round_minMag, exact, status) : extF80_to_i64_r_minMag(a, exact, status);
 }
 
 /* A 16-bit integer store: as softfloat does it, through 32 bits, with an
