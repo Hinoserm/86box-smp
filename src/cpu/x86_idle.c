@@ -30,6 +30,22 @@
  *          loop is proven again after a few such visits in a row, or after a
  *          TLB flush.
  *
+ *          What the skip keeps exact is the machine's clock and the
+ *          processor's own events: the passes charged end before the next
+ *          timer is due, and none is charged while the signal word, an
+ *          interrupt, an NMI or an SMI waits. A device acting on a host
+ *          thread of its own (a video card's FIFO or command processor
+ *          raising an interrupt or writing guest memory, a passed-through
+ *          device) is not on that clock. The passes charged take no host
+ *          time, so such an event comes in up to the stretch charged --
+ *          less than one period of exec386_dynarec(), 5 us -- later in
+ *          emulated time, measured from where the processor was when it
+ *          came, than with the passes run. When those events come in
+ *          already depends on the host; the skip moves them later. And a
+ *          proof empties the TLB, so the pages used after it pay their
+ *          refills again: emulated time a run without proofs does not
+ *          spend, once for each proof.
+ *
  *          A loop polling a port whose reads only repeat (the device says so
  *          for the read, io_poll_pure: the VGA's status register 3DAh, a
  *          DOS game's wait for the vertical retrace) is proven and skipped
