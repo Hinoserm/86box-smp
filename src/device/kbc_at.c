@@ -73,6 +73,12 @@
    buffer before a command the host issues right after the enabling one. */
 #define AUX_ENABLE_DELAY   10
 
+/* Polls (100 us) before the transmit time-out for a byte sent to a port with no
+   device on it: nothing clocks the byte out, and the controller only gives up
+   once the device has had its 15 ms to start clocking (IBM PC AT Technical
+   Reference, March 1986, page 1-48, "Sending Data to the Keyboard"). */
+#define TX_TIMEOUT_DELAY   150
+
 enum {
     STATE_RESET = 0,       /* KBC reset state, only accepts command AA. */
     STATE_KBC_DELAY_OUT,   /* KBC is sending one single byte. */
@@ -113,6 +119,7 @@ typedef struct atkbc_t {
     uint8_t irq_state;
     uint8_t do_irq;
     uint8_t aux_delay;
+    uint8_t tx_delay;
     uint8_t is_asic;
     uint8_t is_green;
     uint8_t kblock_switch;
@@ -429,6 +436,7 @@ kbc_delay_to_ob(atkbc_t *dev, uint8_t val, uint8_t channel, uint8_t stat_hi)
     dev->channel = channel;
     dev->stat_hi = stat_hi;
     dev->pending = 1;
+    dev->tx_delay = 0;
     dev->state = STATE_KBC_DELAY_OUT;
 
     if (dev->is_asic && (channel == 0) && (dev->status & STAT_OFULL)) {
@@ -438,6 +446,17 @@ kbc_delay_to_ob(atkbc_t *dev, uint8_t val, uint8_t channel, uint8_t stat_hi)
         dev->state = STATE_MAIN_IBF;
         dev->pending = 0;
     }
+}
+
+/* A byte sent to a port with no device on it is never clocked out, so the
+   transmit time-out (hex FE) only comes once the controller's wait has run out:
+   in status bit 5 alone (Transmit Time-Out) in AT mode, in bit 6 (General
+   Time-Out) in PS/2 mode. */
+static void
+kbc_tx_timeout(atkbc_t *dev, uint8_t channel)
+{
+    kbc_delay_to_ob(dev, 0xfe, channel, (dev->misc_flags & FLAG_PS2) ? 0x40 : 0x20);
+    dev->tx_delay = TX_TIMEOUT_DELAY;
 }
 
 static void kbc_at_process_cmd(void *priv);
@@ -471,7 +490,7 @@ kbc_ibf_process(atkbc_t *dev)
             dev->ports[0]->dat = dev->ib;
             dev->state         = STATE_SEND_KBD;
         } else
-            kbc_delay_to_ob(dev, 0xfe, 1, 0x40);
+            kbc_tx_timeout(dev, 1);
     }
 }
 
@@ -559,6 +578,11 @@ at_main_ibf:
             }
             break;
         case STATE_KBC_DELAY_OUT:
+            /* No device has clocked the byte out: wait out the time-out. */
+            if (dev->tx_delay > 0) {
+                dev->tx_delay--;
+                break;
+            }
             /* Keyboard controller command want to output a single byte. */
             kbc_at_log("ATkbc: %02X coming from channel %i with high status %02X\n", dev->val, dev->channel, dev->stat_hi);
             kbc_send_to_ob(dev, dev->val, dev->channel, dev->stat_hi);
@@ -705,6 +729,11 @@ kbc_at_poll_ps2(atkbc_t *dev)
                 dev->state = STATE_MAIN_AUX;
             break;
         case STATE_KBC_DELAY_OUT:
+            /* No device has clocked the byte out: wait out the time-out. */
+            if (dev->tx_delay > 0) {
+                dev->tx_delay--;
+                break;
+            }
             /* Keyboard controller command want to output a single byte. */
             kbc_at_log("ATkbc: %02X coming from channel %i with high status %02X\n", dev->val, dev->channel, dev->stat_hi);
             kbc_send_to_ob(dev, dev->val, dev->channel, dev->stat_hi);
@@ -2698,7 +2727,7 @@ kbc_at_process_cmd(void *priv)
                         dev->ports[1]->dat = dev->ib;
                         dev->state         = STATE_SEND_AUX;
                     } else
-                        kbc_delay_to_ob(dev, 0xfe, 2, 0x40);
+                        kbc_tx_timeout(dev, 2);
                 }
                 break;
         }
