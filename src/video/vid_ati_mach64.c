@@ -901,6 +901,8 @@ mach64_update_irqs(mach64_t *mach64)
     pending = !!((mach64->crtc_int_cntl & (crtc_en << 1)) || (mach64->bus_cntl & (bus_en << 1)));
 
     if (mach64->pci) {
+        if (!mach64->int_pin)
+            return;
         if (pending)
             pci_set_irq(mach64->pci_slot, PCI_INTA, &mach64->irq_state);
         else
@@ -3248,7 +3250,7 @@ mach64_pci_read(UNUSED(int func), int addr, UNUSED(int len), void *priv)
         case PCI_REG_INT_LINE:
             return mach64->int_line;
         case PCI_REG_INT_PIN:
-            return PCI_INTA;
+            return mach64->int_pin;
         case MACH64_PCI_IOCONFIG:
             if (mach64->type >= MACH64_GTB)
                 return mach64->pci_regs[MACH64_PCI_IOCONFIG];
@@ -3490,6 +3492,9 @@ mach64_common_init(const device_t *info)
     mach64->fifo_mutex = thread_create_mutex();
     mach64->fifo_thread = thread_create(mach64_fifo_thread, mach64);
     mach64->on_board = !!(info->local & MACH64_FLAG_ONBOARD);
+    /* "Power-up default=01h (00h - no default - if interrupt is disabled
+       by strap)" (VT/RAGE RRG 7-3). */
+    mach64->int_pin  = (info->local & MACH64_FLAG_NO_INT) ? 0 : PCI_INTA;
 
     mach64->i2c = i2c_gpio_init("ddc_ati_mach64");
     mach64->i2c_tv = i2c_gpio_init("tv_ati_mach64");

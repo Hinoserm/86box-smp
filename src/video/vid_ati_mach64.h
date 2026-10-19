@@ -106,6 +106,7 @@ enum {
 
 #define MACH64_FLAG_ONBOARD (1 << 19)
 #define MACH64_FLAG_DRAM    (1 << 17) /* the board's memory is DRAM (256Kx16), not VRAM */
+#define MACH64_FLAG_NO_INT  (1 << 18) /* the interrupt strapped off: Interrupt Pin reads 00h */
 #define MACH64_PCI_IOCONFIG 0x40        // "User Defined Configuration"
 
 typedef struct mach64_3d_t     mach64_3d_t;
@@ -137,6 +138,7 @@ typedef struct mach64_t {
     int     isa_irq_raised;
 
     uint8_t on_board;
+    uint8_t int_pin; /* PCI Con 3Dh: 01h, or 00h with the interrupt strapped off */
 
     uint8_t pci_regs[256];
     uint8_t int_line;
