@@ -1245,6 +1245,7 @@ codegen_mem_load(codeblock_t *block, int kind, int dest_reg, void *rout)
         jump_here(misaligned_p);
     jump_here(miss_p);
     host_x86_MOV32_REG_REG(block, REG_ESI, REG_ECX);
+    codegen_reg_emit_slow(block); /* what the fast path never needs written back; may use ECX */
     host_x86_CALL(block, rout);
     host_x86_TEST32_REG(block, REG_ESI, REG_ESI);
     host_x86_JNZ(block, codegen_exit_rout);
@@ -1305,6 +1306,14 @@ codegen_mem_store(codeblock_t *block, int kind, void *rout)
         jump_here(misaligned_p);
     jump_here(miss_p);
     host_x86_MOV32_REG_REG(block, REG_ESI, REG_EDI);
+    /* What the fast path never needs written back, the value to store kept
+       in EDI meanwhile (a stored FPU register takes ECX for its index). */
+    if (codegen_reg_slow_size()) {
+        host_x86_MOV32_REG_REG(block, REG_EDI, REG_ECX);
+        codegen_reg_emit_slow(block);
+        host_x86_MOV32_REG_REG(block, REG_ECX, REG_EDI);
+    } else
+        codegen_reg_emit_slow(block);
     host_x86_CALL(block, rout);
     host_x86_TEST32_REG(block, REG_ESI, REG_ESI);
     host_x86_JNZ(block, codegen_exit_rout);
@@ -1373,6 +1382,7 @@ codegen_MEM_LOAD_REG_EA(codeblock_t *block, uop_t *uop)
     int dest_size = IREG_GET_SIZE(uop->dest_reg_a_real);
 
     host_x86_LEA_REG_REG(block, REG_ESI, seg_reg, addr_reg);
+    codegen_reg_emit_slow(block); /* always called: the stores before it */
     if (REG_IS_W(dest_size))
         host_x86_CALL(block, codegen_mem_load_word_ea);
     else if (REG_IS_L(dest_size))

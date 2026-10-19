@@ -20,6 +20,9 @@
 #define BLOCK_MAX   0x3c0
 
 #define CODEGEN_BACKEND_HAS_MOV_IMM
+/* A memory access's fast path is inline and calls nothing: the stores a
+   flush would make before it go in its slow path (codegen_reg.c). */
+#define CODEGEN_BACKEND_SLOW_STORES
 /* The integer uops of the SETcc, BSWAP, BSF/BSR, CMPXCHG and multiply
    handlers: CMP_SET, TEST_SET, BSF, BSR, BSWAP, IMUL, IMUL_HI, IMUL_OV and
    MUL_HI. A backend without them leaves those instructions to the
