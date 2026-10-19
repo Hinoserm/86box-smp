@@ -1108,8 +1108,13 @@ codegen_reg_flush_slow(UNUSED(ir_data_t *ir), codeblock_t *block)
         for (int c = 0; c < reg_set->nr_regs; c++) {
             const int valid = !ir_reg_is_invalid(reg_set->regs[c]);
 
-            if ((reg_set->reg_list[c].flags & HOST_REG_FLAG_VOLATILE) ||
-                (valid && !k && (IREG_GET_REG(reg_set->regs[c].reg) == IREG_cycles))) {
+#    ifdef CODEGEN_BACKEND_SLOW_KEEPS_FP
+            const int volatile_reg = (reg_set->reg_list[c].flags & HOST_REG_FLAG_VOLATILE) && !k;
+#    else
+            const int volatile_reg = reg_set->reg_list[c].flags & HOST_REG_FLAG_VOLATILE;
+#    endif
+
+            if (volatile_reg || (valid && !k && (IREG_GET_REG(reg_set->regs[c].reg) == IREG_cycles))) {
                 if (valid && reg_set->dirty[c])
                     codegen_reg_writeback(reg_set, block, c, 0);
                 reg_set->regs[c]  = invalid_ir_reg;

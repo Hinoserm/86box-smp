@@ -92,6 +92,26 @@ host_reg_def_t codegen_host_fp_reg_list[CODEGEN_HOST_FP_REGS] = {
     { REG_XMM5, HOST_REG_FLAG_VOLATILE}
 };
 
+/*A memory routine's call into C keeps the recompiler's FP registers
+  (XMM1-XMM7, CODEGEN_BACKEND_SLOW_KEEPS_FP): their low quadwords, the
+  doubles and MMX values the IR keeps there, saved on the stack around it,
+  so a memory access need not write back and drop the x87 stack held in
+  them, though System V's convention (and Windows' for XMM1-XMM5) lets a
+  call change them.*/
+#    define ROUTINE_FP_SAVE (7 * 8)
+static void
+routine_save_fp(codeblock_t *block, int offset)
+{
+    for (int c = 1; c <= 7; c++)
+        host_x86_MOVQ_BASE_OFFSET_XREG(block, REG_RSP, offset + (c - 1) * 8, REG_XMM0 + c);
+}
+static void
+routine_restore_fp(codeblock_t *block, int offset)
+{
+    for (int c = 1; c <= 7; c++)
+        host_x86_MOVQ_XREG_BASE_OFFSET(block, REG_XMM0 + c, REG_RSP, offset + (c - 1) * 8);
+}
+
 /*ea_rule: take the direct load whenever the address is at most 0xffc into
   its page, aligned or not, as the interpreter's eal_r path does; readmemwl
   and readmemll charge timing_misaligned only on the slow path.*/
@@ -161,12 +181,16 @@ build_load_routine(codeblock_t *block, int size, int is_float, int ea_rule)
     host_x86_PUSH(block, REG_RAX);
     host_x86_PUSH(block, REG_RDX);
 #    if _WIN64
-    host_x86_SUB64_REG_IMM(block, REG_RSP, 0x28);
+    /* The callee's 32 bytes, then the FP registers kept */
+    host_x86_SUB64_REG_IMM(block, REG_RSP, 0x28 + ROUTINE_FP_SAVE + 8);
+    routine_save_fp(block, 0x28);
     // host_x86_MOV32_REG_REG(block, REG_ECX, uop->imm_data);
 #    else
     /* Align RSP to 16: entry RSP%16=8 (after CALL from JIT block), two PUSHes
-       leave it at 8; subtract 8 more to satisfy the SysV ABI before calling C. */
-    host_x86_SUB64_REG_IMM(block, REG_RSP, 0x8);
+       leave it at 8; subtract 8 more to satisfy the SysV ABI before calling C,
+       and room for the FP registers kept, a multiple of 16. */
+    host_x86_SUB64_REG_IMM(block, REG_RSP, 0x8 + ROUTINE_FP_SAVE + 8);
+    routine_save_fp(block, 0);
     host_x86_MOV32_REG_REG(block, REG_EDI, REG_ECX);
 #    endif
     if (size == 1 && !is_float) {
@@ -187,9 +211,11 @@ build_load_routine(codeblock_t *block, int size, int is_float, int ea_rule)
         host_x86_MOVQ_XREG_REG(block, REG_XMM_TEMP, REG_RAX);
     }
 #    if _WIN64
-    host_x86_ADD64_REG_IMM(block, REG_RSP, 0x28);
+    routine_restore_fp(block, 0x28);
+    host_x86_ADD64_REG_IMM(block, REG_RSP, 0x28 + ROUTINE_FP_SAVE + 8);
 #    else
-    host_x86_ADD64_REG_IMM(block, REG_RSP, 0x8);
+    routine_restore_fp(block, 0);
+    host_x86_ADD64_REG_IMM(block, REG_RSP, 0x8 + ROUTINE_FP_SAVE + 8);
 #    endif
     host_x86_POP(block, REG_RDX);
     host_x86_POP(block, REG_RAX);
@@ -257,7 +283,8 @@ build_store_routine(codeblock_t *block, int size, int is_float)
     host_x86_PUSH(block, REG_RAX);
     host_x86_PUSH(block, REG_RDX);
 #    if _WIN64
-    host_x86_SUB64_REG_IMM(block, REG_RSP, 0x28);
+    host_x86_SUB64_REG_IMM(block, REG_RSP, 0x28 + ROUTINE_FP_SAVE + 8);
+    routine_save_fp(block, 0x28);
     if (size == 4 && is_float)
         host_x86_MOVD_REG_XREG(block, REG_EDX, REG_XMM_TEMP); // data
     else if (size == 8)
@@ -266,7 +293,8 @@ build_store_routine(codeblock_t *block, int size, int is_float)
         host_x86_MOV32_REG_REG(block, REG_EDX, REG_ECX); // data
     host_x86_MOV32_REG_REG(block, REG_ECX, REG_EDI);     // address
 #    else
-    host_x86_SUB64_REG_IMM(block, REG_RSP, 0x8);
+    host_x86_SUB64_REG_IMM(block, REG_RSP, 0x8 + ROUTINE_FP_SAVE + 8);
+    routine_save_fp(block, 0);
     // host_x86_MOV32_REG_REG(block, REG_EDI, REG_ECX);  //address
     if (size == 4 && is_float)
         host_x86_MOVD_REG_XREG(block, REG_ESI, REG_XMM_TEMP); // data
@@ -284,9 +312,11 @@ build_store_routine(codeblock_t *block, int size, int is_float)
     else if (size == 8)
         host_x86_CALL(block, (void *) writememql);
 #    if _WIN64
-    host_x86_ADD64_REG_IMM(block, REG_RSP, 0x28);
+    routine_restore_fp(block, 0x28);
+    host_x86_ADD64_REG_IMM(block, REG_RSP, 0x28 + ROUTINE_FP_SAVE + 8);
 #    else
-    host_x86_ADD64_REG_IMM(block, REG_RSP, 0x8);
+    routine_restore_fp(block, 0);
+    host_x86_ADD64_REG_IMM(block, REG_RSP, 0x8 + ROUTINE_FP_SAVE + 8);
 #    endif
     host_x86_POP(block, REG_RDX);
     host_x86_POP(block, REG_RAX);
@@ -301,7 +331,7 @@ build_store_routine(codeblock_t *block, int size, int is_float)
 static void *
 routine_start(codeblock_t *block)
 {
-    codegen_alloc(block, 0x80);
+    codegen_alloc(block, 0x140);
     return &block_write_data[block_pos];
 }
 
