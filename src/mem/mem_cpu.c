@@ -1588,10 +1588,10 @@ write_mem_w(uint32_t addr, uint16_t val)
 
 /* An idle loop's pass being proven (x86_idle.c): every access the processor
    makes comes through these slow paths, and is logged. */
-#define IDLE_NOTE(addr, size, write, val)                               \
-    do {                                                                \
-        if (x86_idle_watch)                                             \
-            x86_idle_note((addr), (size), (write), (uint64_t) (val));   \
+#define IDLE_NOTE(addr, size, write, val)                             \
+    do {                                                              \
+        if (x86_idle_watch)                                           \
+            x86_idle_note((addr), (size), (write), (uint64_t) (val)); \
     } while (0)
 
 uint8_t

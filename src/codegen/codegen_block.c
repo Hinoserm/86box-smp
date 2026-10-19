@@ -77,9 +77,7 @@ uint64_t codegen_link_unlinked = UINT64_MAX;
 /* The indirect link table (codegen.h). */
 codegen_ind_t codegen_ind_cache[CODEGEN_IND_SIZE];
 _Static_assert(sizeof(codegen_ind_t) == 64, "the indirect stub indexes 64-byte entries");
-_Static_assert((offsetof(codegen_ind_t, gen) == 16) && (offsetof(codegen_ind_t, target) == 24) &&
-                   (offsetof(codegen_ind_t, link_gen) == 32) && (offsetof(codegen_ind_t, group_word) == 40) &&
-                   (offsetof(codegen_ind_t, group_value) == 48),
+_Static_assert((offsetof(codegen_ind_t, gen) == 16) && (offsetof(codegen_ind_t, target) == 24) && (offsetof(codegen_ind_t, link_gen) == 32) && (offsetof(codegen_ind_t, group_word) == 40) && (offsetof(codegen_ind_t, group_value) == 48),
                "the indirect stub reads these fields at fixed offsets");
 
 /* The blocks a link or an indirect entry may reach: set as a link is made
@@ -230,7 +228,7 @@ codegen_lg_reclaim(void)
         __atomic_fetch_add(&codeblock[nr].link_gen, 1, __ATOMIC_SEQ_CST);
         codegen_link_bit_clear(nr);
         codeblock[nr].link_cpl3 = 0; /* no link left */
-        nr = next;
+        nr                      = next;
     }
 }
 
@@ -280,8 +278,7 @@ codegen_lg_find(uint32_t lin, int spans, uint64_t umask, uint64_t pte, uint64_t 
     int32_t   g;
 
     for (g = codegen_lg_hash[h]; g >= 0; g = codegen_lg[g].hnext) {
-        if ((codegen_lg[g].lin == lin) && (codegen_lg[g].spans == spans) && (codegen_lg[g].umask == umask) && (codegen_lg[g].pte == pte) &&
-            (!spans || (codegen_lg[g].pte2 == pte2))) {
+        if ((codegen_lg[g].lin == lin) && (codegen_lg[g].spans == spans) && (codegen_lg[g].umask == umask) && (codegen_lg[g].pte == pte) && (!spans || (codegen_lg[g].pte2 == pte2))) {
             /* Its pages translate as they did (the caller has just walked
                them): the links it held are good again. */
             if (codegen_lg[g].active < 0)
@@ -450,8 +447,7 @@ codegen_link_bit_set(codeblock_t *block, int nr)
     codegen_link_phys_add(block, 1);
     /* Grouped only where its pages translated to its code, as a check
        compares the group's walk with what its blocks were linked under. */
-    if ((block->link_pte & 1) && ((block->link_pte & ~0xfffULL) == (block->phys & ~0xfff)) &&
-        (!codegen_link_spans(block) || ((block->link_pte2 & 1) && ((block->link_pte2 & ~0xfffULL) == (block->phys_2 & ~0xfff)))))
+    if ((block->link_pte & 1) && ((block->link_pte & ~0xfffULL) == (block->phys & ~0xfff)) && (!codegen_link_spans(block) || ((block->link_pte2 & 1) && ((block->link_pte2 & ~0xfffULL) == (block->phys_2 & ~0xfff)))))
         g = codegen_lg_find(lin, codegen_link_spans(block), block->link_cpl3 ? ~0ULL : ~2ULL, block->link_pte, block->link_pte2);
     if (g < 0) {
         block->link_group = CODEGEN_LG_SOLO;
@@ -538,10 +534,7 @@ codegen_links_note(codeblock_t *block, uint64_t gen)
     /* Already in the group its pages translate to now: it stays, and the
        links into the group made before hold (a group left empty would be
        released, and they with it). A held group is good again. */
-    if (linked && (g >= 0) &&
-        (codegen_lg[g].lin == pg) && (codegen_lg[g].spans == codegen_link_spans(block)) &&
-        (codegen_lg[g].umask == (block->link_cpl3 ? ~0ULL : ~2ULL)) && (codegen_lg[g].pte == pte) &&
-        (!codegen_link_spans(block) || (codegen_lg[g].pte2 == pte2))) {
+    if (linked && (g >= 0) && (codegen_lg[g].lin == pg) && (codegen_lg[g].spans == codegen_link_spans(block)) && (codegen_lg[g].umask == (block->link_cpl3 ? ~0ULL : ~2ULL)) && (codegen_lg[g].pte == pte) && (!codegen_link_spans(block) || (codegen_lg[g].pte2 == pte2))) {
         block->link_pte  = pte;
         block->link_pte2 = pte2;
         if (codegen_lg[g].active < 0)
@@ -563,8 +556,7 @@ codegen_links_note(codeblock_t *block, uint64_t gen)
        group. They go, with a new generation, and this link is made under
        that one -- unless something else moved it meanwhile, when it is
        made under the old one and misses. */
-    if (linked && (g == CODEGEN_LG_SOLO) && (block->link_group >= 0) &&
-        (__atomic_fetch_add(&block->link_gen, 1, __ATOMIC_SEQ_CST) == gen))
+    if (linked && (g == CODEGEN_LG_SOLO) && (block->link_group >= 0) && (__atomic_fetch_add(&block->link_gen, 1, __ATOMIC_SEQ_CST) == gen))
         gen++;
     return gen;
 }
@@ -674,8 +666,7 @@ codegen_links_translation_holds(const codeblock_t *block)
 static void
 codegen_lg_check(int32_t g)
 {
-    if (((codegen_reval_translate(codegen_lg[g].lin) & codegen_lg[g].umask) == codegen_lg[g].pte) &&
-        (!codegen_lg[g].spans || ((codegen_reval_translate(codegen_lg[g].lin + 0x1000) & codegen_lg[g].umask) == codegen_lg[g].pte2)))
+    if (((codegen_reval_translate(codegen_lg[g].lin) & codegen_lg[g].umask) == codegen_lg[g].pte) && (!codegen_lg[g].spans || ((codegen_reval_translate(codegen_lg[g].lin + 0x1000) & codegen_lg[g].umask) == codegen_lg[g].pte2)))
         return;
     codegen_lg_hold(g);
 }

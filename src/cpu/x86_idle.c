@@ -98,8 +98,8 @@
 int x86_idle_watch;
 
 #ifdef CODEGEN_CHAIN
-extern int mmuflush;                       /* mem.c */
-extern int codegen_chain_service(void);    /* 386_dynarec.c */
+extern int mmuflush;                    /* mem.c */
+extern int codegen_chain_service(void); /* 386_dynarec.c */
 
 #    define IDLE_LOG_MAX   32     /* accesses a proven pass may make */
 #    define IDLE_PASS_MAX  20000  /* cycles a pass may take */
@@ -217,10 +217,10 @@ idle_state_take(idle_state_t *s)
         s->seg[i].access     = sg[i]->access;
         s->seg[i].ar_high    = sg[i]->ar_high;
     }
-    s->c0    = cr0;
-    s->c3    = cr3;
-    s->c4    = cr4;
-    s->TOP   = cpu_state.TOP;
+    s->c0  = cr0;
+    s->c3  = cr3;
+    s->c4  = cr4;
+    s->TOP = cpu_state.TOP;
     memcpy(s->tag, cpu_state.tag, sizeof(s->tag));
     s->npxs  = cpu_state.npxs;
     s->npxc  = cpu_state.npxc;
@@ -246,27 +246,20 @@ idle_state_same(const idle_state_t *s)
     const x86seg *sg[6] = { &cpu_state.seg_cs, &cpu_state.seg_ds, &cpu_state.seg_es,
                             &cpu_state.seg_ss, &cpu_state.seg_fs, &cpu_state.seg_gs };
 
-    if (memcmp(s->regs, cpu_state.regs, sizeof(s->regs)) || (s->flags != cpu_state.flags) ||
-        (s->eflags != cpu_state.eflags) || (s->flags_op != cpu_state.flags_op) || (s->flags_res != cpu_state.flags_res) ||
-        (s->flags_op1 != cpu_state.flags_op1) || (s->flags_op2 != cpu_state.flags_op2))
+    if (memcmp(s->regs, cpu_state.regs, sizeof(s->regs)) || (s->flags != cpu_state.flags) || (s->eflags != cpu_state.eflags) || (s->flags_op != cpu_state.flags_op) || (s->flags_res != cpu_state.flags_res) || (s->flags_op1 != cpu_state.flags_op1) || (s->flags_op2 != cpu_state.flags_op2))
         return 0;
     for (int i = 0; i < 6; i++) {
-        if ((s->seg[i].base != sg[i]->base) || (s->seg[i].limit_low != sg[i]->limit_low) ||
-            (s->seg[i].limit_high != sg[i]->limit_high) || (s->seg[i].seg != sg[i]->seg) ||
-            (s->seg[i].access != sg[i]->access) || (s->seg[i].ar_high != sg[i]->ar_high))
+        if ((s->seg[i].base != sg[i]->base) || (s->seg[i].limit_low != sg[i]->limit_low) || (s->seg[i].limit_high != sg[i]->limit_high) || (s->seg[i].seg != sg[i]->seg) || (s->seg[i].access != sg[i]->access) || (s->seg[i].ar_high != sg[i]->ar_high))
             return 0;
     }
-    if ((s->c0 != cr0) || (s->c3 != cr3) || (s->c4 != cr4) || (s->TOP != cpu_state.TOP) ||
-        memcmp(s->tag, cpu_state.tag, sizeof(s->tag)) || (s->npxs != cpu_state.npxs) || (s->npxc != cpu_state.npxc) ||
-        (s->ismmx != cpu_state.ismmx) || memcmp(s->st, cpu_state.ST, sizeof(s->st)))
+    if ((s->c0 != cr0) || (s->c3 != cr3) || (s->c4 != cr4) || (s->TOP != cpu_state.TOP) || memcmp(s->tag, cpu_state.tag, sizeof(s->tag)) || (s->npxs != cpu_state.npxs) || (s->npxc != cpu_state.npxc) || (s->ismmx != cpu_state.ismmx) || memcmp(s->st, cpu_state.ST, sizeof(s->st)))
         return 0;
     for (int i = 0; i < 8; i++) {
         if (s->mm[i] != cpu_state.MM[i].q)
             return 0;
     }
     if (fpu_softfloat) {
-        if ((s->sf_cwd != fpu_state.cwd) || (s->sf_swd != fpu_state.swd) || (s->sf_tag != fpu_state.tag) ||
-            (s->sf_tos != fpu_state.tos))
+        if ((s->sf_cwd != fpu_state.cwd) || (s->sf_swd != fpu_state.swd) || (s->sf_tag != fpu_state.tag) || (s->sf_tos != fpu_state.tos))
             return 0;
         for (int i = 0; i < 8; i++) {
             if (memcmp(s->sf_st[i], &fpu_state.st_space[i], 10))
@@ -310,8 +303,7 @@ idle_ram(uint32_t addr, int size, int write)
         return NULL;
     if ((phys + size) > ((uint64_t) mem_size << 10))
         return NULL;
-    if (!mem_addr_is_ram((uint32_t) phys) ||
-        (write_mapping[phys >> MEM_GRANULARITY_BITS] != read_mapping[phys >> MEM_GRANULARITY_BITS]))
+    if (!mem_addr_is_ram((uint32_t) phys) || (write_mapping[phys >> MEM_GRANULARITY_BITS] != read_mapping[phys >> MEM_GRANULARITY_BITS]))
         return NULL;
     return &ram[phys];
 }
@@ -440,10 +432,10 @@ idle_prove(uint32_t eip, int period, int keep)
     /* Every access of the pass through the slow paths: the TLB emptied,
        and kept empty while the watch is on (mem.c). */
     mem_tlb_empty();
-    idle_site        = eip;
-    idle_period      = period;
-    idle_visits      = 0;
-    idle_mode        = IDLE_PROVING;
+    idle_site   = eip;
+    idle_period = period;
+    idle_visits = 0;
+    idle_mode   = IDLE_PROVING;
     idle_state_take(&idle_snap);
     idle_n           = 0;
     idle_bad         = 0;
@@ -507,9 +499,7 @@ idle_visit(uint32_t eip, int period)
             idle_pass = (int64_t) (exec386_now_tsc() - idle_start_tsc);
             /* The port I/O of the passes: none at a PAUSE; at a polling IN
                its own reads, one a pass. */
-            if ((eip != idle_site) || (period != idle_period) || idle_bad || (mmuflush != idle_mmuflush) ||
-                ((idle_io_count() - idle_io) != (uint64_t) ((period > 1) ? period : 0)) ||
-                !idle_state_same(&idle_snap) || (idle_pass <= 0) || (idle_pass > IDLE_PASS_MAX)) {
+            if ((eip != idle_site) || (period != idle_period) || idle_bad || (mmuflush != idle_mmuflush) || ((idle_io_count() - idle_io) != (uint64_t) ((period > 1) ? period : 0)) || !idle_state_same(&idle_snap) || (idle_pass <= 0) || (idle_pass > IDLE_PASS_MAX)) {
                 idle_fail();
                 return;
             }
