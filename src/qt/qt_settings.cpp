@@ -45,6 +45,7 @@ extern "C" {
 #include <86box/lpt.h>
 #include <86box/serial.h>
 #include <86box/midi.h>
+#include <86box/machine.h>
 }
 
 #include <QStandardItemModel>
@@ -699,6 +700,17 @@ Settings::currentScsiCard(int i) const
     return (storageControllers != nullptr) ? storageControllers->scsiCard(i) : scsi_card_current[i];
 }
 
+/* [Board slots] is the slot-based layout's (Cards::saveSlots()), and the
+   classic dialog shows none of it: whether the section still places this
+   machine's cards. */
+static bool
+boardSlotsPlace(int mach)
+{
+    const char *board = config_get_string(const_cast<char *>("Board slots"), const_cast<char *>("machine"), const_cast<char *>(""));
+
+    return (board[0] != '\0') && !strcmp(board, machines[mach].internal_name);
+}
+
 void
 Settings::save(int soft)
 {
@@ -717,6 +729,14 @@ Settings::save(int soft)
     otherPeripherals->save(soft);
     if (slotLayout)
         Cards::saveSlots();
+    else if (auto *section = config_find_section(const_cast<char *>("Board slots"))) {
+        /* Saved from the classic dialog, the machine is what it shows: its
+           cards where 86Box puts them, an EISA card in the slot its own
+           option names (which the slot-based layout keeps the same), and
+           no PCI-PCI bridge put in by hand. */
+        ini_section_clear(section);
+        ini_delete_section_if_empty(config_get_ini(), section);
+    }
 }
 
 void
@@ -756,6 +776,11 @@ Settings::accept()
         if (Cards::slotsChanged())
             changed |= SETTINGS_CHANGED | SETTINGS_REQUIRE_HARD_RESET;
     }
+
+    /* The classic dialog drops [Board slots] (save()): for the machine it
+       placed cards on, that moves them. */
+    if (!slotLayout && boardSlotsPlace(currentMachine()))
+        changed |= SETTINGS_CHANGED | SETTINGS_REQUIRE_HARD_RESET;
 
     /* The options shown inline, written as the Configure dialogs write them. */
     if (DeviceConfigPanel::applyAll(nullptr))
