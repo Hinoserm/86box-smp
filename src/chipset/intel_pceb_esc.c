@@ -112,6 +112,7 @@ typedef struct esc_t {
     uint8_t cram[ESC_CRAM_PAGES * 256];
     uint8_t cram_page;
     uint8_t cram_auto; /* start an empty store when there is none */
+    uint8_t cram_acer; /* the board's BIOS keeps Acer's layout, not AMI's */
     char    cram_file[128];
 
     /* The I/O APIC: a select register and a window onto the identifier,
@@ -676,6 +677,18 @@ esc_cram_generate(esc_t *dev)
     uint8_t  csum = 0;
 
     memset(c, 0, sizeof(dev->cram));
+
+    /* Acer's BIOS (the X3's, V3.0) keeps its store in pages 0-6: page 0
+       from 0Eh on and pages 1-6 whole sum to zero as bytes, 0Eh counting
+       the slot records and 0Fh balancing the sum; 04h is its status, bit
+       7 a bad sum and bit 6 a slot that does not match. Clearing a store
+       it zeroes exactly those bytes and bit 7 (F000:70B8), so nothing at
+       all is its empty store, and the slots read "not configured" until
+       the utility has run. */
+    if (dev->cram_acer) {
+        esc_log("ESC: empty configuration RAM in Acer's layout\n");
+        return;
+    }
 
     /* The layout the board's own firmware writes, which is the only one it
        will accept. Everything it cares about is reached through a base it
@@ -1591,9 +1604,11 @@ esc_close(void *priv)
 }
 
 static void *
-esc_init(UNUSED(const device_t *info))
+esc_init(const device_t *info)
 {
     esc_t *dev = (esc_t *) calloc(1, sizeof(esc_t));
+
+    dev->cram_acer = !!(info->local & ESC_CRAM_ACER);
 
     esc_inst         = dev;
     nmi_mask_changed = esc_nmi_mask_changed;

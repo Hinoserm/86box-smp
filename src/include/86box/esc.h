@@ -29,6 +29,10 @@
 #define ESC_CRAM_ESCD   0x140 /* and the extended data through this */
 #define ESC_CRAM_PAGES  32
 
+/* device_add_params(&esc_device, ...): the board's BIOS keeps Acer's
+   configuration RAM layout, and an empty store is built in it. */
+#define ESC_CRAM_ACER 0x0100
+
 extern const device_t esc_device;  /* 82374SB */
 extern const device_t pceb_device; /* 82375SB */
 
