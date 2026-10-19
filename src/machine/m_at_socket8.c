@@ -226,7 +226,7 @@ machine_at_p6rp4_init(const machine_t *model)
     machine_pci_init();
     machine_pci_register_slots();
 
-    device_add(&i450kx_device); /* 450GX is a superset of the 450KX */
+    device_add(&i450gx_device);
     {
         static const ioapic_legacy_irq_routing_t p6rp4_irq_routing = {
             .irq_to_intin = IOAPIC_LEGACY_IRQ_ROUTE_P6RP4
