@@ -152,6 +152,101 @@ mem_log(const char *fmt, ...)
 #    define mem_log(fmt, ...)
 #endif
 
+/* Every processor's TLB set, so a flush in one reaches the others. */
+mem_tlb_t *mem_tlbs[MEM_TLB_MAX];
+int        mem_tlb_count;
+
+void
+mem_tlb_clear(mem_tlb_t *t)
+{
+    /* Initialize the page lookup table. */
+    memset(t->page_lookup, 0x00, (1 << 20) * sizeof(page_t *));
+
+    /* Initialize the rings. */
+    for (uint16_t c = 0; c < 512; c++) {
+        t->readlookup[c] = 0xffffffff;
+
+        if (c < 256)
+            t->writelookup[c] = 0xffffffff;
+    }
+
+    /* Initialize the tables. */
+    memset(t->readlookup2, 0xff, (2 << 20) * sizeof(uintptr_t));
+    memset(t->writelookup2, 0xff, (1 << 20) * sizeof(uintptr_t));
+
+    t->readlnext[0] = 0;
+    t->readlnext[1] = 0;
+    t->writelnext   = 0;
+    t->stale        = 0;
+}
+
+/* A set joins the ones every flush reaches. */
+void
+mem_tlb_register(mem_tlb_t *t)
+{
+    for (int i = 0; i < mem_tlb_count; i++)
+        if (mem_tlbs[i] == t)
+            return;
+
+    if (mem_tlb_count >= MEM_TLB_MAX)
+        fatal("mem_tlb_register: too many sets\n");
+
+    mem_tlbs[mem_tlb_count++] = t;
+}
+
+/* Another processor's TLB: empty, and flushed along with the others from
+   now on. */
+mem_tlb_t *
+mem_tlb_create(void)
+{
+    mem_tlb_t *t = calloc(1, sizeof(mem_tlb_t));
+
+    if (t == NULL)
+        fatal("mem_tlb_create: out of memory\n");
+    t->page_lookup  = malloc((1 << 20) * sizeof(page_t *));
+    t->readlookup2  = malloc((2 << 20) * sizeof(uintptr_t));
+    t->writelookup2 = malloc((1 << 20) * sizeof(uintptr_t));
+    if ((t->page_lookup == NULL) || (t->readlookup2 == NULL) || (t->writelookup2 == NULL))
+        fatal("mem_tlb_create: out of memory\n");
+    mem_tlb_clear(t);
+
+    mem_tlb_register(t);
+    return t;
+}
+
+void
+mem_tlb_destroy(mem_tlb_t *t)
+{
+    if ((t == NULL) || (t == mem_tlb_default()))
+        return;
+
+    if (t == mem_tlb_current())
+        mem_tlb_select(mem_tlb_default());
+
+    for (int i = 0; i < mem_tlb_count; i++) {
+        if (mem_tlbs[i] == t) {
+            mem_tlbs[i] = mem_tlbs[--mem_tlb_count];
+            break;
+        }
+    }
+
+    free(t->page_lookup);
+    free(t->readlookup2);
+    free(t->writelookup2);
+    free(t);
+}
+
+/* A flush that reaches every set: the one in place is emptied by the
+   caller, the others when they are next in place (mem_tlb_select). */
+void
+mem_tlb_mark_others(const mem_tlb_t *except, uint8_t level)
+{
+    for (int i = 0; i < mem_tlb_count; i++) {
+        if (mem_tlbs[i] != except)
+            mem_tlbs[i]->stale |= level;
+    }
+}
+
 uint8_t
 mem_addr_range_match(uint32_t addr, uint32_t start, uint32_t len)
 {
@@ -1506,6 +1601,8 @@ mem_init(void)
     /* Perform a one-time init. */
     ram = rom = NULL;
     pages     = NULL;
+
+    mem_tlb_register(mem_tlb_default());
 }
 
 static void

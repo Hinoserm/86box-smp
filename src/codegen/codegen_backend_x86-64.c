@@ -105,7 +105,8 @@ build_load_routine(codeblock_t *block, int size, int is_float, int ea_rule)
       Out - ECX = data, ESI = abrt*/
     /*MOV ECX, ESI
       SHR ESI, 12
-      MOV RSI, [readlookup2+ESI*4]
+      MOV RDI, [&readlookup2]
+      MOV RSI, [RDI+ESI*8]
       CMP ESI, -1
       JNZ +
       MOVZX ECX, B[RSI+RCX]
@@ -123,7 +124,10 @@ build_load_routine(codeblock_t *block, int size, int is_float, int ea_rule)
     */
     host_x86_MOV32_REG_REG(block, REG_ECX, REG_ESI);
     host_x86_SHR32_IMM(block, REG_ESI, 12);
-    host_x86_MOV64_REG_IMM(block, REG_RDI, (uint64_t) (uintptr_t) readlookup2);
+    /* The table is the set in place (mem_tlb_select): fetch where it is
+       now, not where it was when this routine was built. */
+    host_x86_MOV64_REG_IMM(block, REG_RDI, (uint64_t) (uintptr_t) &readlookup2);
+    host_x86_MOV64_REG_DEREF(block, REG_RDI, REG_RDI);
     host_x86_MOV64_REG_BASE_INDEX_SHIFT(block, REG_RSI, REG_RDI, REG_RSI, 3);
     if (ea_rule) {
         host_x86_MOV32_REG_REG(block, REG_EDI, REG_ECX);
@@ -204,7 +208,8 @@ build_store_routine(codeblock_t *block, int size, int is_float)
       Corrupts EDI*/
     /*MOV EDI, ESI
       SHR ESI, 12
-      MOV ESI, [writelookup2+ESI*4]
+      MOV R8, [&writelookup2]
+      MOV RSI, [R8+ESI*8]
       CMP ESI, -1
       JNZ +
       MOV [RSI+RDI], ECX
@@ -222,7 +227,8 @@ build_store_routine(codeblock_t *block, int size, int is_float)
     */
     host_x86_MOV32_REG_REG(block, REG_EDI, REG_ESI);
     host_x86_SHR32_IMM(block, REG_ESI, 12);
-    host_x86_MOV64_REG_IMM(block, REG_R8, (uint64_t) (uintptr_t) writelookup2);
+    host_x86_MOV64_REG_IMM(block, REG_R8, (uint64_t) (uintptr_t) &writelookup2);
+    host_x86_MOV64_REG_DEREF(block, REG_R8, REG_R8);
     host_x86_MOV64_REG_BASE_INDEX_SHIFT(block, REG_RSI, REG_R8, REG_RSI, 3);
     if (size != 1) {
         host_x86_TEST32_REG_IMM(block, REG_EDI, size - 1);

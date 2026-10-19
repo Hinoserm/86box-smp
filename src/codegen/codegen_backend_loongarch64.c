@@ -86,7 +86,8 @@ host_reg_def_t codegen_host_fp_reg_list[CODEGEN_HOST_FP_REGS] = {
 
   SRLI.D  T0, A0, 12          ;page
   SLLI.D  T0, T0, 3
-  MOV     T1, readlookup2
+  MOV     T1, &readlookup2
+  LD.D    T1, T1, 0           ;the set in place
   LDX.D   T1, T1, T0          ;entry
   * (size > 1) ANDI T2, A0, size-1 ;BNE -> misaligned/slow
   ADDI.D  T2, T1, 1           ;entry == -1 ?
@@ -114,7 +115,10 @@ build_load_routine(codeblock_t *block, int size, int is_float)
     codegen_alloc(block, 140);
     host_loong64_SHR_D_IMM(block, REG_TEMP, REG_A0, 12);
     host_loong64_SHL_D_IMM(block, REG_TEMP, REG_TEMP, 3);
-    host_loong64_mov_imm(block, REG_TEMP2, (uint64_t) (uintptr_t) readlookup2);
+    /* The table is the set in place (mem_tlb_select): fetch where it is
+       now, not where it was when this routine was built. */
+    host_loong64_mov_imm(block, REG_TEMP2, (uint64_t) (uintptr_t) &readlookup2);
+    host_loong64_LDRX_IMM(block, REG_TEMP2, REG_TEMP2, 0);
     host_loong64_LDRX_REG(block, REG_TEMP2, REG_TEMP2, REG_TEMP);
     if (size != 1) {
         host_loong64_ANDI(block, REG_TEMP3, REG_A0, size - 1);
@@ -176,10 +180,11 @@ build_store_routine(codeblock_t *block, int size, int is_float)
 
     /*In - A0 = address, A1 = data (or V_TEMP for the float forms)
       Out - A1 = abrt*/
-    codegen_alloc(block, 96);
+    codegen_alloc(block, 112);
     host_loong64_SHR_D_IMM(block, REG_TEMP, REG_A0, 12);
     host_loong64_SHL_D_IMM(block, REG_TEMP, REG_TEMP, 3);
-    host_loong64_mov_imm(block, REG_TEMP2, (uint64_t) (uintptr_t) writelookup2);
+    host_loong64_mov_imm(block, REG_TEMP2, (uint64_t) (uintptr_t) &writelookup2);
+    host_loong64_LDRX_IMM(block, REG_TEMP2, REG_TEMP2, 0);
     host_loong64_LDRX_REG(block, REG_TEMP2, REG_TEMP2, REG_TEMP);
     if (size != 1) {
         host_loong64_ANDI(block, REG_TEMP3, REG_A0, size - 1);

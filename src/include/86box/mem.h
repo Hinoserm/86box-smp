@@ -238,6 +238,37 @@ page_in_evict_list(page_t *page)
 void page_remove_from_evict_list(page_t *page);
 void page_add_to_evict_list(page_t *page);
 
+/* One processor's software TLB (mem_cpu.c): the lookup tables, the rings
+   of entries live in them, and whether another set's flush has reached it. */
+#define MEM_TLB_STALE_WRITE 1
+#define MEM_TLB_STALE_ALL   2
+
+typedef struct mem_tlb_t {
+    page_t   **page_lookup;
+    uintptr_t *readlookup2;
+    uintptr_t *writelookup2;
+    int        readlookup[512];
+    int        writelookup[256];
+    int        readlnext[2];
+    int        writelnext;
+    uint8_t    stale; /* MEM_TLB_STALE_* bits another set's flush left */
+} mem_tlb_t;
+
+/* Every processor's set, so a flush in one reaches the others (mem.c). */
+#define MEM_TLB_MAX 8
+extern mem_tlb_t *mem_tlbs[MEM_TLB_MAX];
+extern int        mem_tlb_count;
+
+extern mem_tlb_t *mem_tlb_default(void);
+extern mem_tlb_t *mem_tlb_current(void);
+extern mem_tlb_t *mem_tlb_create(void);
+extern void       mem_tlb_destroy(mem_tlb_t *t);
+extern void       mem_tlb_register(mem_tlb_t *t);
+extern void       mem_tlb_clear(mem_tlb_t *t);
+extern void       mem_tlb_mark_others(const mem_tlb_t *except, uint8_t level);
+extern void       mem_tlb_select(mem_tlb_t *t);
+extern void       mem_tlb_flush_local(int read_too);
+
 extern uint8_t *ram;
 extern uint32_t rammask;
 
@@ -245,10 +276,10 @@ extern uint8_t *rom;
 extern uint32_t biosmask;
 extern uint32_t biosaddr;
 
-extern int        readlookup[512];
+extern int       *readlookup;
 extern uintptr_t  old_rl2;
 extern int        readlnext[2];
-extern int        writelookup[256];
+extern int       *writelookup;
 
 extern int        writelnext;
 extern uint32_t   ram_mapped_addr[64];
@@ -265,10 +296,10 @@ extern uint32_t mem_logical_addr;
 
 extern page_t  *pages;
 
-/* The lookup tables. */
-extern page_t *page_lookup[1048576];
-extern uintptr_t readlookup2[2097152];
-extern uintptr_t writelookup2[1048576];
+/* The lookup tables: the set in place (mem_tlb_select). */
+extern page_t   **page_lookup;
+extern uintptr_t *readlookup2;
+extern uintptr_t *writelookup2;
 
 extern uint64_t get_phys_virt; /* 64 bits: ~0 matches no linear page (mem_get_phys_forget) */
 extern uint32_t get_phys_phys;
@@ -435,10 +466,12 @@ extern void flushmmucache_write(void);
 extern void flushmmucache_pc(void);
 extern void flushmmucache_nopc(void);
 /* The processor's own translation changes: CR0, CR3 and CR4 loads and task
-   switches (_cpu, _nopc_cpu), a privilege change (_cpl) and INVLPG. Linked
-   blocks are checked against the new translations, not dropped. */
+   switches (_cpu, _nopc_cpu, _write_cpu), a privilege change (_cpl) and
+   INVLPG. Linked blocks are checked against the new translations, not
+   dropped, and no other processor's TLB is touched. */
 extern void flushmmucache_cpu(void);
 extern void flushmmucache_nopc_cpu(void);
+extern void flushmmucache_write_cpu(void);
 extern void flushmmucache_cpl(void);
 extern void flushmmucache_invlpg(uint32_t addr);
 /* The TLB emptied and nothing else: no link, no translation changed. */

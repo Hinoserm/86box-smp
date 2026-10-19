@@ -1102,8 +1102,10 @@ opLOADALL386(UNUSED(uint32_t fetchdat))
     loadall386_load_segment(la_addr + 0xc0, &cpu_state.seg_es);
 
     /* CR0 and the debug registers were loaded outright: the processor's
-       lookups go. */
-    flushmmucache();
+       lookups go, and so does every link (breakpoints are checked where
+       chains start). */
+    flushmmucache_cpu();
+    mem_chain_code(MEM_CHAIN_CODE_RELINK);
     oldcpl = CPL;
 
     CLOCK_CYCLES(350);

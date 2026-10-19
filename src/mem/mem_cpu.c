@@ -67,15 +67,31 @@ uint8_t *pccache2;
 int      cpu_fetch_device;
 
 int        readlnext[2];
-int        readlookup[512];
 uintptr_t  old_rl2;
 int        writelnext;
-int        writelookup[256];
 
-/* The lookup tables. */
-page_t *page_lookup[1048576] = { 0 };
-uintptr_t readlookup2[2097152] = { 0 };
-uintptr_t writelookup2[1048576] = { 0 };
+/* The software TLB. Every name below points into the set in place; a
+   machine with more than one processor gives each its own set (a
+   processor's TLB is its own) and selects it with mem_tlb_select(). The
+   first set's storage is static, so a one-processor machine allocates
+   nothing and addresses exactly what it always did. */
+static page_t   *page_lookup_0[1048576];
+static uintptr_t readlookup2_0[2097152];
+static uintptr_t writelookup2_0[1048576];
+
+static mem_tlb_t mem_tlb_0 = {
+    .page_lookup  = page_lookup_0,
+    .readlookup2  = readlookup2_0,
+    .writelookup2 = writelookup2_0
+};
+
+int       *readlookup   = mem_tlb_0.readlookup;
+int       *writelookup  = mem_tlb_0.writelookup;
+page_t   **page_lookup  = page_lookup_0;
+uintptr_t *readlookup2  = readlookup2_0;
+uintptr_t *writelookup2 = writelookup2_0;
+
+static mem_tlb_t *mem_tlb_cur = &mem_tlb_0;
 
 uint32_t mem_logical_addr;
 
@@ -115,24 +131,13 @@ mem_get_phys_forget(void)
     get_phys_virt = ~0ULL;
 }
 
+/* The processor's part of a RESET: its own set emptied, and every other
+   set when it is next in place. */
 void
 resetreadlookup(void)
 {
-    /* Initialize the page lookup table. */
-    memset(page_lookup, 0x00, (1 << 20) * sizeof(page_t *));
-
-    /* Initialize the tables for lower (<= 1024K) RAM. */
-    for (uint16_t c = 0; c < 512; c++) {
-        readlookup[c]  = 0xffffffff;
-
-        if (c < 256)
-            writelookup[c] = 0xffffffff;
-    }
-
-    /* Initialize the tables for high (> 1024K) RAM. */
-    memset(readlookup2, 0xff, (2 << 20) * sizeof(uintptr_t));
-
-    memset(writelookup2, 0xff, (1 << 20) * sizeof(uintptr_t));
+    mem_tlb_clear(mem_tlb_cur);
+    mem_tlb_mark_others(mem_tlb_cur, MEM_TLB_STALE_ALL);
 
     readlnext[0] = 0;
     readlnext[1] = 0;
@@ -144,10 +149,12 @@ resetreadlookup(void)
 }
 
 #if defined(USE_DYNAREC) && defined(CODEGEN_CHAIN)
-#    define LINKS_DROP()      codegen_links_drop_all(0)
-#    define LINKS_REVAL(a, l) codegen_links_revalidate_request(a, l)
+#    define LINKS_DROP()       codegen_links_drop_all(0)
+#    define LINKS_DROP_OWNED() codegen_links_drop_all(1)
+#    define LINKS_REVAL(a, l)  codegen_links_revalidate_request(a, l)
 #else
 #    define LINKS_DROP()
+#    define LINKS_DROP_OWNED()
 #    define LINKS_REVAL(a, l)
 #endif
 
@@ -171,6 +178,84 @@ mem_tlb_empty(void)
 }
 
 static void
+mem_tlb_empty_write(void)
+{
+    for (uint16_t c = 0; c < 256; c++) {
+        if (writelookup[c] != (int) 0xffffffff) {
+            page_lookup[writelookup[c]]  = NULL;
+            writelookup2[writelookup[c]] = LOOKUP_INV;
+            writelookup[c]               = 0xffffffff;
+        }
+    }
+}
+
+/* The set every machine starts with, and the one processor 0 keeps. */
+mem_tlb_t *
+mem_tlb_default(void)
+{
+    return &mem_tlb_0;
+}
+
+/* The set in place. */
+mem_tlb_t *
+mem_tlb_current(void)
+{
+    return mem_tlb_cur;
+}
+
+/* Empty the set in place and nothing else: what a processor's own TLB
+   flush does (and a set catching up on another's). */
+void
+mem_tlb_flush_local(int read_too)
+{
+    if (read_too)
+        mem_tlb_empty();
+    else
+        mem_tlb_empty_write();
+}
+
+/* Put a set in place: from here every lookup, fill and flush is its. A set
+   another set's flush reached since it was last in place flushes now. */
+void
+mem_tlb_select(mem_tlb_t *t)
+{
+    if ((t == NULL) || (t == mem_tlb_cur))
+        return;
+
+    /* Another processor's translations: no link holds. */
+    LINKS_DROP_OWNED();
+
+    mem_tlb_cur->readlnext[0] = readlnext[0];
+    mem_tlb_cur->readlnext[1] = readlnext[1];
+    mem_tlb_cur->writelnext   = writelnext;
+
+    mem_tlb_cur  = t;
+    page_lookup  = t->page_lookup;
+    readlookup2  = t->readlookup2;
+    writelookup2 = t->writelookup2;
+    readlookup   = t->readlookup;
+    writelookup  = t->writelookup;
+    readlnext[0] = t->readlnext[0];
+    readlnext[1] = t->readlnext[1];
+    writelnext   = t->writelnext;
+#ifdef USE_DYNAREC
+    /* Where the ARM64 recompiler's memory routines find the tables. */
+    cpu_state.lookup2_r = readlookup2;
+    cpu_state.lookup2_w = writelookup2;
+#endif
+    mem_get_phys_forget();
+
+    pccache  = 0xffffffff;
+    pccache2 = (uint8_t *) 0xffffffff;
+
+    if (t->stale & MEM_TLB_STALE_ALL)
+        mem_tlb_flush_local(1);
+    else if (t->stale & MEM_TLB_STALE_WRITE)
+        mem_tlb_flush_local(0);
+    t->stale = 0;
+}
+
+static void
 flushmmucache_common(void)
 {
     mem_tlb_empty();
@@ -185,11 +270,13 @@ flushmmucache_common(void)
 }
 
 /* Memory changed under the processor (a mapping, shadow RAM, SMRAM, A20, a
-   reset): every link goes. */
+   reset): every link goes, and every processor's TLB, the others' when
+   they are next in place. */
 void
 flushmmucache(void)
 {
     LINKS_DROP();
+    mem_tlb_mark_others(mem_tlb_cur, MEM_TLB_STALE_ALL);
     flushmmucache_common();
 }
 
@@ -207,13 +294,15 @@ flushmmucache_cpu(void)
 void
 flushmmucache_write(void)
 {
-    for (uint16_t c = 0; c < 256; c++) {
-        if (writelookup[c] != (int) 0xffffffff) {
-            page_lookup[writelookup[c]]  = NULL;
-            writelookup2[writelookup[c]] = LOOKUP_INV;
-            writelookup[c]               = 0xffffffff;
-        }
-    }
+    mem_tlb_mark_others(mem_tlb_cur, MEM_TLB_STALE_WRITE);
+    flushmmucache_write_cpu();
+}
+
+/* The processor's own write entries: a change of CR0.WP. */
+void
+flushmmucache_write_cpu(void)
+{
+    mem_tlb_empty_write();
     mmuflush++;
 }
 
@@ -234,6 +323,7 @@ void
 flushmmucache_nopc(void)
 {
     LINKS_DROP();
+    mem_tlb_mark_others(mem_tlb_cur, MEM_TLB_STALE_ALL);
     mem_tlb_empty();
     mmuflush++;
 }
@@ -301,21 +391,37 @@ flushmmucache_invlpg(uint32_t addr)
 #endif
 }
 
+/* A set's write entries to the page, by what they reach: the tracked
+   path's page, or the page's RAM less the entry's linear address. */
+static void
+mem_tlb_drop_page(mem_tlb_t *t, const page_t *page_target, uint32_t addr)
+{
+    for (uint16_t c = 0; c < 256; c++) {
+        const int v = t->writelookup[c];
+
+        if (v == (int) 0xffffffff)
+            continue;
+
+        if ((t->page_lookup[v] == page_target) ||
+            ((t->writelookup2[v] != LOOKUP_INV) &&
+             ((t->writelookup2[v] + ((uintptr_t) v << 12)) == (uintptr_t) &ram[addr & ~0xfff]))) {
+            t->writelookup2[v] = LOOKUP_INV;
+            t->page_lookup[v]  = NULL;
+            t->writelookup[c]  = 0xffffffff;
+        }
+    }
+}
+
+/* The page has gained code: no set may keep a direct write entry to it,
+   whatever linear address it maps the page at -- the one being written
+   from, another alias of it, or another processor's. */
 void
-mem_flush_write_page(uint32_t addr, uint32_t virt)
+mem_flush_write_page(uint32_t addr, UNUSED(uint32_t virt))
 {
     const page_t *page_target = &pages[addr >> 12];
 
-    for (uint16_t c = 0; c < 256; c++) {
-        if (writelookup[c] != (int) 0xffffffff) {
-            uintptr_t target = (uintptr_t) &ram[(uintptr_t) (addr & ~0xfff) - (virt & ~0xfff)];
-            if (writelookup2[writelookup[c]] == target || page_lookup[writelookup[c]] == page_target) {
-                writelookup2[writelookup[c]] = LOOKUP_INV;
-                page_lookup[writelookup[c]]  = NULL;
-                writelookup[c]               = 0xffffffff;
-            }
-        }
-    }
+    for (int i = 0; i < mem_tlb_count; i++)
+        mem_tlb_drop_page(mem_tlbs[i], page_target, addr);
 }
 
 #define mmutranslate_read(addr)  mmutranslatereal(addr, 0)

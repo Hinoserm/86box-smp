@@ -1214,7 +1214,7 @@ codegen_mem_load(codeblock_t *block, int kind, int dest_reg, void *rout)
 
     host_x86_MOV32_REG_REG(block, REG_ECX, REG_ESI);
     host_x86_SHR32_IMM(block, REG_ESI, 12);
-    host_x86_MOV64_REG_IMM(block, REG_RDI, (uint64_t) (uintptr_t) readlookup2);
+    host_x86_MOV64_REG_ABS(block, REG_RDI, &readlookup2); /* the set in place (mem_tlb_select) */
     host_x86_MOV64_REG_BASE_INDEX_SHIFT(block, REG_RSI, REG_RDI, REG_RSI, 3);
     if (mem_access_size(kind) != 1) {
         host_x86_TEST32_REG_IMM(block, REG_ECX, mem_access_size(kind) - 1);
@@ -1274,7 +1274,7 @@ codegen_mem_store(codeblock_t *block, int kind, void *rout)
 
     host_x86_MOV32_REG_REG(block, REG_EDI, REG_ESI);
     host_x86_SHR32_IMM(block, REG_ESI, 12);
-    host_x86_MOV64_REG_IMM(block, REG_R8, (uint64_t) (uintptr_t) writelookup2);
+    host_x86_MOV64_REG_ABS(block, REG_R8, &writelookup2);
     host_x86_MOV64_REG_BASE_INDEX_SHIFT(block, REG_RSI, REG_R8, REG_RSI, 3);
     if (mem_access_size(kind) != 1) {
         host_x86_TEST32_REG_IMM(block, REG_EDI, mem_access_size(kind) - 1);

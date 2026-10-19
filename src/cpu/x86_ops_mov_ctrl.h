@@ -212,7 +212,7 @@ opMOV_CRx_r_a16(uint32_t fetchdat)
                         CPU_BLOCK_END();
                 }
             } else if ((cpu_state.regs[cpu_rm].l ^ cr0) & WP_FLAG)
-                flushmmucache_write();
+                flushmmucache_write_cpu();
             /* Make sure CPL = 0 when switching from real mode to protected mode. */
             if ((cpu_state.regs[cpu_rm].l & 0x01) && !(cr0 & 0x01))
                 cpu_state.seg_cs.access &= 0x9f;
@@ -308,7 +308,7 @@ opMOV_CRx_r_a32(uint32_t fetchdat)
                         CPU_BLOCK_END();
                 }
             } else if ((cpu_state.regs[cpu_rm].l ^ cr0) & WP_FLAG)
-                flushmmucache_write();
+                flushmmucache_write_cpu();
             /* Make sure CPL = 0 when switching from real mode to protected mode. */
             if ((cpu_state.regs[cpu_rm].l & 0x01) && !(cr0 & 0x01))
                 cpu_state.seg_cs.access &= 0x9f;
