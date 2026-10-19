@@ -814,23 +814,77 @@ cmd_set(const char *arg)
     out("Use set $REGISTER = VALUE or set {TYPE} ADDRESS = VALUE.\n");
 }
 
+/* A file name a TCP client may give: letters, digits, '.', '_' and '-',
+   not starting with '.', and none of Windows's device names, which are
+   there in every directory (CON, NUL.TXT, COM1 and the like). */
+static int
+dump_name_ok(const char *name)
+{
+    static const char *const devs[] = { "CON", "PRN", "AUX", "NUL", "COM", "LPT" };
+    size_t                   base;
+
+    if (!name[0] || (name[0] == '.'))
+        return 0;
+    for (const char *p = name; *p; p++) {
+        if (!isalnum((unsigned char) *p) && !strchr("._-", *p))
+            return 0;
+    }
+
+    base = strcspn(name, ".");
+    for (int i = 0; i < 6; i++) {
+        if (strncasecmp(name, devs[i], 3))
+            continue;
+        if ((base == 3) || ((i >= 4) && (base == 4) && isdigit((unsigned char) name[3])))
+            return 0;
+    }
+    return 1;
+}
+
+/* Where a dump goes, opened. The window's console names any file. A TCP
+   client gets a new file in the machine's directory, by a bare name, and
+   never one that is there already: what it writes is the guest's memory,
+   and the machine's configuration, NVR and disk images live there. */
+static FILE *
+dump_open(int source, const char *name, const char *mode, char *path, size_t size)
+{
+    FILE *fp;
+    int   n;
+
+    if (source == 0)
+        n = snprintf(path, size, "%s", name);
+    else {
+        if (!dump_name_ok(name)) {
+            out("Over TCP a dump goes into the machine's directory: give a plain file name\n"
+                "(letters, digits, '.', '_' and '-'), not a path.\n");
+            return NULL;
+        }
+        n = snprintf(path, size, "%s%s", usr_path, name);
+    }
+    if ((n < 0) || ((size_t) n >= size)) {
+        out("The file name is too long.\n");
+        return NULL;
+    }
+
+    if (source != 0) {
+        fp = plat_fopen(path, "rb");
+        if (fp != NULL) {
+            fclose(fp);
+            out("%s is there already; over TCP a dump never replaces a file.\n", path);
+            return NULL;
+        }
+    }
+
+    fp = plat_fopen(path, mode);
+    if (fp == NULL)
+        out("Could not open %s for writing.\n", path);
+    return fp;
+}
+
 /* The guest's physical RAM, as it is, to a file. */
 static void
-dump_ram(const char *path)
+dump_ram(FILE *fp, const char *path)
 {
-    FILE    *fp;
     uint64_t size = (uint64_t) mem_size * 1024;
-
-    if (ram == NULL) {
-        out("There is no RAM to dump.\n");
-        return;
-    }
-
-    fp = plat_fopen(path, "wb");
-    if (fp == NULL) {
-        out("Could not open %s for writing.\n", path);
-        return;
-    }
 
     /* In pieces, so a size_t narrower than the RAM is never an issue. */
     for (uint64_t done = 0; done < size;) {
@@ -871,13 +925,15 @@ parse_path(const char **ps, char *path, size_t size)
     return n > 0;
 }
 
-static void dump_registers(const char *path);
+static void dump_registers(FILE *fp, const char *path);
 
-/* dump binary memory FILE START STOP, as GDB; dump ram FILE, all of it. */
+/* dump binary memory FILE START STOP, as GDB; dump ram FILE, all of it;
+   dump registers FILE. source is the console the command came from. */
 static void
-cmd_dump(const char *arg)
+cmd_dump(int source, const char *arg)
 {
-    char       path[1024];
+    char       name[1024];
+    char       path[2048];
     dbg_addr_t a;
     dbg_addr_t stop;
     FILE      *fp;
@@ -887,20 +943,26 @@ cmd_dump(const char *arg)
     arg = skip_ws(arg);
     if (!strncasecmp(arg, "registers ", 10)) {
         arg += 10;
-        if (!parse_path(&arg, path, sizeof(path))) {
+        if (!parse_path(&arg, name, sizeof(name))) {
             out("Usage: dump registers FILE\n");
             return;
         }
-        dump_registers(path);
+        if ((fp = dump_open(source, name, "w", path, sizeof(path))) != NULL)
+            dump_registers(fp, path);
         return;
     }
     if (!strncasecmp(arg, "ram ", 4)) {
         arg += 4;
-        if (!parse_path(&arg, path, sizeof(path))) {
+        if (!parse_path(&arg, name, sizeof(name))) {
             out("Usage: dump ram FILE\n");
             return;
         }
-        dump_ram(path);
+        if (ram == NULL) {
+            out("There is no RAM to dump.\n");
+            return;
+        }
+        if ((fp = dump_open(source, name, "wb", path, sizeof(path))) != NULL)
+            dump_ram(fp, path);
         return;
     }
 
@@ -910,7 +972,7 @@ cmd_dump(const char *arg)
     }
     arg += 14;
 
-    if (!parse_path(&arg, path, sizeof(path)) || !parse_addr(&arg, &a) || !parse_addr(&arg, &stop))
+    if (!parse_path(&arg, name, sizeof(name)) || !parse_addr(&arg, &a) || !parse_addr(&arg, &stop))
         return;
 
     if ((stop.addr <= a.addr) || (stop.phys != a.phys)) {
@@ -919,11 +981,8 @@ cmd_dump(const char *arg)
     }
     len = stop.addr - a.addr;
 
-    fp = plat_fopen(path, "wb");
-    if (fp == NULL) {
-        out("Could not open %s for writing.\n", path);
+    if ((fp = dump_open(source, name, "wb", path, sizeof(path))) == NULL)
         return;
-    }
     for (uint32_t i = 0; i < len; i++) {
         uint8_t b;
 
@@ -1507,19 +1566,11 @@ cmd_info(const char *arg)
 
 /* The registers, into a text file. */
 static void
-dump_registers(const char *path)
+dump_registers(FILE *fp, const char *path)
 {
     size_t start = debugcon_len;
-    FILE  *fp;
 
     cmd_info_registers("");
-    fp = plat_fopen(path, "w");
-    if (fp == NULL) {
-        debugcon_len               = start;
-        debugcon_buf[debugcon_len] = '\0';
-        out("Could not open %s for writing.\n", path);
-        return;
-    }
     fwrite(debugcon_buf + start, 1, debugcon_len - start, fp);
     fclose(fp);
 
@@ -1555,7 +1606,8 @@ static const char debugcon_help[] =
     "\n"
     "ADDRESS is linear (through paging), SEG:OFFSET with a segment register\n"
     "or a real-mode segment number, or phys:ADDRESS for physical memory.\n"
-    "Only RAM and ROM are read or written; device memory shows as ??.\n";
+    "Only RAM and ROM are read or written; device memory shows as ??.\n"
+    "Over TCP, a dump's FILE is a new file in the machine's directory, by name.\n";
 // clang-format on
 
 /* Needs nothing from the machine, so the window answers it without
@@ -1573,7 +1625,7 @@ cmd_help(void)
 }
 
 static void
-debugcon_run(const char *line)
+debugcon_run(int source, const char *line)
 {
     const char *s = skip_ws(line);
 
@@ -1590,7 +1642,7 @@ debugcon_run(const char *line)
     } else if (!strncmp(s, "set ", 4)) {
         cmd_set(s + 4);
     } else if (!strncmp(s, "dump ", 5)) {
-        cmd_dump(s + 5);
+        cmd_dump(source, s + 5);
     } else if (!strcmp(s, "help") || !strcmp(s, "h") || !strcmp(s, "?")) {
         cmd_help();
     } else
@@ -1765,7 +1817,7 @@ debugcon_poll(void)
             debugcon_len    = 0;
             debugcon_buf[0] = '\0';
             out("(86box) %s\n", cmd);
-            debugcon_run(cmd);
+            debugcon_run(r.source, cmd);
 
             if (debugcon_output)
                 debugcon_output(r.source, debugcon_buf);
