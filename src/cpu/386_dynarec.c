@@ -912,8 +912,7 @@ exec386_dynarec_dyn(void)
         return;
     }
     /* A byte the guest keeps rewriting (codegen_hot_byte): a block starting
-       there runs while the byte is the one it was compiled with, and is
-       looked at below. */
+       there is compiled with a guard for it, looked at below. */
     const int hot = !cpu_state.abrt && codegen_hot_byte(phys_addr);
     cpu_fetch_device = 0;
 
@@ -1018,17 +1017,21 @@ exec386_dynarec_dyn(void)
         if (valid_block && (block->flags & CODEBLOCK_IN_DIRTY_LIST) && (block->flags & CODEBLOCK_NO_IMMEDIATES))
             codegen_block_restore_version(block);
 
-        /* Starting on a byte the guest keeps rewriting: compiled without
-           the guard for it (before the byte was found to be one), compiled
-           again; compiled with it, run only while the byte is the one
-           compiled, its guard leaving at once otherwise -- the instruction
-           there interpreted then, one, as it is now. A block holding
-           nothing else (a RET compiled where the guest had just written
-           it) is compiled again instead, from what is there now. */
-        if (hot && valid_block && (block->flags & CODEBLOCK_WAS_RECOMPILED)) {
-            if (!block->entry_hot)
-                block->flags &= ~CODEBLOCK_WAS_RECOMPILED;
-            else if (block->entry_byte != _mem_exec[phys_addr >> MEM_GRANULARITY_BITS][phys_addr & MEM_GRANULARITY_MASK]) {
+        /* A block compiled with a guard on its first byte (one the guest
+           keeps rewriting) is run only while the byte is the one compiled,
+           whether or not the byte is still in codegen_hot[], which keeps a
+           few: its guard would leave at once, for here, with nothing run.
+           Otherwise the instruction there is interpreted, one, as it is
+           now -- or, for a block holding nothing else (a RET compiled
+           where the guest had just written it), the block is compiled
+           again from what is there. One compiled without that guard,
+           starting on a byte found since to be rewritten, is compiled
+           again. */
+        if (valid_block && (block->flags & CODEBLOCK_WAS_RECOMPILED)) {
+            if (!block->entry_hot) {
+                if (hot)
+                    block->flags &= ~CODEBLOCK_WAS_RECOMPILED;
+            } else if (block->entry_byte != _mem_exec[phys_addr >> MEM_GRANULARITY_BITS][phys_addr & MEM_GRANULARITY_MASK]) {
                 if (!block->page_mask)
                     block->flags &= ~CODEBLOCK_WAS_RECOMPILED;
                 else {
