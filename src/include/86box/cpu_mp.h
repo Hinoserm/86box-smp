@@ -18,7 +18,7 @@
 
 #include <stdint.h>
 
-#define CPU_MP_MAX 2
+#define CPU_MP_MAX 4
 
 /* How many processors the machine has, and which one is executing. Both
    are 1 and 0 on every machine that has not asked for more. */
@@ -47,7 +47,7 @@ extern int cpu_core_self;
 extern int cpu_mp_timers_frozen;
 
 /* The Processor settings of a board with more than one socket
-   (MACHINE_DUAL_CPU): how many are fitted, and the SMP drift -- how far
+   (MACHINE_DUAL_CPU, MACHINE_QUAD_CPU): how many are fitted, and the SMP drift -- how far
    apart, in microseconds of guest time, the processors' clocks may be. On
    threads of their own none runs more than the drift ahead of the first,
    nor the first ahead of any; taking turns on one thread, it is the

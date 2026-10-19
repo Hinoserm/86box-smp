@@ -30804,6 +30804,8 @@ machine_has_flags(int m, uintptr_t flags)
 int
 machine_cpu_sockets(int m)
 {
+    if (machines[m].flags & MACHINE_QUAD_CPU)
+        return 4;
     if (machines[m].flags & MACHINE_DUAL_CPU)
         return 2;
     return 1;

@@ -284,10 +284,11 @@ cpu_mp_init_image(uint8_t *img, const uint8_t *cur, const uint8_t *reset)
 /* ---- processor cores ------------------------------------------------------
 
    Where the build has it (CPU_MP_SECOND_CORE, src/CMakeLists.txt), the
-   core is built a second time with its globals renamed (cpu_core.h), and
-   the second processor runs in that copy: its state stays where it is
-   between turns and nothing is copied to switch. Otherwise the processors
-   share the one core and their state is swapped in and out of it. */
+   core is built a second time and copied with its globals renamed
+   (cpu_core.h), one copy for each processor after the first, and each runs
+   in its own copy: its state stays where it is between turns and nothing
+   is copied to switch. Otherwise the processors share the one core and
+   their state is swapped in and out of it. */
 static const cpu_core_ops_t *cpu_mp_core[CPU_MP_MAX];
 static int                   cpu_mp_copy_mode;
 #ifdef CPU_MP_SECOND_CORE
@@ -383,7 +384,16 @@ cpu_mp_ignne_assert(void)
 static const cpu_core_ops_t *
 cpu_mp_ap_core_ops(int index)
 {
-    return (index == 1) ? s1_cpu_core_ops() : NULL;
+    switch (index) {
+        case 1:
+            return s1_cpu_core_ops();
+        case 2:
+            return s2_cpu_core_ops();
+        case 3:
+            return s3_cpu_core_ops();
+        default:
+            return NULL;
+    }
 }
 #endif
 

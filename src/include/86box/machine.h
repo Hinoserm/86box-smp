@@ -123,6 +123,7 @@
 #define MACHINE_ZENITH            0x0000000100000000ULL /* sys is Zenith */
 #define MACHINE_IDE_INTERNAL      0x0000000800000000ULL /* sys int IDE only with the Internal controller */
 #define MACHINE_DUAL_CPU          0x0000001000000000ULL /* sys has two processor sockets */
+#define MACHINE_QUAD_CPU          0x0000002000000000ULL /* sys has four processor sockets */
 /* Combined flags. */
 #define MACHINE_LPT               (MACHINE_LPT_PRI | MACHINE_LPT_SEC | MACHINE_LPT_TER)
 #define MACHINE_UART              (MACHINE_UART_PRI | MACHINE_UART_SEC | \

@@ -425,7 +425,7 @@ machine_disable_apic_set(int machineId)
 void
 SettingsMachine::updateProcessorsPairable()
 {
-    static const char *const names[] = { QT_TR_NOOP("One"), QT_TR_NOOP("Two") };
+    static const char *const names[] = { QT_TR_NOOP("One"), QT_TR_NOOP("Two"), QT_TR_NOOP("Three"), QT_TR_NOOP("Four") };
     const int   machineId   = ui->comboBoxMachine->currentData().toInt();
     const int   sockets     = machine_cpu_sockets(machineId);
     const bool  dual        = sockets > 1;

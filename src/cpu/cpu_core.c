@@ -63,7 +63,7 @@ int cpu_core_waiting = 0;
 
 /* Which processor this core runs: 0 in the first core (which also runs
    the others in turn when they have no core of their own, cpu_mp_cur),
-   1 in the second's copy, set as it is given its processor. */
+   1 to 3 in the others' copies, set as each is given its processor. */
 int cpu_core_self = 0;
 
 #ifdef CPU_AP_CORE

@@ -11,11 +11,12 @@
  *          The core -- interpreter, recompiler, the processor's side of
  *          memory -- names its state as fixed globals. For the other
  *          processors the core is built a second time (CPU_AP_CORE) and
- *          copied with those globals renamed (s1_ for processor 1), so each
- *          processor has its state at addresses of its own and nothing is
- *          copied to switch between them. Code outside the core reaches a
- *          core through this table: cpu_core_ops() in the first,
- *          s1_cpu_core_ops() in the second.
+ *          copied three times with those globals renamed (s1_ to s3_ for
+ *          processors 1 to 3), so each processor has its state at addresses
+ *          of its own and nothing is copied to switch between them. Code
+ *          outside the core reaches a core through this table:
+ *          cpu_core_ops() in the first, s1_cpu_core_ops() to
+ *          s3_cpu_core_ops() in the others.
  *
  * Authors: Michael Pratte, <mpratte@makefox.group>
  *
@@ -125,7 +126,9 @@ typedef struct cpu_core_ops_t {
 
 extern const cpu_core_ops_t *cpu_core_ops(void);
 
-/* The second processor's core. */
+/* The other processors' cores, one copy each (processors 1 to 3). */
 extern const cpu_core_ops_t *s1_cpu_core_ops(void);
+extern const cpu_core_ops_t *s2_cpu_core_ops(void);
+extern const cpu_core_ops_t *s3_cpu_core_ops(void);
 
 #endif /*EMU_CPU_CORE_H*/

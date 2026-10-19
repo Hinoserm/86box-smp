@@ -7,7 +7,7 @@
 #          This file is part of the 86Box distribution.
 #
 #          Another processor's core: every symbol the second build of the
-#          core defines gets the prefix PREFIX (s1_), in its definitions
+#          core defines gets the prefix PREFIX (s1_ to s3_), in its definitions
 #          and in the references to it, so the copy's state and code sit
 #          at addresses of their own. What it uses without defining -- the
 #          machine, RAM, the devices -- it keeps sharing; its port I/O and

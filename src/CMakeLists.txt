@@ -217,9 +217,10 @@ if(DYNAREC)
     add_subdirectory(codegen)
 endif()
 
-# The other processor's core (cpu/cpu_core.h): the core built once more,
-# then copied with every symbol it defines renamed s1_*, so a machine's
-# second processor runs in state and code of its own. x86-64 hosts, and
+# The other processors' cores (cpu/cpu_core.h): the core built once more,
+# then copied three times with every symbol it defines renamed s1_*, s2_*
+# and s3_*, so each of a machine's other processors runs in state and code
+# of its own. x86-64 hosts, and
 # ARM64 macOS, with the recompiler only; without objcopy the processors
 # take turns in the one core. Other ARM64 hosts are not built that way
 # yet: their compilers call runtime helpers for atomics (outline atomics)
@@ -291,22 +292,24 @@ if(DYNAREC AND CPU_AP_HOST AND CPU_AP_TOOLS)
     # No COMDAT (.refptr) sections: they would merge with the first core's.
     target_compile_options(cpu_ap PRIVATE -mcmodel=small)
 
-    set(CPU_AP_RENAMED ${CMAKE_CURRENT_BINARY_DIR}/libcpu_ap1_renamed.a)
-    add_custom_command(OUTPUT ${CPU_AP_RENAMED}
-        COMMAND ${CMAKE_COMMAND}
-            -DNM=${CMAKE_NM} -DOBJCOPY=${CMAKE_OBJCOPY} -DRANLIB=${CMAKE_RANLIB} -DOBJDUMP=${CMAKE_OBJDUMP}
-            -DIN=$<TARGET_FILE:cpu_ap> -DOUT=${CPU_AP_RENAMED} -DPREFIX=s1_
-            -DSYMPREFIX=${CPU_AP_SYMPREFIX}
-            -DLIST=${CMAKE_CURRENT_BINARY_DIR}/cpu_ap1.syms
-            -DUNDEF=${CMAKE_CURRENT_BINARY_DIR}/cpu_ap1.undef
-            -DSHARED=${CMAKE_CURRENT_SOURCE_DIR}/cpu/cpu_ap_shared.txt
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/cpu/cpu_ap_rename.cmake
-        DEPENDS cpu_ap ${CMAKE_CURRENT_SOURCE_DIR}/cpu/cpu_ap_rename.cmake
-                ${CMAKE_CURRENT_SOURCE_DIR}/cpu/cpu_ap_shared.txt
-        VERBATIM)
-    add_custom_target(cpu_ap1_renamed DEPENDS ${CPU_AP_RENAMED})
-    add_dependencies(86Box cpu_ap1_renamed)
-    target_link_libraries(86Box ${CPU_AP_RENAMED})
+    foreach(ap 1 2 3)
+        set(CPU_AP_RENAMED ${CMAKE_CURRENT_BINARY_DIR}/libcpu_ap${ap}_renamed.a)
+        add_custom_command(OUTPUT ${CPU_AP_RENAMED}
+            COMMAND ${CMAKE_COMMAND}
+                -DNM=${CMAKE_NM} -DOBJCOPY=${CMAKE_OBJCOPY} -DRANLIB=${CMAKE_RANLIB} -DOBJDUMP=${CMAKE_OBJDUMP}
+                -DIN=$<TARGET_FILE:cpu_ap> -DOUT=${CPU_AP_RENAMED} -DPREFIX=s${ap}_
+                -DSYMPREFIX=${CPU_AP_SYMPREFIX}
+                -DLIST=${CMAKE_CURRENT_BINARY_DIR}/cpu_ap${ap}.syms
+                -DUNDEF=${CMAKE_CURRENT_BINARY_DIR}/cpu_ap${ap}.undef
+                -DSHARED=${CMAKE_CURRENT_SOURCE_DIR}/cpu/cpu_ap_shared.txt
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cpu/cpu_ap_rename.cmake
+            DEPENDS cpu_ap ${CMAKE_CURRENT_SOURCE_DIR}/cpu/cpu_ap_rename.cmake
+                    ${CMAKE_CURRENT_SOURCE_DIR}/cpu/cpu_ap_shared.txt
+            VERBATIM)
+        add_custom_target(cpu_ap${ap}_renamed DEPENDS ${CPU_AP_RENAMED})
+        add_dependencies(86Box cpu_ap${ap}_renamed)
+        target_link_libraries(86Box ${CPU_AP_RENAMED})
+    endforeach()
     target_compile_definitions(cpu PRIVATE CPU_MP_SECOND_CORE)
     target_sources(cpu PRIVATE cpu/cpu_thread.c)
 elseif(DYNAREC AND CPU_AP_HOST)
