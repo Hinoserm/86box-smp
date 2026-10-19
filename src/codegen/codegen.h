@@ -63,6 +63,9 @@ typedef struct codeblock_t {
     /*Run since eviction's sweep last passed it: the sweep passes it over
       once (codegen_delete_random_block).*/
     uint8_t used;
+    /*Times put back from a kept version since compiled
+      (codegen_block_restore_version): code patched back and forth.*/
+    uint8_t flips;
 
 #ifdef CODEGEN_CHAIN
     /*Where a linked block enters it (data[chain_entry]): past the part of
@@ -482,6 +485,29 @@ extern int codegen_flags_changed;
 extern void codegen_flags_known_reset(void);
 
 extern int codegen_fpu_entered;
+
+/*Bytes of guest code the guest keeps rewriting between two or more values
+  -- a RET written over an unrolled loop to cut it at a span's length, then
+  the old byte put back (Daggerfall) -- found where a block is put back from
+  a kept version. No block is compiled over one: a block ends before it, and
+  the instruction there is interpreted, reading what is there each time, so
+  the writes reach no compiled code and nothing is invalidated or put back.
+  By physical 64-byte chunk, a few at a time; only a hint, since every
+  compiled block is tracked for writes all the same.*/
+#define CODEGEN_HOT_NR 256
+typedef struct codegen_hot_t {
+    uint32_t chunk; /*physical address >> 6, plus 1; 0: empty*/
+    uint64_t bytes;
+} codegen_hot_t;
+extern codegen_hot_t codegen_hot[CODEGEN_HOT_NR];
+
+static inline int
+codegen_hot_byte(uint32_t phys)
+{
+    const codegen_hot_t *h = &codegen_hot[(phys >> 6) & (CODEGEN_HOT_NR - 1)];
+
+    return (h->chunk == (phys >> 6) + 1) && ((h->bytes >> (phys & 63)) & 1);
+}
 extern int codegen_mmx_entered;
 
 extern int codegen_fpu_loaded_iq[8];

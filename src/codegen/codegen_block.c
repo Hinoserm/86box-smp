@@ -40,6 +40,28 @@ int      codegen_flat64k_es;
 int      mmx_ebx_ecx_loaded;
 int      codegen_flags_changed = 0;
 int      codegen_fpu_entered   = 0;
+codegen_hot_t codegen_hot[CODEGEN_HOT_NR];
+
+/*The bytes where two versions of a block's code differ, as rewritten guest
+  code (codegen_hot_byte).*/
+static void
+codegen_hot_mark(uint32_t chunk_phys, const uint8_t *a, const uint8_t *b, uint64_t mask)
+{
+    codegen_hot_t *h    = &codegen_hot[(chunk_phys >> 6) & (CODEGEN_HOT_NR - 1)];
+    uint64_t       diff = 0;
+
+    for (int c = 0; c < 64; c++) {
+        if (((mask >> c) & 1) && (a[c] != b[c]))
+            diff |= 1ULL << c;
+    }
+    if (!diff)
+        return;
+    if (h->chunk != (chunk_phys >> 6) + 1) {
+        h->chunk = (chunk_phys >> 6) + 1;
+        h->bytes = 0;
+    }
+    h->bytes |= diff;
+}
 int      codegen_mmx_entered   = 0;
 int      codegen_fpu_loaded_iq[8];
 x86seg  *op_ea_seg;
@@ -1888,6 +1910,7 @@ codegen_block_init(uint32_t phys_addr)
     block->page_mask = block->page_mask2 = 0;
     block->flags                         = CODEBLOCK_STATIC_TOP;
     block->status                        = cpu_cur_status;
+    block->flips                         = 0;
 
     recomp_page = block->phys & ~0xfff;
     codeblock_tree_add(block);
@@ -2257,6 +2280,25 @@ codegen_block_restore_version(codeblock_t *block)
                               !block_version_chunk_matches(v->phys_2, v->exec_2, v->page_mask2, &v->code[64]))) {
             link = &v->next;
             continue;
+        }
+
+        /*Code going back to an earlier version: the bytes where it differs
+          from the version it was rewritten from (the newest kept, if that
+          is another) are rewritten guest code. The second time, they are
+          marked so that no block is compiled over them, and this one is
+          compiled again, ending before them, its versions dropped.*/
+        if (block_version_kept[block_nr] != nr) {
+            const block_version_t *w = &block_versions[block_version_kept[block_nr]];
+
+            if (++block->flips >= 2) {
+                codegen_hot_mark(block->phys & ~0x3f, v->code, w->code, v->page_mask & w->page_mask);
+                if (v->page_mask2 && w->page_mask2 && (v->phys_2 == w->phys_2))
+                    codegen_hot_mark(v->phys_2 & ~0x3f, &v->code[64], &w->code[64], v->page_mask2 & w->page_mask2);
+                block->flips = 0;
+                while (block_version_kept[block_nr])
+                    block_version_drop_kept(block_version_kept[block_nr]);
+                return 0;
+            }
         }
 
         /*Match: it becomes the block's current code, as a compile would*/
