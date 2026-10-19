@@ -1973,6 +1973,54 @@ svga_decode_addr(svga_t *svga, uint32_t addr, int write)
     return svga_decode_addr_here(svga, addr, write);
 }
 
+/* The plain chained write: mode 13h's, the four planes chained, write mode
+   0 with every bit and no rotation, logical operation or set/reset, nothing
+   of the card's in the way. Byte n of the window lands in plane n & 3 of
+   the plane address the general path below gives it, so the bytes of an
+   aligned word or doubleword land side by side there and go in at once,
+   each where the map mask enables its plane. */
+static __inline int
+svga_chain4_plain(const svga_t *svga)
+{
+    return svga->chain4 && !svga->packed_chain4 && !svga->force_old_addr && !svga->fb_only && !xga_active &&
+           !(svga->adv_flags & (FLAG_ADDR_BY8 | FLAG_ADDR_BY16 | FLAG_EXT_WRITE | FLAG_LATCH8)) &&
+           (svga->writemode == 0) && (svga->gdcreg[8] == 0xff) && !(svga->gdcreg[3] & 0x1f) &&
+           (!svga->gdcreg[1] || svga->set_reset_disabled) && !svga->translate_address;
+}
+
+/* n bytes (1, 2 or 4) at addr, which is aligned to n. */
+static __inline void
+svga_write_chain4(svga_t *svga, uint32_t addr, uint32_t val, int n, uint8_t linear)
+{
+    uint8_t  wm;
+    uint32_t a;
+
+    if (!linear) {
+        addr = svga_decode_addr_here(svga, addr, 1);
+        if (addr == 0xffffffff)
+            return;
+    }
+    if (!(svga->gdcreg[6] & 1))
+        svga->fullchange = 2;
+    wm = svga->writemask & (((1 << n) - 1) << (addr & 3));
+    if (!wm)
+        return;
+    a = ((addr & 0xfffc) << 2) | ((addr & 0x30000) >> 14) | (addr & ~0x3ffff);
+    a &= svga->decode_mask;
+    if (a >= svga->vram_max)
+        return;
+    a &= svga->vram_mask;
+    svga->changedvram[a >> 12] = svga->monitor->mon_changeframecount;
+    if ((n == 4) && (wm == 0x0f)) {
+        *(uint32_t *) &svga->vram[a] = val;
+        return;
+    }
+    for (int i = addr & 3; i < (int) (addr & 3) + n; i++, val >>= 8) {
+        if (wm & (1 << i))
+            svga->vram[a | i] = val;
+    }
+}
+
 static __inline void
 svga_write_common(uint32_t addr, uint8_t val, uint8_t linear, void *priv)
 {
@@ -2012,6 +2060,12 @@ svga_write_common(uint32_t addr, uint8_t val, uint8_t linear, void *priv)
             svga->vram[addr | 2] = val;
         if (writemask2 & 8)
             svga->vram[addr | 3] = val;
+        return;
+    }
+
+    if (svga_chain4_plain(svga)) {
+        cycles -= svga->monitor->mon_video_timing_write_b;
+        svga_write_chain4(svga, addr, val, 1, linear);
         return;
     }
 
@@ -2449,6 +2503,11 @@ svga_writew_common(uint32_t addr, uint16_t val, uint8_t linear, void *priv)
            modes split it into byte operations inside the card (a 32-bit write
            to a 16-bit ISA card is two 16-bit bus cycles, not four byte ones).
            Keep the byte-wise VRAM behavior but charge the bus timing once. */
+    if (!svga->fast && !(addr & 1) && svga_chain4_plain(svga)) {
+        cycles -= svga->monitor->mon_video_timing_write_w;
+        svga_write_chain4(svga, addr, val, 2, linear);
+        return;
+    }
     if (!svga->fast) {
         int bus_cycles = cycles - svga->monitor->mon_video_timing_write_w;
         svga_write_common(addr, val, linear, priv);
@@ -2513,6 +2572,11 @@ svga_writel_common(uint32_t addr, uint32_t val, uint8_t linear, void *priv)
            modes split it into byte operations inside the card (a 32-bit write
            to a 16-bit ISA card is two 16-bit bus cycles, not four byte ones).
            Keep the byte-wise VRAM behavior but charge the bus timing once. */
+    if (!svga->fast && !(addr & 3) && svga_chain4_plain(svga)) {
+        cycles -= svga->monitor->mon_video_timing_write_l;
+        svga_write_chain4(svga, addr, val, 4, linear);
+        return;
+    }
     if (!svga->fast) {
         int bus_cycles = cycles - svga->monitor->mon_video_timing_write_l;
         svga_write_common(addr, val, linear, priv);
