@@ -1181,8 +1181,27 @@ block_version_chunk_matches(uint32_t phys, const uint8_t *exec, uint64_t mask, c
     if (!fetch || (fetch != exec))
         return 0;
     fetch = &fetch[(phys & MEM_GRANULARITY_MASK) & ~0x3f];
-    for (int c = 0; c < 64; c++) {
-        if ((mask & ((uint64_t) 1 << c)) && (fetch[c] != code[c]))
+    /* Eight bytes at a time: those the mask holds, each byte of a
+       doubleword's difference kept by its bit of the mask. */
+    for (int w = 0; w < 8; w++) {
+        const uint8_t m = (uint8_t) (mask >> (w << 3));
+        uint64_t      a;
+        uint64_t      b;
+        uint64_t      keep = 0;
+
+        if (!m)
+            continue;
+        memcpy(&a, &fetch[w << 3], 8);
+        memcpy(&b, &code[w << 3], 8);
+        if (m == 0xff)
+            keep = ~0ULL;
+        else {
+            for (int c = 0; c < 8; c++) {
+                if (m & (1 << c))
+                    keep |= 0xffULL << (c << 3);
+            }
+        }
+        if ((a ^ b) & keep)
             return 0;
     }
     return 1;
@@ -1775,10 +1794,14 @@ codegen_check_flush(page_t *page, UNUSED(uint64_t mask), UNUSED(uint32_t phys_ad
        what was taken; a word read as clear is not taken, and a bit set
        after the read is left for the next look, as one set after the
        exchange would be. */
+    uint64_t any_byte = 0;
+
     dirty = __atomic_exchange_n(&page->dirty_mask, 0, __ATOMIC_SEQ_CST);
-    for (uint8_t c = 0; c < 64; c++)
+    for (uint8_t c = 0; c < 64; c++) {
         byte_dirty[c] = __atomic_load_n(&page->byte_dirty_mask[c], __ATOMIC_RELAXED) ?
                             __atomic_exchange_n(&page->byte_dirty_mask[c], 0, __ATOMIC_SEQ_CST) : 0;
+        any_byte |= byte_dirty[c];
+    }
 
     while (block_nr) {
         codeblock_t *block      = &codeblock[block_nr];
@@ -1814,7 +1837,7 @@ codegen_check_flush(page_t *page, UNUSED(uint64_t mask), UNUSED(uint32_t phys_ad
         remove_from_evict_list = 1;
     page->code_present_mask &= ~dirty;
 
-    for (uint8_t c = 0; c < 64; c++) {
+    for (uint8_t c = 0; any_byte && (c < 64); c++) {
         if (page->byte_code_present_mask[c] & byte_dirty[c])
             remove_from_evict_list = 0;
         page->byte_code_present_mask[c] &= ~byte_dirty[c];
