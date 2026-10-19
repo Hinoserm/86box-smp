@@ -59,6 +59,10 @@ typedef struct sst_t {
     uint8_t      *exec[8];
     uint8_t      *exec_h[8];
 
+    /* A board that drives the part's A17 itself (sst_flash_set_a17_low):
+       while it holds it low, every access reaches the lower 128 Kbytes. */
+    uint32_t a17_clear;
+
     pc_timer_t page_write_timer;
 } sst_t;
 
@@ -358,6 +362,8 @@ sst_write(uint32_t addr, uint8_t val, void *priv)
     uint32_t addr0 = 0x5555;
     uint32_t addr1 = 0x2aaa;
 
+    addr &= ~dev->a17_clear;
+
     if (!flash_bios_write_selected(addr))
         return;
 
@@ -446,7 +452,7 @@ sst_read(uint32_t addr, void *priv)
     if (!flash_bios_read_selected(addr))
         return 0xff;
 
-    addr &= 0x000fffff;
+    addr &= 0x000fffff & ~dev->a17_clear;
 
     if (dev->id_mode)
         ret = sst_read_id(addr, priv);
@@ -467,7 +473,7 @@ sst_readw(uint32_t addr, void *priv)
     if (!flash_bios_read_selected(addr))
         return 0xffff;
 
-    addr &= 0x000fffff;
+    addr &= 0x000fffff & ~dev->a17_clear;
 
     if (dev->id_mode)
         ret = sst_read(addr, priv) | (sst_read(addr + 1, priv) << 8);
@@ -488,7 +494,7 @@ sst_readl(uint32_t addr, void *priv)
     if (!flash_bios_read_selected(addr))
         return 0xffffffff;
 
-    addr &= 0x000fffff;
+    addr &= 0x000fffff & ~dev->a17_clear;
 
     if (dev->id_mode)
         ret = sst_readw(addr, priv) | (sst_readw(addr + 2, priv) << 16);
@@ -538,6 +544,32 @@ sst_add_mappings(sst_t *dev)
                             dev->array + fbase, MEM_MAPPING_EXTERNAL | MEM_MAPPING_ROM | MEM_MAPPING_ROMCS | MEM_MAPPING_ROM_WS, (void *) dev);
         }
     }
+}
+
+static void sst_decode_hook(void *priv);
+
+/* The board holds the part's A17 low (1) or lets the address through (0).
+   Code and data the processor reaches through the mappings' own pointers
+   move with it. */
+void
+sst_flash_set_a17_low(void *priv, int low)
+{
+    sst_t   *dev = (sst_t *) priv;
+    uint32_t base;
+    uint32_t fbase;
+
+    if ((dev == NULL) || (!!dev->a17_clear == !!low))
+        return;
+    dev->a17_clear = low ? 0x20000 : 0;
+
+    for (int i = 0; i < (int) (dev->size >> 16); i++) {
+        base  = (0x100000 - dev->size) + (i << 16);
+        fbase = (base & biosmask) & ~dev->a17_clear;
+        if (base >= 0xe0000)
+            dev->exec[i] = dev->array + fbase;
+        dev->exec_h[i] = dev->array + fbase;
+    }
+    sst_decode_hook(dev);
 }
 
 /* The chip select changed: keep an exec pointer only on a mapping the

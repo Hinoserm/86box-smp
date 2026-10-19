@@ -61,6 +61,7 @@ extern const device_t micron_flash_x00_t_device;
 
 extern const device_t sst_flash_29ee010_device;
 extern const device_t sst_flash_29ee020_device;
+extern void           sst_flash_set_a17_low(void *priv, int low);
 
 extern const device_t winbond_flash_w29c512_device;
 extern const device_t winbond_flash_w29c010_device;
