@@ -919,6 +919,23 @@ lm78_init(const device_t *info)
     return dev;
 }
 
+/* National Semiconductor LM78 on the ISA bus alone, where the board gives
+   its base as the device's parameter (device_add_params ORs it into
+   .local, so the base here is none). */
+const device_t lm78_isa_device = {
+    .name          = "National Semiconductor LM78 Hardware Monitor (ISA)",
+    .internal_name = "lm78_isa",
+    .flags         = DEVICE_ISA,
+    .local         = 0,
+    .init          = lm78_init,
+    .close         = lm78_close,
+    .reset         = lm78_reset,
+    .available     = NULL,
+    .speed_changed = NULL,
+    .force_redraw  = NULL,
+    .config        = NULL
+};
+
 void
 sis5595_dam_set_dxp(void *priv, uint8_t dxp)
 {

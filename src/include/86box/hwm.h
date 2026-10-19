@@ -62,6 +62,7 @@ extern const device_t lm75_w83781d_device;
 extern const device_t lm77_0_48_device;
 
 extern const device_t lm78_device;
+extern const device_t lm78_isa_device;
 extern const device_t lm78_al440lx_device;
 extern const device_t sis5595_dam_device;
 extern const device_t w83781d_device;
