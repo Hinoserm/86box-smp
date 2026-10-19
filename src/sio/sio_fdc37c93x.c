@@ -50,6 +50,7 @@ typedef struct fdc37c93x_t {
     uint8_t       max_ld;
     uint8_t       tries;
     uint8_t       port_370;
+    uint8_t       has_ide;
     uint8_t       gpio_reg;
     uint8_t       gpio_regs[256];
     uint8_t       gpio_pulldn[8];
@@ -781,6 +782,30 @@ fdc37c93x_fdc_handler(fdc37c93x_t *dev)
     fdc_set_power_down(dev->fdc, !enable);
 }
 
+/* Logical device 1, IDE1: on a board where it is the primary IDE channel
+   (FDC37C93X_IDE), its command block at 60h-61h, its control block at
+   62h-63h and its IRQ at 70h, when activated and powered (22h bit 1). */
+static void
+fdc37c93x_ide_handler(fdc37c93x_t *dev)
+{
+    const uint16_t base = make_port(dev, 1) & 0xfff8;
+    const uint16_t side = make_port_sec(dev, 1) & 0xfffe;
+
+    if (!dev->has_ide)
+        return;
+
+    ide_pri_disable();
+    if (!(dev->ld_regs[1][0x30] & 0x01) || !(dev->regs[0x22] & 0x02))
+        return;
+    if ((base < 0x0100) || (base > 0x0ff8) || (side < 0x0100) || (side > 0x0ffe))
+        return;
+
+    ide_set_base(0, base);
+    ide_set_side(0, side);
+    ide_set_irq(0, dev->ld_regs[1][0x70] & 0x0f);
+    ide_pri_enable();
+}
+
 static void
 fdc37c93x_lpt_handler(fdc37c93x_t *dev)
 {
@@ -1112,6 +1137,8 @@ fdc37c93x_write(uint16_t port, uint8_t val, void *priv)
 
                     if (valxor & 0x01)
                         fdc37c93x_fdc_handler(dev);
+                    if (valxor & 0x02)
+                        fdc37c93x_ide_handler(dev);
                     if (valxor & 0x08)
                         fdc37c93x_lpt_handler(dev);
                     if (valxor & 0x10)
@@ -1239,6 +1266,7 @@ fdc37c93x_write(uint16_t port, uint8_t val, void *priv)
                                                       ((val & 0x01) << dev->regs[7]);
                             } else
                                 dev->ld_regs[dev->regs[7]][dev->cur_reg] = val;
+                            fdc37c93x_ide_handler(dev);
                             break;
                         case 0xf0: case 0xf1:
                             if (dev->chip_id >= FDC37C93X_FR)
@@ -1821,6 +1849,7 @@ fdc37c93x_reset(void *priv)
     fdc_reset(dev->fdc);
 
     fdc37c93x_fdc_handler(dev);
+    fdc37c93x_ide_handler(dev);
 
     if (dev->has_nvr) {
         fdc37c93x_nvr_pri_handler(dev);
@@ -1925,6 +1954,7 @@ fdc37c93x_init(const device_t *info)
 
     dev->has_nvr     = !(info->local & FDC37C93X_NO_NVR);
     dev->port_370    = !!(info->local & FDC37XXXX_370);
+    dev->has_ide     = !!(info->local & FDC37C93X_IDE);
 
     if (dev->has_nvr) {
         dev->nvr = device_add_params(&nvr_at_device, (void *) (uintptr_t) NVR_AT_ZERO_DEFAULT);

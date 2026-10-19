@@ -78,6 +78,7 @@ extern const device_t fdc37c669_device;
 
 #define FDC37C93X_NO_NVR     0x01000
 #define FDC37XXXX_370        0x02000
+#define FDC37C93X_IDE        0x04000    /* the chip's own IDE channel drives the primary IDE (logical device 1) */
 #define FDC37XXXX_B80X       0x08000    /* the FDC37B80x: its name only, the chip working as the FDC37M70x */
 
 extern const device_t fdc37c93x_device;
