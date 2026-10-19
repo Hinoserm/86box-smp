@@ -91,6 +91,12 @@ extern void cpu_mp_split_end(void);
 extern void cpu_mp_peek(int index, void (*look)(void));
 extern void cpu_mp_debug_dump(void (*out)(const char *fmt, ...));
 
+/* The debug console's instruction trace, every processor: path for the
+   first, path.cpuN for the others (cpu_mp.c). */
+extern int      cpu_trace_start(const char *path, uint64_t max);
+extern uint64_t cpu_trace_stop(void);
+extern int      cpu_trace_state(int i, int *on, uint64_t *count);
+
 extern void cpu_mp_close(void);
 extern void cpu_mp_configure(int count);
 extern void cpu_mp_register(void *addr, uint32_t size);

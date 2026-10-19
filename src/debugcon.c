@@ -862,15 +862,27 @@ dump_name_ok(const char *name)
     return 1;
 }
 
-/* Where a dump goes, opened. The window's console names any file. A TCP
-   client gets a new file in the machine's directory, by a bare name, and
-   never one that is there already: what it writes is the guest's memory,
-   and the machine's configuration, NVR and disk images live there. */
-static FILE *
-dump_open(int source, const char *name, const char *mode, char *path, size_t size)
+/* Whether a file is there. */
+static int
+dump_exists(const char *path)
 {
-    FILE *fp;
-    int   n;
+    FILE *fp = plat_fopen(path, "rb");
+
+    if (fp == NULL)
+        return 0;
+    fclose(fp);
+    return 1;
+}
+
+/* Where a dump goes. The window's console names any file. A TCP client
+   gets a new file in the machine's directory, by a bare name, and never
+   one that is there already: what it writes is the guest's memory, and
+   the machine's configuration, NVR and disk images live there. Answers
+   whether path is one to write. */
+static int
+dump_path(int source, const char *name, char *path, size_t size)
+{
+    int n;
 
     if (source == 0)
         n = snprintf(path, size, "%s", name);
@@ -878,23 +890,30 @@ dump_open(int source, const char *name, const char *mode, char *path, size_t siz
         if (!dump_name_ok(name)) {
             out("Over TCP a dump goes into the machine's directory: give a plain file name\n"
                 "(letters, digits, '.', '_' and '-'), not a path.\n");
-            return NULL;
+            return 0;
         }
         n = snprintf(path, size, "%s%s", usr_path, name);
     }
     if ((n < 0) || ((size_t) n >= size)) {
         out("The file name is too long.\n");
-        return NULL;
+        return 0;
     }
 
-    if (source != 0) {
-        fp = plat_fopen(path, "rb");
-        if (fp != NULL) {
-            fclose(fp);
-            out("%s is there already; over TCP a dump never replaces a file.\n", path);
-            return NULL;
-        }
+    if ((source != 0) && dump_exists(path)) {
+        out("%s is there already; over TCP a dump never replaces a file.\n", path);
+        return 0;
     }
+    return 1;
+}
+
+/* Where a dump goes (dump_path), opened. */
+static FILE *
+dump_open(int source, const char *name, const char *mode, char *path, size_t size)
+{
+    FILE *fp;
+
+    if (!dump_path(source, name, path, size))
+        return NULL;
 
     fp = plat_fopen(path, mode);
     if (fp == NULL)
@@ -1648,6 +1667,85 @@ debugcon_device_help(void)
     }
 }
 
+/* ---- the instruction trace ---------------------------------------------- */
+
+static void
+cmd_trace_state(void)
+{
+    int      any = 0;
+    int      on;
+    uint64_t count;
+
+    for (int i = 0; cpu_trace_state(i, &on, &count); i++) {
+        out("processor %i: trace %s, %" PRIu64 " instructions written\n", i, on ? "running" : "off", count);
+        any = 1;
+    }
+    if (!any)
+        out("No processor traces here.\n");
+}
+
+/* trace on FILE [COUNT] | trace off | trace: while the machine runs, each
+   processor writes a record of every instruction before it runs it
+   (386_dynarec.c has the format), FILE for the first, FILE.cpuN for the
+   others, as a dump's file is named (dump_path). COUNT caps each file, 10
+   million when not given, 0 for no limit. */
+static void
+cmd_trace(int source, const char *arg)
+{
+    char     name[1024];
+    char     path[2048];
+    uint64_t max = 10000000;
+    int      n;
+
+    arg = skip_ws(arg);
+    if (!*arg) {
+        cmd_trace_state();
+        return;
+    }
+    if (!strncmp(arg, "off", 3) && (!arg[3] || isspace((unsigned char) arg[3]))) {
+        out("Trace off: %" PRIu64 " instructions written.\n", cpu_trace_stop());
+        return;
+    }
+    if (strncmp(arg, "on", 2) || (arg[2] && !isspace((unsigned char) arg[2]))) {
+        out("trace on FILE [COUNT] | trace off | trace\n");
+        return;
+    }
+    arg += 2;
+    if (!parse_path(&arg, name, sizeof(name))) {
+        out("trace on FILE [COUNT]: which file?\n");
+        return;
+    }
+    arg = skip_ws(arg);
+    if (*arg)
+        max = strtoull(arg, NULL, 0);
+
+    if (!dump_path(source, name, path, sizeof(path)))
+        return;
+    if (source != 0) {
+        for (int i = 1; i < cpu_mp_count; i++) {
+            char other[2100];
+
+            snprintf(other, sizeof(other), "%s.cpu%i", path, i);
+            if (dump_exists(other)) {
+                out("%s is there already; over TCP a dump never replaces a file.\n", other);
+                return;
+            }
+        }
+    }
+
+    n = cpu_trace_start(path, max);
+    if (!n) {
+        out("Could not start a trace into %s.\n", path);
+        return;
+    }
+    out("Tracing %i processor%s into %s%s, through the interpreter, while the machine runs.\n", n,
+        (n == 1) ? "" : "s", path, (n > 1) ? " (and .cpuN)" : "");
+    if (max)
+        out("At most %" PRIu64 " instructions each.\n", max);
+    else
+        out("No limit on its size.\n");
+}
+
 static void
 cmd_info(const char *arg)
 {
@@ -1686,6 +1784,8 @@ cmd_info(const char *arg)
         cmd_info_dma();
     else if (IS("float", 1) || IS("fpu", 2))
         cmd_info_float();
+    else if (IS("trace", 2))
+        cmd_trace_state();
     else if (IS("gdt", 1))
         cmd_info_desc("GDT", &gdt, 0);
     else if (IS("idt", 1))
@@ -1741,11 +1841,16 @@ static const char debugcon_help[] =
     "dump binary memory FILE START STOP\n"
     "dump ram FILE              all of physical RAM\n"
     "dump registers FILE        every processor's registers, as text\n"
+    "trace on FILE [COUNT]      every instruction each processor runs, with its registers,\n"
+    "                           into FILE (FILE.cpuN for the others), binary; COUNT caps\n"
+    "                           each, 10 million if not given, 0 for none. Interpreted\n"
+    "trace off | trace          stop it | how far it has got (also info trace)\n"
     "\n"
     "ADDRESS is linear (through paging), SEG:OFFSET with a segment register\n"
     "or a real-mode segment number, or phys:ADDRESS for physical memory.\n"
     "Only RAM and ROM are read or written; device memory shows as ??.\n"
-    "Over TCP, a dump's FILE is a new file in the machine's directory, by name.\n";
+    "Over TCP, a dump's or trace's FILE is a new file in the machine's directory,\n"
+    "by name.\n";
 // clang-format on
 
 /* Needs nothing from the machine, so the window answers it without
@@ -1781,6 +1886,8 @@ debugcon_run(int source, const char *line)
         cmd_set(s + 4);
     } else if (!strncmp(s, "dump ", 5)) {
         cmd_dump(source, s + 5);
+    } else if (!strncmp(s, "trace", 5) && (!s[5] || isspace((unsigned char) s[5]))) {
+        cmd_trace(source, s + 5);
     } else if (!strcmp(s, "help") || !strcmp(s, "h") || !strcmp(s, "?")) {
         cmd_help();
     } else

@@ -255,6 +255,9 @@ exec386_2386(int32_t cycs)
             cpu_state.ea_seg = &cpu_state.seg_ds;
             cpu_state.ssegs  = 0;
 
+            if (cpu_trace_on)
+                cpu_trace_record();
+
             if (inboard386_present)
                 inboard_post_fixups();
 

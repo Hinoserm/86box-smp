@@ -38,6 +38,9 @@
 #include <86box/cpu_mp.h>
 #include "cpu_core.h"
 
+extern int      cpu_core_trace_start(const char *path, uint64_t max, uint8_t cpu);
+extern uint64_t cpu_core_trace_stop(void);
+extern uint64_t cpu_core_trace_state(int *on);
 extern void   cpu_mp_register_dynarec(void);
 extern void   cpu_mp_register_mmx(void);
 extern int    cpu_core_run_chunk(int32_t cycs);
@@ -392,7 +395,10 @@ cpu_core_ops(void)
         .halted_get     = cpu_core_halted_get,
         .halted_set     = cpu_core_halted_set,
         .ignne_assert   = cpu_core_ignne_assert,
-        .self_set       = cpu_core_self_set
+        .self_set       = cpu_core_self_set,
+        .trace_start    = cpu_core_trace_start,
+        .trace_stop     = cpu_core_trace_stop,
+        .trace_state    = cpu_core_trace_state
     };
 
     return &ops;

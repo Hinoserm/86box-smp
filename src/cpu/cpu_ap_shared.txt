@@ -11,11 +11,13 @@ calloc
 ceil
 cos
 exp2
+fclose
 fegetround
 fesetround
 floor
 fmod
 free
+fwrite
 ilogb
 ldexp
 localtime_r
@@ -31,6 +33,7 @@ nearbyint
 pow
 remquo
 round
+setvbuf
 sin
 sincos
 sprintf
@@ -140,6 +143,7 @@ machines
 mem_size
 pc_speed_changed
 pclog
+plat_fopen
 plat_mmap
 startblit
 

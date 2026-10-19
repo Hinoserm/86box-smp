@@ -1761,3 +1761,65 @@ cpu_mp_debug_dump(void (*out)(const char *fmt, ...))
         out("%s; turns of up to %i us (now %i us)\n", cpu_mp_copy_mode ? "each in a core of its own" : "sharing one core",
             cpu_smp_drift_us, cpu_mp_slice_now_us);
 }
+
+/* ---- the debug console's instruction trace --------------------------------
+
+   Every processor at once, each into a file of its own: path for the
+   first, path.cpuN for the others. The console calls these with the
+   machine paused; each core takes the switch at its next instruction. */
+
+static const cpu_core_ops_t *
+cpu_trace_core(int i)
+{
+    if (cpu_mp_copy_mode)
+        return ((i >= 0) && (i < cpu_mp_count)) ? cpu_mp_core[i] : NULL;
+    return (i == 0) ? cpu_core_ops() : NULL;
+}
+
+/* Answers how many processors trace. */
+int
+cpu_trace_start(const char *path, uint64_t max)
+{
+    int started = 0;
+
+    for (int i = 0; i < CPU_MP_MAX; i++) {
+        const cpu_core_ops_t *core = cpu_trace_core(i);
+        char                  name[1100];
+
+        if (core == NULL)
+            continue;
+        if (i == 0)
+            snprintf(name, sizeof(name), "%s", path);
+        else
+            snprintf(name, sizeof(name), "%s.cpu%i", path, i);
+        started += core->trace_start(name, max, (uint8_t) i);
+    }
+    return started;
+}
+
+/* Answers how many records were written, all processors together. */
+uint64_t
+cpu_trace_stop(void)
+{
+    uint64_t total = 0;
+
+    for (int i = 0; i < CPU_MP_MAX; i++) {
+        const cpu_core_ops_t *core = cpu_trace_core(i);
+
+        if (core != NULL)
+            total += core->trace_stop();
+    }
+    return total;
+}
+
+/* Processor i's trace: answers 0 if there is no processor i that can. */
+int
+cpu_trace_state(int i, int *on, uint64_t *count)
+{
+    const cpu_core_ops_t *core = cpu_trace_core(i);
+
+    if (core == NULL)
+        return 0;
+    *count = core->trace_state(on);
+    return 1;
+}

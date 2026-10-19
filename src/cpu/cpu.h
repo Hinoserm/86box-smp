@@ -834,6 +834,11 @@ extern void exec386_2386(int32_t cycs);
    on the card actually being present (inboard386.c). */
 extern int  inboard386_present;
 extern void inboard_post_fixups(void);
+
+/* The debug console's instruction trace (386_dynarec.c): every
+   interpreter records each instruction while it is on. */
+extern int  cpu_trace_on;
+extern void cpu_trace_record(void);
 extern void exec386(int32_t cycs);
 extern void exec386_dynarec(int32_t cycs);
 extern int  is_dynarec_active(void);

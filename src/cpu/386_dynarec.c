@@ -29,6 +29,7 @@
 #include <86box/fdd.h>
 #include <86box/fdc.h>
 #include <86box/machine.h>
+#include <86box/plat.h>
 #include <86box/plat_fallthrough.h>
 #include <86box/plat_unused.h>
 #include <86box/gdbstub.h>
@@ -269,6 +270,150 @@ dr_blocks_cache(void)
 #    define CACHE_ON() (!(cr0 & (1 << 30)) && !(cpu_state.flags & T_FLAG))
 #endif
 
+/* ---- the instruction trace ------------------------------------------------
+
+   The debug console's trace on FILE [N]: while it runs this processor
+   goes through the interpreter, and before each instruction a record of
+   it and of the registers it starts with goes to FILE. Off, what it costs
+   is a test of cpu_trace_on in the dispatcher, once a block, and in the
+   interpreters' loops, once an instruction. Records are little endian, 80
+   bytes, after a 16-byte header ("86BOXTRC", version, record size):
+
+       0  cpu        1  mode: 1 PE, 2 V86, 4 CS 32-bit, 8 SS 32-bit,
+                               10h SMM, 20h paging
+       2  CS         4  CS base    8  EIP
+      12  EAX ECX EDX EBX ESP EBP ESI EDI
+      44  EFLAGS     48 DS ES SS FS GS      58 (zero)
+      60  sequence (low 32 bits)            64 the 16 bytes at CS:EIP,
+                                               FFh where no memory is */
+int             cpu_trace_on;
+static FILE    *cpu_trace_fp;
+static uint64_t cpu_trace_count;
+static uint64_t cpu_trace_max;
+static uint8_t  cpu_trace_cpu;
+
+static void
+cpu_trace_put16(uint8_t *p, uint16_t v)
+{
+    p[0] = v & 0xff;
+    p[1] = v >> 8;
+}
+
+static void
+cpu_trace_put32(uint8_t *p, uint32_t v)
+{
+    cpu_trace_put16(p, v & 0xffff);
+    cpu_trace_put16(p + 2, v >> 16);
+}
+
+/* A code byte as the processor would fetch it: through its own view of
+   memory, RAM and ROM only, walking the page tables without touching the
+   TLB and reaching no device -- the trace must not change what it traces. */
+static uint8_t
+cpu_trace_code_byte(uint32_t lin)
+{
+    uint64_t       phys = lin;
+    const uint8_t *p;
+
+    if (cr0 >> 31) {
+        phys = mmutranslate_noabrt(lin, 0);
+        if (phys > 0xffffffffULL)
+            return 0xff;
+    }
+    phys &= rammask;
+    p = _mem_exec[phys >> MEM_GRANULARITY_BITS];
+    return p ? p[phys & MEM_GRANULARITY_MASK] : 0xff;
+}
+
+void
+cpu_trace_record(void)
+{
+    uint8_t        r[80];
+    const uint32_t lin  = cs + cpu_state.pc;
+    uint8_t        mode = 0;
+
+    flags_rebuild();
+    if (cr0 & 1)
+        mode |= 0x01;
+    if (cpu_state.eflags & VM_FLAG)
+        mode |= 0x02;
+    if (use32)
+        mode |= 0x04;
+    if (stack32)
+        mode |= 0x08;
+    if (cpu_cur_status & CPU_STATUS_SMM)
+        mode |= 0x10;
+    if (cr0 >> 31)
+        mode |= 0x20;
+
+    memset(r, 0, sizeof(r));
+    r[0] = cpu_trace_cpu;
+    r[1] = mode;
+    cpu_trace_put16(r + 2, CS);
+    cpu_trace_put32(r + 4, cs);
+    cpu_trace_put32(r + 8, cpu_state.pc);
+    for (int i = 0; i < 8; i++)
+        cpu_trace_put32(r + 12 + 4 * i, cpu_state.regs[i].l);
+    cpu_trace_put32(r + 44, ((uint32_t) cpu_state.eflags << 16) | cpu_state.flags);
+    cpu_trace_put16(r + 48, DS);
+    cpu_trace_put16(r + 50, ES);
+    cpu_trace_put16(r + 52, SS);
+    cpu_trace_put16(r + 54, cpu_state.seg_fs.seg);
+    cpu_trace_put16(r + 56, cpu_state.seg_gs.seg);
+    cpu_trace_put32(r + 60, (uint32_t) cpu_trace_count);
+    for (int i = 0; i < 16; i++)
+        r[64 + i] = cpu_trace_code_byte(lin + i);
+    fwrite(r, 1, sizeof(r), cpu_trace_fp);
+
+    if (++cpu_trace_count >= cpu_trace_max) {
+        fclose(cpu_trace_fp);
+        cpu_trace_fp = NULL;
+        cpu_trace_on = 0;
+    }
+}
+
+/* From the console, with the machine paused: start writing to path, at
+   most max records (0: no limit); answers 0 if the file would not open. */
+int
+cpu_core_trace_start(const char *path, uint64_t max, uint8_t cpu)
+{
+    static const uint8_t header[16] = { '8', '6', 'B', 'O', 'X', 'T', 'R', 'C', 1, 0, 0, 0, 80, 0, 0, 0 };
+
+    if (cpu_trace_fp != NULL)
+        fclose(cpu_trace_fp);
+    cpu_trace_fp = plat_fopen(path, "wb");
+    if (cpu_trace_fp == NULL) {
+        cpu_trace_on = 0;
+        return 0;
+    }
+    setvbuf(cpu_trace_fp, NULL, _IOFBF, 1 << 20);
+    fwrite(header, 1, sizeof(header), cpu_trace_fp);
+    cpu_trace_count = 0;
+    cpu_trace_max   = max ? max : UINT64_MAX;
+    cpu_trace_cpu   = cpu;
+    cpu_trace_on    = 1;
+    return 1;
+}
+
+/* Stop, if it was running; answers how many records were written. */
+uint64_t
+cpu_core_trace_stop(void)
+{
+    cpu_trace_on = 0;
+    if (cpu_trace_fp != NULL) {
+        fclose(cpu_trace_fp);
+        cpu_trace_fp = NULL;
+    }
+    return cpu_trace_count;
+}
+
+uint64_t
+cpu_core_trace_state(int *on)
+{
+    *on = cpu_trace_on;
+    return cpu_trace_count;
+}
+
 #ifdef USE_DYNAREC
 int32_t         cycles_main = 0;
 static int32_t  cycles_old  = 0;
@@ -465,6 +610,9 @@ exec386_dynarec_int(void)
 
         cpu_state.ea_seg = &cpu_state.seg_ds;
         cpu_state.ssegs  = 0;
+
+        if (cpu_trace_on)
+            cpu_trace_record();
 
 #    ifdef USE_DEBUG_REGS_486
         /* Breakpoint fault has priority over other faults. x86gen() delivers
@@ -1328,8 +1476,10 @@ exec386_dynarec_blocks(void)
         oldtsc           = tsc;
         tsc_old          = tsc;
         /* Interpret the block: always with the recompiler switched off,
-           when exec386 has handed the processors over (cpu_mp.c). */
-        if (cpu_force_interpreter || cpu_override_dynarec || cpu_flush_pending || (!CACHE_ON()) || !cpu_use_dynarec) {
+           when exec386 has handed the processors over (cpu_mp.c), and
+           while the instruction trace runs. */
+        if (cpu_force_interpreter || cpu_override_dynarec || cpu_flush_pending || (!CACHE_ON()) || cpu_trace_on ||
+            !cpu_use_dynarec) {
             exec386_dynarec_int();
         } else {
             exec386_dynarec_dyn();
@@ -1838,6 +1988,9 @@ exec386(int32_t cycs)
 
             cpu_state.ea_seg = &cpu_state.seg_ds;
             cpu_state.ssegs  = 0;
+
+            if (cpu_trace_on)
+                cpu_trace_record();
 
             if (inboard386_present)
                 inboard_post_fixups();

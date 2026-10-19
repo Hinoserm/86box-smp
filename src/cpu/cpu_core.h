@@ -122,6 +122,13 @@ typedef struct cpu_core_ops_t {
 
     /* The processor it runs (cpu_core_self). */
     void (*self_set)(int index);
+
+    /* The debug console's instruction trace (386_dynarec.c): start one
+       into a file, as processor cpu, at most max records (0: no limit);
+       stop it; and how far it has got. */
+    int      (*trace_start)(const char *path, uint64_t max, uint8_t cpu);
+    uint64_t (*trace_stop)(void);
+    uint64_t (*trace_state)(int *on);
 } cpu_core_ops_t;
 
 extern const cpu_core_ops_t *cpu_core_ops(void);
