@@ -438,14 +438,15 @@ fdc37c669_init(const device_t *info)
     return dev;
 }
 
-/* The debug console: the configuration registers, as the last unlock left
-   them. */
+/* The debug console: the configuration registers, and whether the
+   configuration mode is on. The model's locked is set by the two 55h
+   writes that enter it and cleared by the AAh that leaves it. */
 static void
 fdc37c669_debug_dump(void *priv, void (*out)(const char *fmt, ...))
 {
     const fdc37c669_t *dev = (const fdc37c669_t *) priv;
 
-    out("configuration %s, index 0x%02x\n", dev->locked ? "locked" : "open", dev->cur_reg);
+    out("configuration mode %s, index 0x%02x\n", dev->locked ? "on" : "off", dev->cur_reg);
     device_debug_hex(out, "configuration registers:", dev->regs, 0, 0x30);
 }
 
