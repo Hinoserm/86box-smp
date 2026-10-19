@@ -736,6 +736,35 @@ gdbstub_client_read_reg(int index, uint8_t *buf)
     return width;
 }
 
+/* What a debugger access to guest memory changes for its time and then
+   gives back (gdbstub_mem_enter/leave). */
+static uint32_t gdbstub_saved_cr0;
+static uint32_t gdbstub_saved_cr2;
+
+/* Guest memory as a hardware debugger reaches it: a supervisor access that
+   CR0.WP does not stop, and that leaves the guest's CR2 as it was, whatever
+   the page walk sets on a fault. */
+static void
+gdbstub_mem_enter(void)
+{
+    gdbstub_saved_cr0 = cr0;
+    gdbstub_saved_cr2 = cr2;
+    cr0 &= ~WP_FLAG;
+    cpl_override = 1;
+}
+
+static void
+gdbstub_mem_leave(void)
+{
+    cpl_override = 0;
+    cr0          = gdbstub_saved_cr0;
+    cr2          = gdbstub_saved_cr2;
+    /* The lookups the accesses made served a supervisor access, through a
+       read-only page or at CPL 3: drop them, so the guest's own accesses
+       there fault as before. */
+    flushmmucache_nopc();
+}
+
 static void
 gdbstub_client_packet(gdbstub_client_t *client)
 {
@@ -887,7 +916,7 @@ e22:
 
             /* Read by qwords, then by dwords, then by words, then by bytes. */
             i = 0;
-            cpl_override = 1;
+            gdbstub_mem_enter();
             if (is386) {
                 for (; i < (k & ~7); i += 8) {
                     orig_cpu_abrt        = cpu_state.abrt;
@@ -953,7 +982,7 @@ e22:
                 }
                 gdbstub_client_respond_hex(client, buf, 1);
             }
-            cpl_override = 0;
+            gdbstub_mem_leave();
             break;
 
         case 'M': /* write memory */
@@ -989,7 +1018,7 @@ e22:
             /* Write by qwords, then by dwords, then by words, then by bytes. */
             p = client->packet;
             i = 0;
-            cpl_override = 1;
+            gdbstub_mem_enter();
             if (is386) {
                 for (; i < (k & ~7); i += 8) {
                     orig_cpu_abrt        = cpu_state.abrt;
@@ -1055,7 +1084,7 @@ e22:
                 }
                 p++;
             }
-            cpl_override = 0;
+            gdbstub_mem_leave();
 
             /* Respond positively. */
             goto ok;
