@@ -57,9 +57,11 @@
 #include <86box/flash.h>
 #include <86box/apm.h>
 #include <86box/nmi.h>
+#include <86box/cpu_mp.h>
 #include <86box/port_92.h>
 #include <86box/eisa.h>
 #include <86box/esc.h>
+#include <86box/chipset.h>
 #include <86box/nvr.h>
 #include <86box/machine.h>
 #include <86box/plat_unused.h>
@@ -116,6 +118,7 @@ typedef struct esc_t {
        the version, the arbitration priority and sixteen redirection
        entries of two words each. */
     mem_mapping_t apic_mapping;
+    void         *ioapic; /* the machine's I/O APIC core, once it has one */
     uint32_t      apic_sel;
     uint32_t      apic_id;
     uint32_t      apic_redir[16][2];
@@ -302,6 +305,25 @@ esc_system_event(esc_t *dev, uint8_t see_bit)
    interrupt sources and applies to all of them: "If the SMI event is
    still active when the corresponding SMIREQ bit is set to 0, the ESC
    does not set the status bit back to a 1." */
+/* SMI out of the ESC: on its SMI# pin, or -- SMIRC set in the PAC
+   register -- on the I/O APIC's input 0, which it then takes from INTR:
+   "When SMIRC = 1, the SMI is routed via the APIC. When SMIRC = 0, the SMI
+   is routed via the SMI# signal." (82374EB/SB, 3.1.17). The entry for
+   input 0 says what is delivered; SMI is edge-triggered. */
+static void
+esc_smi_signal(esc_t *dev)
+{
+    if ((dev->regs[0x70] & 0x02) && (dev->ioapic != NULL) && ioapic_apic_path_active(dev->ioapic)) {
+        ioapic_intin_irq(0, 0, 1);
+        ioapic_intin_irq(0, 0, 0);
+    } else if (cpu_mp_count > 1) {
+        /* The SMI# pin reaches every socket (82374EB 13.5, Figure 35). */
+        for (int i = 0; i < cpu_mp_count; i++)
+            cpu_mp_smi(i);
+    } else
+        smi_raise();
+}
+
 static void
 esc_smi_event(esc_t *dev, uint8_t bit)
 {
@@ -317,7 +339,7 @@ esc_smi_event(esc_t *dev, uint8_t bit)
     esc_system_event(dev, 31);
 
     if (dev->regs[0xa0] & 0x01)
-        smi_raise();
+        esc_smi_signal(dev);
 }
 
 /* Bit 3 of SMICNTL stops the count -- "When this bit is 1, the Fast Off
@@ -470,11 +492,12 @@ esc_pirq_update(esc_t *dev)
 /* The I/O APIC                                                        */
 /* ------------------------------------------------------------------ */
 
-/* The register file is all here and behaves as the data book says. What
-   is not here is anywhere for a message to go: the emulator has no local
-   APIC and no APIC bus, so an unmasked entry is remembered and nothing
-   more. A machine with one processor runs through the 8259s, which is
-   what INTRC = 0 in the PAC register means, and never notices. */
+/* The ESC's own register file, answering at APICBASE while the board's
+   APIC path is off (the APIC disabled, a processor without a local APIC,
+   or a board that never gave the ESC an I/O APIC core): it behaves as the
+   data book says, and with no local APIC to send to, an unmasked entry is
+   remembered and nothing more. With the path on, the I/O APIC core
+   (ioapic.c) takes APICBASE instead (esc_set_ioapic). */
 #define ESC_APIC_VER     0x000f0011
 #define ESC_APIC_LO_MASK 0x0001afff /* bits 12 and 14 are the chip's */
 #define ESC_APIC_HI_MASK 0xff000000
@@ -615,7 +638,12 @@ esc_apic_remap(esc_t *dev)
 {
     uint32_t base = 0xfec00000 | (((uint32_t) (dev->regs[0x59] >> 2) & 0x0f) << 12) | (((uint32_t) dev->regs[0x59] & 0x03) << 10);
 
-    mem_mapping_set_addr(&dev->apic_mapping, base, 0x400);
+    /* With the machine's I/O APIC core delivering, the window is its; the
+       register file here only stands in while the APIC path is off. */
+    if ((dev->ioapic != NULL) && ioapic_apic_path_active(dev->ioapic))
+        ioapic_set_mmio_base(dev->ioapic, base);
+    else
+        mem_mapping_set_addr(&dev->apic_mapping, base, 0x400);
     esc_log("ESC: I/O APIC at %08x\n", base);
 }
 
@@ -793,6 +821,27 @@ esc_set_embedded_id(const char *mfg, uint16_t product, uint8_t rev)
 {
     if (esc_inst != NULL)
         eisa_make_id(esc_inst->embedded_id, mfg, product, rev);
+}
+
+/* The board has the I/O APIC core deliver for this ESC. While its APIC
+   path is on the core answers at APICBASE and this register file steps
+   aside; with it off (APIC disabled) nothing changes here. */
+void
+esc_set_ioapic(void *ioapic)
+{
+    esc_t *dev = esc_inst;
+
+    if (dev == NULL)
+        return;
+
+    dev->ioapic = ioapic;
+    if (ioapic != NULL) {
+        ioapic_set_intr_masked(ioapic, dev->regs[0x70] & 0x01);
+        ioapic_set_pin0_smi(ioapic, dev->regs[0x70] & 0x02);
+    }
+    if ((ioapic != NULL) && ioapic_apic_path_active(ioapic))
+        mem_mapping_disable(&dev->apic_mapping);
+    esc_apic_remap(dev);
 }
 
 void
@@ -1083,6 +1132,12 @@ esc_conf_write(esc_t *dev, uint8_t index, uint8_t val)
 
         case 0x70: /* PAC, PCI/APIC control: INTR and SMI routing */
             dev->regs[0x70] = val & 0x03;
+            /* INTRC: INTR forced inactive, so the 8259 no longer reaches
+               the processors' LINT0 (3.1.17). */
+            if (dev->ioapic != NULL) {
+                ioapic_set_intr_masked(dev->ioapic, val & 0x01);
+                ioapic_set_pin0_smi(dev->ioapic, val & 0x02);
+            }
             break;
 
         case 0x88: /* TSTC, test control */
@@ -1096,7 +1151,7 @@ esc_conf_write(esc_t *dev, uint8_t index, uint8_t val)
             /* And bit 0 is only the pin: "If an SMI is pending when this
                bit is set to 1, the SMI# signal is asserted." */
             if ((val & 0x01) && dev->regs[0xaa])
-                smi_raise();
+                esc_smi_signal(dev);
             break;
         case 0xa2: /* SMIEN */
         case 0xa3:
@@ -1370,6 +1425,10 @@ static void
 esc_reset_hard(esc_t *dev)
 {
     memset(dev->regs, 0, sizeof(dev->regs));
+    if (dev->ioapic != NULL) {
+        ioapic_set_intr_masked(dev->ioapic, 0); /* PAC comes up 00h */
+        ioapic_set_pin0_smi(dev->ioapic, 0);
+    }
 
     dev->index    = 0;
     dev->unlocked = 0;

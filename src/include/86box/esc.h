@@ -41,4 +41,8 @@ extern void esc_set_embedded_id(const char *mfg, uint16_t product,
                                 uint8_t rev);
 extern void esc_set_board_id(const char *mfg, uint16_t product, uint8_t rev);
 
+/* The machine's I/O APIC core delivering for the ESC (chipset.h's
+   ioapic_esc_device). */
+extern void esc_set_ioapic(void *ioapic);
+
 #endif /*EMU_ESC_H*/
