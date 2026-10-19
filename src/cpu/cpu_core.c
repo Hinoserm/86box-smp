@@ -21,6 +21,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#if defined(__APPLE__) && defined(__aarch64__)
+#    include <pthread.h>
+#endif
 #define HAVE_STDARG_H
 #include <86box/86box.h>
 #include "cpu.h"
@@ -164,7 +167,20 @@ cpu_core_init(void)
 
     x86_tables_init();
 #ifdef USE_DYNAREC
+    /* codegen_init writes this core's memory routines into its code cache:
+       on Apple silicon, only with the calling thread's JIT write protection
+       off, as pc_init_modules() does for the first core. */
+#    if defined(__APPLE__) && defined(__aarch64__)
+    if (__builtin_available(macOS 11.0, *)) {
+        pthread_jit_write_protect_np(0);
+    }
+#    endif
     codegen_init();
+#    if defined(__APPLE__) && defined(__aarch64__)
+    if (__builtin_available(macOS 11.0, *)) {
+        pthread_jit_write_protect_np(1);
+    }
+#    endif
 #endif
 }
 

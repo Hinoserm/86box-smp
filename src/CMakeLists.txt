@@ -219,9 +219,11 @@ endif()
 
 # The other processor's core (cpu/cpu_core.h): the core built once more,
 # then copied with every symbol it defines renamed s1_*, so a machine's
-# second processor runs in state and code of its own. x86-64 hosts with
-# the recompiler only; without objcopy the processors take turns in the
-# one core.
+# second processor runs in state and code of its own. x86-64 hosts, and
+# ARM64 macOS, with the recompiler only; without objcopy the processors
+# take turns in the one core. Other ARM64 hosts are not built that way
+# yet: their compilers call runtime helpers for atomics (outline atomics)
+# that cpu/cpu_ap_shared.txt has not been checked against.
 #
 # Apple's toolchain has no objcopy; LLVM's handles Mach-O (Homebrew: llvm,
 # keg-only). Mach-O prefixes every C symbol with an underscore, which the
@@ -243,7 +245,11 @@ foreach(tool CMAKE_OBJCOPY CMAKE_NM CMAKE_RANLIB CMAKE_OBJDUMP)
         set(CPU_AP_TOOLS OFF)
     endif()
 endforeach()
-if(DYNAREC AND (ARCH STREQUAL "x86_64") AND CPU_AP_TOOLS)
+set(CPU_AP_HOST OFF)
+if((ARCH STREQUAL "x86_64") OR ((ARCH STREQUAL "arm64") AND APPLE))
+    set(CPU_AP_HOST ON)
+endif()
+if(DYNAREC AND CPU_AP_HOST AND CPU_AP_TOOLS)
     set(CPU_AP_SOURCES
         cpu/cpu.c
         cpu/cpu_core.c
@@ -303,7 +309,7 @@ if(DYNAREC AND (ARCH STREQUAL "x86_64") AND CPU_AP_TOOLS)
     target_link_libraries(86Box ${CPU_AP_RENAMED})
     target_compile_definitions(cpu PRIVATE CPU_MP_SECOND_CORE)
     target_sources(cpu PRIVATE cpu/cpu_thread.c)
-elseif(DYNAREC AND (ARCH STREQUAL "x86_64"))
+elseif(DYNAREC AND CPU_AP_HOST)
     message(WARNING "No objcopy (on macOS: brew install llvm): the processors of a "
                     "multiprocessor machine take turns in one core")
 endif()

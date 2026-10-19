@@ -42,14 +42,21 @@ time
 trunc
 
 # macOS: its C library's and the compiler runtime's names (fortified string
-# calls, the stack protector, sincos, memset_pattern16).
+# calls, the stack protector, sincos, memset_pattern16); on ARM64 the JIT
+# write protection, the instruction cache flushes and the OS version check
+# behind __builtin_available.
 __bzero
+__clear_cache
 __fpclassifyd
+__isPlatformVersionAtLeast
 __memcpy_chk
 __sincos_stret
 __stack_chk_fail
 __stack_chk_guard
+bzero
 memset_pattern16
+pthread_jit_write_protect_np
+sys_icache_invalidate
 
 # Windows (mingw-w64): its C library's names, and thread-local storage --
 # emulated (__emutls), or the executable's TLS slot where GCC has it native
