@@ -45,6 +45,7 @@
 #include <86box/rom.h>
 #include <86box/gdbstub.h>
 #include "x86_idle.h"
+#include "cpu_thread.h"
 #ifdef USE_DYNAREC
 #    include "codegen_public.h"
 #else
@@ -2682,6 +2683,20 @@ mem_cpu_reset_evict_list(void)
     purgeable_page_count    = 0;
 }
 
+/* Whether the calling thread runs this core: the machine's thread for the
+   first core; for another processor's, its own thread while it has one,
+   else the machine's (cpu_thread_runs_core). A device's thread, or another
+   processor's, is never it. */
+int
+mem_cpu_thread_mine(void)
+{
+#if defined(CPU_AP_CORE)
+    return cpu_thread_runs_core(cpu_core_self);
+#else
+    return is_cpu_thread && !cpu_mp_thread_self;
+#endif
+}
+
 /* This core's table joins the copies mem.c keeps. */
 void
 mem_cpu_register_pages(void)
@@ -2692,6 +2707,7 @@ mem_cpu_register_pages(void)
         .byte_code_present_mask = &byte_code_present_mask,
         .add_to_evict_list      = page_add_to_evict_list,
         .reset_evict_list       = mem_cpu_reset_evict_list,
+        .mine                   = mem_cpu_thread_mine,
 #ifdef CODEGEN_CHAIN
         .code_hit               = codegen_page_code_hit,
         .code_drop              = codegen_page_code_drop

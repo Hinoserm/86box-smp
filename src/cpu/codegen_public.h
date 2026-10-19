@@ -52,12 +52,11 @@
 #ifdef CODEGEN_CHAIN
 struct page_t;
 /* A write with these masks (mem.c) reached compiled code on the page: the
-   links into the blocks it reached go (codegen_block.c). own: the write is
-   the core's own, on its own thread; another core's leaves the links to
-   this core's loop. */
-extern void codegen_page_code_hit(const struct page_t *p, uint64_t mask, int byte_offset, uint64_t bm0, uint64_t bm1, int own);
+   links into the blocks it reached go (codegen_block.c), at once on the
+   thread running the core, else at that core's loop's next look. */
+extern void codegen_page_code_hit(const struct page_t *p, uint64_t mask, int byte_offset, uint64_t bm0, uint64_t bm1);
 /* The whole page was written behind the processors' backs. */
-extern void codegen_page_code_drop(const struct page_t *p, int own);
+extern void codegen_page_code_drop(const struct page_t *p);
 /* Every link goes (`owner`: from the dispatcher's side), or translations
    may have changed (all, or the linear page `lin`). */
 extern void codegen_links_drop_all(int owner);

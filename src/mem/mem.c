@@ -209,9 +209,9 @@ mem_page_code_written(const page_t *p, uint64_t mask, int byte_offset, uint64_t 
     if (!mem_page_code_reached(p, mask, byte_offset, bm0, bm1))
         return;
     if (mem_page_copy_count <= 1)
-        codegen_page_code_hit(p, mask, byte_offset, bm0, bm1, 1);
+        codegen_page_code_hit(p, mask, byte_offset, bm0, bm1);
     else
-        mem_page_copies[mem_page_copy_of(p)].code_hit(p, mask, byte_offset, bm0, bm1, 1);
+        mem_page_copies[mem_page_copy_of(p)].code_hit(p, mask, byte_offset, bm0, bm1);
 }
 #endif
 
@@ -237,7 +237,7 @@ mem_page_mark_others(const page_t *page, uint64_t mask, int byte_offset, uint64_
             __atomic_fetch_or(&o->byte_dirty_mask[byte_offset + 1], bm1, __ATOMIC_SEQ_CST);
 #ifdef CODEGEN_CHAIN
         if (mem_page_code_reached(o, mask, byte_offset, bm0, bm1))
-            mem_page_copies[i].code_hit(o, mask, byte_offset, bm0, bm1, 0);
+            mem_page_copies[i].code_hit(o, mask, byte_offset, bm0, bm1);
 #endif
     }
 }
@@ -1196,14 +1196,15 @@ mem_invalidate_range(uint32_t start_addr, uint32_t end_addr)
             }
             __atomic_store_n(&page->dirty_mask, 0xffffffffffffffffULL, __ATOMIC_SEQ_CST);
 
-            /* A bus master's write, on the machine's thread: the first
-               core's purge list and links are its own, another core's are
-               that core's to take. */
-            if ((i == 0) && !page_in_evict_list(page))
+            /* A bus master's write, or the debug console's, on whatever
+               thread it is made: a core's purge list and links are changed
+               only on the thread running that core; for any other the
+               dirty bits stand, and its loop takes the links. */
+            if (mem_page_copies[i].mine() && !page_in_evict_list(page))
                 mem_page_copies[i].add_to_evict_list(page);
 #    ifdef CODEGEN_CHAIN
             if (page->block || page->block_2)
-                mem_page_copies[i].code_drop(page, i == 0);
+                mem_page_copies[i].code_drop(page);
 #    endif
         }
     }

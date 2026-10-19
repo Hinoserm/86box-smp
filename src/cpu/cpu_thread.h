@@ -32,6 +32,7 @@ extern int  cpu_thread_start(int index, const struct cpu_core_ops_t *core);
 extern void cpu_thread_stop(void);
 extern int  cpu_thread_active(void);
 extern int  cpu_thread_self(void);
+extern int  cpu_thread_runs_core(int index);
 extern void cpu_thread_poke(int index);
 extern void cpu_thread_poke_all(void);
 extern void cpu_thread_wake(int index);

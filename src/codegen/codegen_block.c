@@ -901,26 +901,29 @@ codegen_links_written(void)
 
 /* A write with these masks (mem.c) to compiled code of this copy.
 
-   own: the write is this core's own, on its thread: the linked blocks on
-   the page whose code it reaches lose their links at once, and leave the
-   lists (a running chain misses at its next link into one). Only a link
-   skips the dirty test a dispatch makes, so a chunk with no linked code
-   needs nothing.
+   On the thread running this core (mem_cpu_thread_mine), whichever
+   processor or device the write is for: the linked blocks on the page
+   whose code it reaches lose their links at once, and leave the lists (a
+   running chain misses at its next link into one). Only a link skips the
+   dirty test a dispatch makes, so a chunk with no linked code needs
+   nothing.
 
-   Another core's write, from that core's thread, finds this copy's lists
-   possibly changing (codegen_list_seq) and leaves them to this core: if it
-   reaches a block a link could skip the dirty test for, the page is noted,
-   this core's chain leaves at its next link, and its loop drops the links
-   at its next look (codegen_links_written). The walk is bounded, over
-   every block on the page, and on any doubt the answer is yes. */
+   On any other thread -- another core's, or a device's own (a video card's
+   command processor writing guest memory) -- the lists may be changing
+   under it (codegen_list_seq), and they are this core's alone to change:
+   if the write reaches a block a link could skip the dirty test for, the
+   page is noted, this core's chain leaves at its next link, and its loop
+   drops the links at its next look (codegen_links_written). The walk is
+   bounded, over every block on the page, and on any doubt the answer is
+   yes. */
 void
-codegen_page_code_hit(const struct page_t *p, uint64_t mask, int byte_offset, uint64_t bm0, uint64_t bm1, int own)
+codegen_page_code_hit(const struct page_t *p, uint64_t mask, int byte_offset, uint64_t bm0, uint64_t bm1)
 {
     uint32_t nr;
     int      steps;
     uint32_t seq;
 
-    if (own) {
+    if (mem_cpu_thread_mine()) {
         const uint32_t pg     = (uint32_t) (p - pages) & (CODEGEN_LINK_PHYS_PAGES - 1);
         uint64_t       chunks = 0;
 
@@ -971,14 +974,14 @@ hit:
 
 /* The whole page was written behind the processors' backs (mem.c
    mem_invalidate_range, which marked it all dirty first): every linked
-   block on it loses its links -- at once from this core's own thread
-   (own), else at its loop's next look, as for another core's write. */
+   block on it loses its links -- at once on the thread running this core,
+   else at its loop's next look, as for a write from another thread. */
 void
-codegen_page_code_drop(const struct page_t *p, int own)
+codegen_page_code_drop(const struct page_t *p)
 {
     const uint32_t pg = (uint32_t) (p - pages) & (CODEGEN_LINK_PHYS_PAGES - 1);
 
-    if (!own) {
+    if (!mem_cpu_thread_mine()) {
         codegen_written_note(p);
         mem_chain_code(MEM_CHAIN_CODE_WRITTEN);
         return;

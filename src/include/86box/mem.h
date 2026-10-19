@@ -311,8 +311,10 @@ void page_add_to_evict_list(page_t *page);
 
 /* A processor core's own copy of the page table (mem.c): where it lives,
    the byte masks its entries point into, how one of its pages goes on its
-   purge list, and what its code cache does when a write reaches its code
-   (codegen_page_code_hit/_drop; NULL without chains). */
+   purge list, whether the calling thread runs the core (mem_cpu_thread_mine:
+   only that thread changes its purge list), and what its code cache does
+   when a write reaches its code (codegen_page_code_hit/_drop; NULL without
+   chains). */
 #define MEM_PAGE_COPIES_MAX 4
 typedef struct mem_page_copy_t {
     page_t   **pages;
@@ -320,9 +322,9 @@ typedef struct mem_page_copy_t {
     uint64_t **byte_code_present_mask;
     void     (*add_to_evict_list)(page_t *page);
     void     (*reset_evict_list)(void);
-    /* own: the write is the copy's own core's, on that core's thread. */
-    void     (*code_hit)(const page_t *p, uint64_t mask, int byte_offset, uint64_t bm0, uint64_t bm1, int own);
-    void     (*code_drop)(const page_t *p, int own);
+    int      (*mine)(void);
+    void     (*code_hit)(const page_t *p, uint64_t mask, int byte_offset, uint64_t bm0, uint64_t bm1);
+    void     (*code_drop)(const page_t *p);
 } mem_page_copy_t;
 
 extern int  mem_page_copy_count;
@@ -341,6 +343,9 @@ extern void     mem_code_page_forget_all(void);
 extern void     mem_flush_write_page_own(uint32_t addr);
 extern void mem_pages_mirror(uint32_t first, uint32_t count, int reset_evict);
 extern void mem_cpu_register_pages(void);
+/* Whether the calling thread runs this core: the one thread that may change
+   what the core keeps to itself (its purge list, its blocks' link lists). */
+extern int mem_cpu_thread_mine(void);
 
 /* One processor's software TLB (mem_cpu.c): the lookup tables, the rings
    of entries live in them, and whether another set's flush has reached it. */

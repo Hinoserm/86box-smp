@@ -197,6 +197,10 @@ typedef struct cpu_ap_t {
     int locked_split;
 
     unsigned int cfg_taken;
+
+    /* Its core runs on its thread (cpu_thread_runs_core): set before the
+       thread starts, cleared once it has stopped. */
+    int own_thread;
 } cpu_ap_t;
 
 static cpu_ap_t cpu_aps[CPU_MP_MAX];        /* [0] unused: the first is the machine's thread */
@@ -1355,6 +1359,19 @@ cpu_thread_self(void)
     return cpu_thread_self_index;
 }
 
+/* Whether the calling thread runs processor index's core: its own thread
+   while it has one, else the machine's, where it takes its turns. Marked
+   before its thread starts and cleared once that has stopped, so the
+   machine's thread never takes itself for it while the other may run; a
+   device's thread is neither. */
+int
+cpu_thread_runs_core(int index)
+{
+    if ((index > 0) && (index < CPU_MP_MAX) && ld(&cpu_aps[index].own_thread))
+        return cpu_thread_self_index == index;
+    return is_cpu_thread && !cpu_thread_self_index;
+}
+
 /* The machine's thread waits for `done`, serving the others' device work
    meanwhile: spins, then sleeps until told. */
 static void
@@ -1729,9 +1746,11 @@ cpu_thread_start(int index, const cpu_core_ops_t *core)
         ap->wake = thread_create_event();
 
     snprintf(name, sizeof(name), "86Box CPU %i", index);
+    st(&ap->own_thread, 1); /* before the thread can run its core */
     ap->handle = thread_create_named(cpu_thread_main, (void *) (intptr_t) index, name);
     if ((ap->handle == NULL) || (ap->handle == (thread_t *) (uintptr_t) -1)) {
         ap->handle = NULL;
+        st(&ap->own_thread, 0);
         pclog("CPU MP: could not start processor %i's thread\n", index);
         return 0;
     }
@@ -1762,6 +1781,7 @@ cpu_thread_stop(void)
         thread_wait(ap->handle);
 #endif
         ap->handle = NULL;
+        st(&ap->own_thread, 0); /* stopped: its core is the machine's thread's again */
         cpu_ap_started--;
         cpu_mp_ap_threads = cpu_ap_started;
         pclog("CPU MP: processor %i's thread has stopped\n", i);
