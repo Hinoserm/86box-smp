@@ -53,6 +53,7 @@
 #include <86box/smram.h>
 #include <86box/nmi.h>
 #include <86box/cpu_mp.h>
+#include "cpu_core.h"
 
 #ifdef ENABLE_CPU_MP_LOG
 int cpu_mp_do_log = ENABLE_CPU_MP_LOG;
@@ -74,7 +75,6 @@ cpu_mp_log(const char *fmt, ...)
 
 extern int  ioapic_external_interrupt_pending_at(int index);
 extern void lapic_index_board_reset(uint8_t index);
-extern void cpu_core_register_state(void);
 
 /* What a processor is doing. */
 enum {
@@ -814,7 +814,7 @@ cpu_mp_configure(int count)
         return;
 
     if (cpu_mp_var_count == 0) {
-        cpu_core_register_state();
+        cpu_core_ops()->register_state();
         /* cpu_mp_init_image finds cpu_state at the start of every image. */
         if ((cpu_mp_var_count < 1) || (cpu_mp_vars[0].size != sizeof(cpu_state_t)))
             fatal("cpu_mp: cpu_state is not the first per-processor variable\n");

@@ -366,10 +366,13 @@ uint8_t rcr[8] = { 0 };
 /* Table for FXTRACT. */
 double exp_pow_table[0x800];
 
+#ifndef CPU_AP_CORE
+/* The ports are the machine's, registered by the first core alone. */
 static int cyrix_addr;
 
 static void    cpu_write(uint16_t addr, uint8_t val, void *priv);
 static uint8_t cpu_read(uint16_t addr, void *priv);
+#endif
 
 #ifdef ENABLE_CPU_LOG
 int cpu_do_log = ENABLE_CPU_LOG;
@@ -614,10 +617,14 @@ cpu_set(void)
         return;
 
     cpu_inited = 1;
+#ifndef CPU_AP_CORE
+    /* The APICs are the machine's: another processor's core takes its
+       model without resetting them. */
     cpu_lapic_reset_all();
     /* Register callbacks after CPU-owned reset so LAPIC sees a coherent owner. */
     lapic_set_index_source(cpu_lapic_index_source);
     lapic_set_ap_startup_handler(cpu_ap_startup_request);
+#endif
 
     cpu_effective = cpu;
     cpu_s         = (CPU *) &cpu_f->cpus[cpu_effective];
@@ -714,10 +721,13 @@ cpu_set(void)
     cpu_set_pci_speed(0);
     cpu_set_agp_speed(0);
 
+#ifndef CPU_AP_CORE
+    /* Ports are the machine's, registered once. */
     io_handler(cpu_iscyrix, 0x0022, 0x0002, cpu_read, NULL, NULL, cpu_write, NULL, NULL, NULL);
 
     io_handler(hasfpu, 0x00f0, 0x000f, cpu_read, NULL, NULL, cpu_write, NULL, NULL, NULL);
     io_handler(hasfpu, 0xf007, 0x0001, cpu_read, NULL, NULL, cpu_write, NULL, NULL, NULL);
+#endif
 
 #ifdef USE_DYNAREC
     x86_setopcodes(ops_386, ops_386_0f, dynarec_ops_386, dynarec_ops_386_0f);
@@ -2031,7 +2041,9 @@ cpu_set(void)
     else
         cpu_exec = execx86;
     mmx_init();
+#ifndef CPU_AP_CORE
     gdbstub_cpu_init();
+#endif
 }
 
 /* The P54C or P55C, the Pentiums with an INIT pin and an on-chip APIC. */
@@ -2045,10 +2057,12 @@ void
 cpu_close(void)
 {
     cpu_inited = 0;
+#ifndef CPU_AP_CORE
     cpu_lapic_reset_all();
     /* Drop callbacks on teardown so LAPIC does not retain stale CPU hooks. */
     lapic_set_index_source(NULL);
     lapic_set_ap_startup_handler(NULL);
+#endif
 }
 
 void
@@ -2838,8 +2852,10 @@ void
 cpu_ven_reset(void)
 {
     memset(&msr, 0, sizeof(msr));
+#ifndef CPU_AP_CORE
     /* Vendor reset resyncs CPU-owned LAPIC mirrors before model-specific MSRs. */
     cpu_lapic_ven_reset();
+#endif
 
     switch (cpu_s->cpu_type) {
         case CPU_WINCHIP:
@@ -4588,6 +4604,7 @@ i686_invalid_wrmsr:
     }
 }
 
+#ifndef CPU_AP_CORE
 static void
 cpu_write(uint16_t addr, uint8_t val, UNUSED(void *priv))
 {
@@ -4786,6 +4803,7 @@ cpu_read(uint16_t addr, UNUSED(void *priv))
 
     return ret;
 }
+#endif
 
 void
 #ifdef USE_DYNAREC

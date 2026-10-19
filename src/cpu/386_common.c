@@ -1005,8 +1005,11 @@ smram_restore_state_p6(uint32_t *saved_state)
     if (is6117)
         rammask |= 0x3000000;
 
+#ifndef CPU_AP_CORE
+    /* A20M# is the boot processor's; another never masks A20. */
     if (saved_state[SMRAM_FIELD_P6_A20M] & 0x01)
         rammask &= 0xffefffff;
+#endif
 
     flushmmucache();
 

@@ -427,11 +427,14 @@ update_tsc(void)
     if (cycdiff > 0)
         tsc += cycdiff;
 
-    /* Timers are the first processor's to run, not another's in its turn. */
+#    ifndef CPU_AP_CORE
+    /* Timers are the first processor's to run, not another's in its turn;
+       another processor's core has no timer calls at all. */
     if ((cycdiff > 0) && !cpu_mp_timers_frozen) {
         if (TIMER_VAL_LESS_THAN_VAL(timer_target, (uint64_t) tsc))
             timer_process();
     }
+#    endif
 }
 
 static __inline void
@@ -596,6 +599,7 @@ codegen_chain_service(void)
        has to give breaks the chain. */
     if ((cpu_state.flags & I_FLAG) && x86_external_interrupt_pending())
         return 1;
+#        ifndef CPU_AP_CORE
     /* A timer armed sooner: the chain now runs down only to it. Another
        processor's turn runs no timers (cpu_mp.c). */
     if (!cpu_mp_timers_frozen) {
@@ -608,6 +612,7 @@ codegen_chain_service(void)
         if (floor > cpu_state.chain_floor)
             cpu_state.chain_floor = floor;
     }
+#        endif
     return 0;
 }
 
@@ -639,6 +644,7 @@ exec386_chain_still_clean(codeblock_t *block)
 static inline int
 exec386_chain_floor(void)
 {
+#        ifndef CPU_AP_CORE
     const int64_t until = (int64_t) (timer_target - tsc);
 
     if (cpu_mp_timers_frozen)
@@ -647,6 +653,7 @@ exec386_chain_floor(void)
         return cycles;
     if (until < cycles)
         return cycles - (int) until;
+#        endif
     return 0;
 }
 
@@ -1333,12 +1340,14 @@ exec386_dynarec_blocks(void)
             tsc += cycdiff;
         }
 
+#    ifndef CPU_AP_CORE
         /* Timers are the first processor's to run, not another's in its
            turn (cpu_mp.c). */
         if ((cycdiff > 0) && !cpu_mp_timers_frozen) {
             if (TIMER_VAL_LESS_THAN_VAL(timer_target, (uint64_t) tsc))
                 timer_process();
         }
+#    endif
 
 #    ifdef USE_GDBSTUB
         if (gdbstub_instruction())
@@ -1393,6 +1402,14 @@ exec386_dynarec(int32_t cycs)
             cpu_mp_end_slice();
         }
     }
+}
+
+/* This core's share of a slice, run for the machine (cpu_core.c). */
+int
+cpu_core_run_chunk(int32_t cycs)
+{
+    cycles += cycs;
+    return exec386_dynarec_blocks();
 }
 #endif
 

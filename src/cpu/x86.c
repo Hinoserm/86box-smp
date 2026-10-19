@@ -248,6 +248,15 @@ static int reset_apic_init;
    INIT pin resets "without altering the FPU state"). */
 static int reset_init;
 
+/* The lookup tables a core builds for itself before it first runs (a
+   hard reset builds the first core's). */
+void
+x86_tables_init(void)
+{
+    makemod1table();
+    makeznptable();
+}
+
 /* Common reset function. */
 static void
 reset_common(int hard)

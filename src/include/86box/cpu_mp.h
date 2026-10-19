@@ -25,9 +25,17 @@
 extern int cpu_mp_count;
 extern int cpu_mp_cur;
 
-/* Which processor the code running now belongs to: the one cpu_mp.c has
-   in place. */
-#define cpu_mp_self cpu_mp_cur
+/* Which processor the code running now belongs to, as the processor core
+   sees it: another processor's core is always its own processor
+   (cpu_core_self, cpu_core.h); the first core's is whichever cpu_mp.c has
+   in place (processor 0, or another taking its turn in the first core when
+   it has no core of its own). */
+extern int cpu_core_self;
+#ifdef CPU_AP_CORE
+#    define cpu_mp_self cpu_core_self
+#else
+#    define cpu_mp_self cpu_mp_cur
+#endif
 
 /* Set while a processor other than the first runs its share of a slice:
    time is the first processor's to advance, so nothing fires timers. */
