@@ -156,7 +156,7 @@ static idle_access_t idle_log[IDLE_LOG_MAX];
 static int           idle_n;
 static int           idle_bad;
 static uint64_t      idle_start_tsc;
-static int           idle_pass;
+static int64_t       idle_pass;
 static int           idle_mmuflush;
 static uint64_t      idle_io;
 static uint64_t      idle_retry_tsc;
@@ -432,7 +432,6 @@ idle_prove(uint32_t eip, int period, int keep)
     idle_n           = 0;
     idle_bad         = 0;
     idle_start_tsc   = exec386_now_tsc();
-    idle_pass        = cycles;
     idle_mmuflush    = mmuflush;
     idle_io          = idle_io_count();
     idle_masked_from = idle_masked_now();
@@ -486,15 +485,18 @@ idle_visit(uint32_t eip, int period)
             if ((eip == idle_site) && (period == idle_period) && !idle_bad && (++idle_visits < idle_period))
                 return;
             idle_stop();
+            /* How long the passes took, on the processor's clock: `cycles`
+               alone loses a period at every refill they ran across
+               (exec386_dynarec). */
+            idle_pass = (int64_t) (exec386_now_tsc() - idle_start_tsc);
             /* The port I/O of the passes: none at a PAUSE; at a polling IN
                its own reads, one a pass. */
             if ((eip != idle_site) || (period != idle_period) || idle_bad || (mmuflush != idle_mmuflush) ||
                 ((idle_io_count() - idle_io) != (uint64_t) ((period > 1) ? period : 0)) ||
-                !idle_state_same(&idle_snap) || ((idle_pass - cycles) <= 0)) {
+                !idle_state_same(&idle_snap) || (idle_pass <= 0) || (idle_pass > IDLE_PASS_MAX)) {
                 idle_fail();
                 return;
             }
-            idle_pass   = idle_pass - cycles;
             idle_mode   = IDLE_PROVEN;
             idle_misses = 0;
             idle_masked = idle_masked_from && idle_masked_now();
@@ -511,7 +513,7 @@ idle_visit(uint32_t eip, int period)
                 memcpy(&pr->snap, &idle_snap, sizeof(idle_state_t));
                 memcpy(pr->log, idle_log, sizeof(idle_access_t) * idle_n);
                 pr->n      = idle_n;
-                pr->pass   = idle_pass;
+                pr->pass   = (int) idle_pass;
                 pr->masked = idle_masked;
             }
             return;
