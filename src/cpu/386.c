@@ -20,6 +20,7 @@
 #include <86box/io.h>
 #include <86box/nmi.h>
 #include <86box/mem.h>
+#include <86box/cpu_mp.h>
 #include <86box/pic.h>
 #include <86box/timer.h>
 #include <86box/pit.h>

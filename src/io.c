@@ -470,8 +470,17 @@ uint32_t io_val  = 0x00000000;
    before the next timer event it gives the same value, or alternates
    between two (a status register such as the VGA's 3DAh). Cleared before
    each byte read, and after one that more than one device answered; read
-   straight after the read by an idle loop's proof (x86_idle_in). */
-int io_poll_pure;
+   straight after the read by an idle loop's proof (x86_idle_in). One for
+   each processor, as io_port_count: set and read for the processor whose
+   read it is, so another's read in between changes nothing. */
+int io_poll_pure[CPU_MP_MAX];
+
+/* The byte read under way only repeats (a device's inb handler). */
+void
+io_poll_pure_mark(void)
+{
+    io_poll_pure[cpu_mp_cur] = 1;
+}
 
 uint8_t
 inb(uint16_t port)
@@ -488,8 +497,8 @@ inb(uint16_t port)
     io_port_count[cpu_mp_cur]++;
     cpu_mp_chain_signal(cpu_mp_cur); /* a chain leaves: the access may change what the processor's loop looks at */
     cpu_mp_drain_posted();           /* the other processors' posted writes go first */
-    io_port      = port;
-    io_poll_pure = 0;
+    io_port                  = port;
+    io_poll_pure[cpu_mp_cur] = 0;
 
 #ifdef USE_DEBUG_REGS_486
     io_debug_check_addr(port);
@@ -524,7 +533,7 @@ inb(uint16_t port)
     }
 
     if (answered != 1)
-        io_poll_pure = 0;
+        io_poll_pure[cpu_mp_cur] = 0;
 
     if (amstrad_latch & 0x80000000) {
         if (port & 0x80)

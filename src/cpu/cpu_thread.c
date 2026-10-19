@@ -762,6 +762,8 @@ cpu_thread_port_ap_local(uint16_t port, int write, uint8_t *val)
     if (!(write ? io_ap_local_outb(port, *val) : io_ap_local_inb(port, val)))
         return 0;
     __atomic_fetch_add(&io_port_count[cpu_thread_self_index], 1, __ATOMIC_RELAXED);
+    if (!write)
+        io_poll_pure[cpu_thread_self_index] = 0; /* not a read known to repeat */
     return 1;
 }
 

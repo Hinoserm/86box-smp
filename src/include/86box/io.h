@@ -114,7 +114,8 @@ extern int  io_ap_local_outb(uint16_t port, uint8_t val);
 /* Port accesses made, for each processor, and whether the last byte read
    only repeats (io.c). */
 extern uint64_t io_port_count[];
-extern int      io_poll_pure;
+extern int      io_poll_pure[];
+extern void     io_poll_pure_mark(void);
 
 extern uint8_t  inb(uint16_t port);
 extern void     outb(uint16_t port, uint8_t val);

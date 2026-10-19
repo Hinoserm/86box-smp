@@ -719,7 +719,7 @@ svga_in(uint16_t addr, void *priv)
             /* Read again before the display moves on it gives the same, the
                diagnostic bits alternating: a retrace wait may be skipped
                (x86_idle_in). */
-            io_poll_pure = 1;
+            io_poll_pure_mark();
             break;
 
         default:
