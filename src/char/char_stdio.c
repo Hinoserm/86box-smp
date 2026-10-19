@@ -271,11 +271,13 @@ char_stdio_close(void *priv)
 
     /* Restore existing terminal configuration. */
 #ifdef _WIN32
+    /* The input thread lets go of the handle as it stops: kept here for the
+       console mode's restore. */
+    HANDLE fd_in = dev->fd_in;
     if (dev->thread_in) {
         /* Terminate input thread if it's being used. */
         char_stdio_log(dev->log, "Waiting for stdin thread to terminate...");
-        HANDLE fd_in = dev->fd_in;
-        dev->fd_in   = NULL;
+        dev->fd_in = NULL;
         CancelIoEx(fd_in, NULL);
         thread_set_event(dev->event_in);
         thread_wait(dev->thread_in);
@@ -283,7 +285,7 @@ char_stdio_close(void *priv)
     }
     if (dev->event_in)
         thread_destroy_event(dev->event_in);
-    if (dev->prev_in_mode_valid && CHAR_FD_VALID(dev->fd_in) && !SetConsoleMode(dev->fd_in, dev->prev_in_mode))
+    if (dev->prev_in_mode_valid && CHAR_FD_VALID(fd_in) && !SetConsoleMode(fd_in, dev->prev_in_mode))
         char_stdio_log(dev->log, "Input restore SetConsoleMode failed (%08X)\n", GetLastError());
     if (dev->prev_out_mode_valid && CHAR_FD_VALID(dev->fd_out) && !SetConsoleMode(dev->fd_out, dev->prev_out_mode))
         char_stdio_log(dev->log, "Output restore SetConsoleMode failed (%08X)\n", GetLastError());
