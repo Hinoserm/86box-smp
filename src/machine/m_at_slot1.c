@@ -24,6 +24,7 @@
 #include <86box/device.h>
 #include <86box/pci.h>
 #include <86box/chipset.h>
+#include <86box/cpu_mp.h>
 #include <86box/hdc.h>
 #include <86box/hdc_ide.h>
 #include <86box/keyboard.h>
@@ -1701,7 +1702,28 @@ machine_at_p2bds_init(const machine_t *model)
 #endif
     device_add(&sst_flash_39sf020_device);
     spd_register(SPD_TYPE_SDRAM, 0xF, 1024);
-    device_add_params(&ioapic_device, (void *) IOAPIC_TOPOLOGY_LAPIC_SLOTS(2));
+    device_add(&w83781d_device);     /* fans: Chassis, CPU, Power; temperatures: MB, unused, CPU (as the P2B-LS) */
+    hwm_values.temperatures[1] = 0;  /* unused */
+    hwm_values.temperatures[2] -= 3; /* CPU offset */
+
+    {
+        /* Two Slot 1 processors and an 82093AA I/O APIC. The Processor
+           settings say how many are fitted; the second is started by the
+           BIOS with INIT and STARTUP through the APIC, as on the 54TDP.
+           A Celeron runs alone (cpu_mp_pairable). The I/O APIC's IRQ and
+           PCI wiring is learned from the BIOS's MP table. */
+        uintptr_t topo = IOAPIC_TOPOLOGY_UP_APIC_DEFAULT;
+
+        if ((cpu_count >= 2) && cpu_mp_pairable(cpu_f, cpu_s)) {
+            cpu_mp_configure(2);
+            topo |= IOAPIC_TOPOLOGY_LAPIC_SLOTS(2) | IOAPIC_TOPOLOGY_SMP;
+        } else {
+            if (cpu_count >= 2)
+                pclog("P2B-DS: %i processors configured, one runs: this processor does not pair\n", cpu_count);
+            topo |= IOAPIC_TOPOLOGY_LAPIC_SLOTS(1);
+        }
+        (void) device_add_params(&ioapic_validated_up_device, (void *) topo);
+    }
 
     return ret;
 }

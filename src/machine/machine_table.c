@@ -27342,7 +27342,8 @@ const machine_t machines[] = {
         },
         .aliases                  = { "RM Accelerator 350P2XB", "RM Accelerator 450P3XB", "" }
     },
-    /* Has an Intel 82093AA I/O APIC and onboard Adaptec AIC-7890 SCSI. */
+    /* Has onboard Adaptec AIC-7890 SCSI. Two Slot 1 processors and an
+       82093AA I/O APIC; four PCI slots, one AGP and two ISA. */
     {
         .name              = "[i440BX] ASUS P2B-DS",
         .internal_name     = "p2bds",
@@ -27364,7 +27365,7 @@ const machine_t machines[] = {
             .max_multi   = 8.0
         },
         .bus_flags = MACHINE_PS2_AGP | MACHINE_BUS_USB,
-        .flags     = MACHINE_IDE_DUAL | MACHINE_APM | MACHINE_ACPI | MACHINE_USB | MACHINE_UART_PRI | MACHINE_UART_SEC | MACHINE_LPT_PRI,
+        .flags     = MACHINE_IDE_DUAL | MACHINE_APM | MACHINE_ACPI | MACHINE_USB | MACHINE_DUAL_CPU | MACHINE_UART_PRI | MACHINE_UART_SEC | MACHINE_LPT_PRI,
         .ram       = {
             .min  = 8192,
             .max  = 1048576,
@@ -27393,7 +27394,6 @@ const machine_t machines[] = {
             MSLOT_PCI(0x00, PCI_CARD_NORTHBRIDGE, 0, 0, 0, 0),
             MSLOT_BRIDGE(0x04, PCI_CARD_SOUTHBRIDGE, 1, 2, 3, 4, ((const machine_slot_t[]) { MSLOT_BUS(SLOT_ISA16, 2), MSLOT_END })),
             MSLOT_PCI(0x06, PCI_CARD_SCSI, 4, 1, 2, 3),
-            MSLOT_PCI(0x07, PCI_CARD_NORMAL, 3, 4, 1, 2),
             MSLOT_PCI(0x0B, PCI_CARD_NORMAL, 2, 3, 4, 1),
             MSLOT_PCI(0x0C, PCI_CARD_NORMAL, 1, 2, 3, 4),
             MSLOT_PCI(0x09, PCI_CARD_NORMAL, 4, 1, 2, 3),
