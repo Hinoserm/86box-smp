@@ -1080,7 +1080,10 @@ cmd_info_board(void)
     out("\nPCI functions: info pci. EISA slots and configuration RAM: info eisa.\n");
 }
 
-/* Every PCI function's configuration space, read as the guest would. */
+/* Every PCI function's configuration space, read as the guest's
+   configuration cycles read it: through each card's own read handler,
+   all 256 registers of each function. Unlike the other views this runs
+   device code, and a card whose register reads do something does it. */
 static void
 cmd_info_pci(void)
 {
@@ -1589,7 +1592,8 @@ static const char debugcon_help[] =
     "info gdt | idt             descriptor tables (the IVT in real mode)\n"
     "info mem [ADDRESS]         the memory map, or what is at one address\n"
     "info pic | pit | dma       8259s, 8254 counters, 8237 channels\n"
-    "info pci                   every PCI function's configuration space\n"
+    "info pci                   every PCI function's configuration space, read\n"
+    "                           through each card's own handler, as the guest would\n"
     "info eisa                  EISA slots and the configuration RAM\n"
     "info board                 chipset and super I/O registers\n"
     "info devices               every device on the machine\n"
