@@ -25224,6 +25224,87 @@ const machine_t machines[] = {
         },
         .aliases                  = { "" }
     },
+    /* Four Pentium Pro sockets on a 450GX with both PCI bridges, EISA,
+       two AIC-7880s and an ATI 264VT2 on the board, and Acer's own BIOS.
+       Acer X3 System Service Guide (SG255-9801A). The keyboard controller
+       and RTC are the FDC37C935's. */
+    {
+        .name              = "[i450GX] Acer X3 (AcerAltos 19000Pro4)",
+        .internal_name     = "acerx3",
+        .type              = MACHINE_TYPE_SOCKET8,
+        .chipset           = MACHINE_CHIPSET_INTEL_450GX,
+        .init              = machine_at_acerx3_init,
+        .p1_handler        = machine_generic_p1_handler,
+        .gpio_handler      = NULL,
+        .available_flag    = MACHINE_AVAILABLE,
+        .gpio_acpi_handler = NULL,
+        .cpu               = {
+            .package     = CPU_PKG_SOCKET8,
+            .block       = CPU_BLOCK_NONE,
+            .min_bus     = 50000000,
+            .max_bus     = 66666667,
+            .min_voltage = 2100,
+            .max_voltage = 3500,
+            .min_multi   = 2.0,
+            .max_multi   = 5.0
+        },
+        .bus_flags = MACHINE_PCIE | MACHINE_BUS_PS2,
+        .flags     = MACHINE_IDE | MACHINE_SCSI | MACHINE_VIDEO | MACHINE_QUAD_CPU | MACHINE_UART_PRI | MACHINE_UART_SEC | MACHINE_LPT_PRI,
+        .ram       = {
+            .min  = 32768,
+            .max  = 2097152,
+            .step = 32768
+        },
+        .nvrmask                  = 255,
+        .jumpered_ecp_dma         = 0,
+        .default_jumpered_ecp_dma = -1,
+        .kbc_device               = NULL,
+        .kbc_params               = 0x00000000,
+        .nvr_device               = NULL,
+        .nvr_params               = 0x00000000,
+        .sio_device               = &fdc37c93x_device,
+        .sio_params               = (uintptr_t) (FDC37C93X_NORMAL | FDC37C93X_IDE),
+        .kbc_p1                   = 0x00000cf0,
+        .gpio                     = 0xffffffff,
+        .gpio_acpi                = 0xffffffff,
+        .device                   = &acerx3_device,
+        .scsi_device              = &acerx3_scsi_device,
+        .kbd_device               = NULL,
+        .fdc_device               = NULL,
+        .vid_device               = &mach64vt2_onboard_device,
+        .snd_device               = NULL,
+        .net_device               = NULL,
+        .pci_flags                = PCI_CONFIG_TYPE_1,
+        .slot_layout              = (const machine_slot_t[]) {
+            /* The host bus: the compatibility PB and the memory controller; the
+               auxiliary PB, with the second PCI bus, is at the end. */
+            MSLOT_PCI(0x19, PCI_CARD_NORTHBRIDGE, 0, 0, 0, 0),
+            MSLOT_PCI(0x14, PCI_CARD_NORTHBRIDGE_SEC, 0, 0, 0, 0),
+            /* The primary bus: the PCEB with three EISA slots behind it, the video,
+               and slots 1-4, each INTA# one PIRQ on from the last (the BIOS's
+               table at F000:0F34). */
+            MSLOT_BRIDGE(0x00, PCI_CARD_SOUTHBRIDGE, 0, 0, 0, 0, ((const machine_slot_t[]) { MSLOT_BUS(SLOT_EISA, 3), MSLOT_END })),
+            MSLOT_PCI(0x0c, PCI_CARD_VIDEO, 0, 0, 0, 0),
+            MSLOT_PCI(0x04, PCI_CARD_NORMAL, 1, 2, 3, 4), /* Slot 1 */
+            MSLOT_PCI(0x05, PCI_CARD_NORMAL, 2, 3, 4, 1), /* Slot 2 */
+            MSLOT_PCI(0x06, PCI_CARD_NORMAL, 3, 4, 1, 2), /* Slot 3 */
+            MSLOT_PCI(0x07, PCI_CARD_NORMAL, 4, 1, 2, 3), /* Slot 4 */
+            MSLOT_BRIDGE(0x1a, PCI_CARD_NORTHBRIDGE_AUX, 0, 0, 0, 0, ((const machine_slot_t[]) {
+                /* The secondary bus, last so its slots number after the
+                   primary bus's: the SIO.A, slots 5-7 on mapper links 5-8,
+                   the first AIC-7880 sharing link 8 with a slot line and the
+                   second on link 9 alone (machine_pci_register_bus_slots()). */
+                MSLOT_PCI(0x00, PCI_CARD_SOUTHBRIDGE_AUX, 0, 0, 0, 0),
+                MSLOT_PCI(0x04, PCI_CARD_NORMAL, 5, 6, 7, 8), /* Slot 5 */
+                MSLOT_PCI(0x05, PCI_CARD_NORMAL, 6, 7, 8, 5), /* Slot 6 */
+                MSLOT_PCI(0x06, PCI_CARD_NORMAL, 7, 8, 5, 6), /* Slot 7 */
+                MSLOT_PCI(0x0b, PCI_CARD_SCSI, 8, 0, 0, 0),   /* On-board SCSI 1 */
+                MSLOT_PCI(0x0c, PCI_CARD_SCSI, 9, 0, 0, 0),   /* On-board SCSI 2 */
+                MSLOT_END })),
+            MSLOT_END
+        },
+        .aliases                  = { "AcerAltos 19000Pro4", "" }
+    },
     /* This has a PC87306 with unknown keyboard controller firmware (Phoenix?). */
     {
         .name              = "[i450GX] FIC PO-6000",
