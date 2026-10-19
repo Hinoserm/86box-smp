@@ -45,6 +45,7 @@ add_library(chipset OBJECT
     intel_i450kx.c
     intel_pceb_esc.c
     intel_sio.c
+    intel_sioa.c
     intel_piix.c
     isa486c.c
     # Board/chipset targets reference APIC devices, but the source lives one level up.

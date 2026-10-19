@@ -340,6 +340,36 @@ pci_apic_direct_intin(uint8_t intin, uint8_t irq_line, int set, uint8_t *irq_sta
         (void) pci_apic_intin_irq(intin, 1, set, NULL);
 }
 
+/* Something on a board that sees one bus's interrupts as they are steered
+   (an I/O APIC wired to that bus alone): told of each card's INTx change
+   with the IRQ it went to, 0xff for none. */
+#define PCI_BUS_IRQ_OBSERVERS 4
+static struct {
+    uint8_t                bus;
+    pci_bus_irq_observer_t fn;
+    void                  *priv;
+} pci_bus_irq_observers[PCI_BUS_IRQ_OBSERVERS];
+static int pci_bus_irq_observer_count;
+
+void
+pci_set_bus_irq_observer(uint8_t bus, pci_bus_irq_observer_t fn, void *priv)
+{
+    if (pci_bus_irq_observer_count >= PCI_BUS_IRQ_OBSERVERS)
+        fatal("pci_set_bus_irq_observer: too many\n");
+    pci_bus_irq_observers[pci_bus_irq_observer_count].bus  = bus;
+    pci_bus_irq_observers[pci_bus_irq_observer_count].fn   = fn;
+    pci_bus_irq_observers[pci_bus_irq_observer_count].priv = priv;
+    pci_bus_irq_observer_count++;
+}
+
+static void
+pci_irq_observe(uint8_t slot, uint8_t pci_int_index, uint8_t irq_line, int set)
+{
+    for (int i = 0; i < pci_bus_irq_observer_count; i++)
+        if (pci_bus_irq_observers[i].bus == pci_cards[slot].bus)
+            pci_bus_irq_observers[i].fn(pci_bus_irq_observers[i].priv, slot, pci_int_index, irq_line, set);
+}
+
 /* PCI raise IRQ: the first parameter is slot if < PCI_MIRQ_BASE, MIRQ if >= PCI_MIRQ_BASE
                   and < PCI_DIRQ_BASE, and direct IRQ line if >= PCI_DIRQ_BASE (RichardG's
                   hack that may no longer be needed). */
@@ -384,6 +414,7 @@ pci_irq(uint8_t slot, uint8_t pci_int, int level, int set, uint8_t *irq_state)
                     default:
                     case 0x00:
                         /* Steered nowhere: an input of its own is all it reaches. */
+                        pci_irq_observe(slot, pci_int_index, 0xff, set);
                         if (direct_intin_route)
                             pci_apic_direct_intin(intin, 0xff, set, irq_state);
                         return;
@@ -416,6 +447,7 @@ pci_irq(uint8_t slot, uint8_t pci_int, int level, int set, uint8_t *irq_state)
                       pci_irq_name(irq_line), level, !!set);
                 pci_irq_route_log_seen[pci_cards[slot].bus][pci_cards[slot].id][pci_int_index] = 1;
             }
+            pci_irq_observe(slot, pci_int_index, (irq_line <= PCI_IRQ_MAX) ? irq_line : 0xff, set);
             break;
         case (PCI_IIRQ_BASE | 0x00) ... (PCI_IIRQ_BASE | PCI_IIRQS_NUM):
             /* PCI internal routing. */
@@ -1407,6 +1439,8 @@ pci_init(int flags)
 
     pci_trc_reg = 0;
     pci_flags   = flags;
+
+    pci_bus_irq_observer_count = 0;
 
     if (pci_flags & FLAG_NO_IRQ_STEERING) {
         pic_elcr_io_handler(0);

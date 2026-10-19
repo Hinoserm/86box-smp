@@ -216,6 +216,7 @@ enum {
     PCI_CARD_SOUTHBRIDGE_PMU = 5,
     PCI_CARD_SOUTHBRIDGE_USB = 6,
     PCI_CARD_NORTHBRIDGE_AUX = 7, /* a second host bridge, to a peer bus (450GX) */
+    PCI_CARD_SOUTHBRIDGE_AUX = 8, /* the peer bus's own bridge chip */
     PCI_CARD_AGP             = 0x0f,
     PCI_CARD_NORMAL          = 0x10,
     PCI_CARD_VIDEO           = 0x11,
@@ -239,6 +240,7 @@ enum {
     PCI_ADD_SOUTHBRIDGE_PMU = 5,
     PCI_ADD_SOUTHBRIDGE_USB = 6,
     PCI_ADD_NORTHBRIDGE_AUX = 7,
+    PCI_ADD_SOUTHBRIDGE_AUX = 8,
     PCI_ADD_AGP             = 0x0f,
     PCI_ADD_NORMAL          = 0x10,
     PCI_ADD_VIDEO           = 0x11,
@@ -271,6 +273,9 @@ extern uint32_t    pci_size;
 
 extern void        pci_set_irq_routing(int pci_int, int irq);
 extern void        pci_set_irq_level(int pci_int, int level);
+/* A board part that sees one bus's interrupts as steered (pci.c). */
+typedef void (*pci_bus_irq_observer_t)(void *priv, uint8_t slot, uint8_t pci_int_index, uint8_t irq_line, int set);
+extern void        pci_set_bus_irq_observer(uint8_t bus, pci_bus_irq_observer_t fn, void *priv);
 extern void        pci_enable_mirq(int mirq);
 extern void        pci_set_mirq_routing(int mirq, uint8_t irq);
 extern uint8_t     pci_get_mirq_level(int mirq);

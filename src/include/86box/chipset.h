@@ -119,6 +119,10 @@ extern const device_t esc_device;
 
 extern const device_t sio_device;
 extern const device_t sio_zb_device;
+extern const device_t sioa_peer_device;
+extern uint32_t       sioa_apic_base(const void *priv);
+extern void           sioa_attach(void *priv, void *ioapic, void *gx, uint8_t bus);
+extern void           sioa_apic_update(void *priv);
 
 #define PIIX4_NVR_AMI_1995  0x0000000100000000
 #define PIIX4_NVR_AMI_1995J 0x0000000200000000
