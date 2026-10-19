@@ -3124,7 +3124,7 @@ mem_reset(void)
     }
 
     if (ram != NULL) {
-        plat_munmap(ram, ram_size);
+        plat_munmap(ram, ram_size + 16);
         ram      = NULL;
         ram_size = 0;
     }
