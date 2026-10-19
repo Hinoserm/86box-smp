@@ -178,7 +178,8 @@ pb_write(int func, int addr, UNUSED(int len), uint8_t val, void *priv)
                 dev->pb_pci_conf[addr] = val;
                 break;
 
-            /* BIST (0Fh): "Writes to this register have no effect". */
+            case 0x0f: /* BIST: "Writes to this register have no effect" */
+                break;
 
             case 0x40:
             case 0x41:
@@ -618,7 +619,8 @@ mc_write(int func, int addr, UNUSED(int len), uint8_t val, void *priv)
                 i450kx_apicr_log("MC", dev->mc_pci_conf);
                 break;
 
-            /* UERRADD (A8h-ABh) is read-only (2.3.21). */
+            case 0xa8 ... 0xab: /* UERRADD: read-only (2.3.21) */
+                break;
 
             case 0xac ... 0xae:
                 dev->mc_pci_conf[addr] = val;
