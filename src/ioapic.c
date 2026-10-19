@@ -58,6 +58,13 @@ typedef struct ioapic_t {
     uint8_t  pins;
     uint8_t  smi_pin; /* 0xff: none */
     uint8_t  is_esc;
+    /* The host bridge in front of it forwards only a range of the APIC
+       space to its bus (the 450GX's APICR): outside it, or with it
+       disabled, the processors do not reach the window. No gate: always. */
+    uint8_t  gate_on;
+    uint8_t  gate_open;
+    uint32_t gate_lo;
+    uint32_t gate_hi;
     uint8_t  intr_masked; /* the ESC's INTRC: the 8259's INTR held inactive */
     uint32_t version_reg;
     uint32_t mmio_base;
@@ -1651,12 +1658,22 @@ ioapic_set_legacy_irq_routing(void *ioapic, const ioapic_legacy_irq_routing_t *r
     apic_unlock();
 }
 
-/* The window where it is, while the APIC path is on. */
+/* The window where it is, while the APIC path is on and the host bridge
+   forwards that address. */
 static void
 ioapic_apply_mapping(ioapic_t *dev)
 {
-    if (dev->uniprocessor_apic)
+    int decoded;
+
+    if (!dev->uniprocessor_apic)
+        return;
+    decoded = !dev->gate_on ||
+              (dev->gate_open && (dev->mmio_base >= dev->gate_lo) &&
+               ((dev->mmio_base + dev->mmio_size - 1) <= dev->gate_hi));
+    if (decoded)
         mem_mapping_set_addr(&dev->ioapic_mapping, dev->mmio_base, dev->mmio_size);
+    else
+        mem_mapping_disable(&dev->ioapic_mapping);
 }
 
 /* The ESC moves its I/O APIC with APICBASE; this is where it says so. The
@@ -1679,6 +1696,29 @@ ioapic_set_mmio_base(void *ioapic, uint32_t base)
 {
     apic_lock();
     ioapic_set_mmio_base_locked(ioapic, base);
+    apic_unlock();
+}
+
+/* The host bridge's forwarding range for the APIC space (see gate_on). */
+static void
+ioapic_set_host_decode_locked(void *ioapic, uint32_t lo, uint32_t hi, int open)
+{
+    ioapic_t *dev = (ioapic_t *) ioapic;
+
+    if (dev == NULL)
+        return;
+    dev->gate_on   = 1;
+    dev->gate_open = !!open;
+    dev->gate_lo   = lo;
+    dev->gate_hi   = hi;
+    ioapic_apply_mapping(dev);
+}
+
+void
+ioapic_set_host_decode(void *ioapic, uint32_t lo, uint32_t hi, int open)
+{
+    apic_lock();
+    ioapic_set_host_decode_locked(ioapic, lo, hi, open);
     apic_unlock();
 }
 

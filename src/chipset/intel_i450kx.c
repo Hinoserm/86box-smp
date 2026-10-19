@@ -90,6 +90,11 @@ typedef struct i450kx_t {
     uint8_t mc_pci_conf[256];
 
     uint8_t mem_state[2][256];
+
+    /* Told when either PB's APICR changes (the board's I/O APICs behind
+       each bridge follow it). */
+    void  (*apicr_cb)(void *arg);
+    void   *apicr_arg;
 } i450kx_t;
 
 #ifdef ENABLE_450KX_LOG
@@ -368,15 +373,21 @@ pb_write(int func, int addr, UNUSED(int len), uint8_t val, void *priv)
         case 0xa4:
             regs[addr] = val & 0xf1;
             i450kx_apicr_log("PB", regs);
+            if (dev->apicr_cb)
+                dev->apicr_cb(dev->apicr_arg);
             break;
         case 0xa5:
         case 0xa6:
             regs[addr] = val;
             i450kx_apicr_log("PB", regs);
+            if (dev->apicr_cb)
+                dev->apicr_cb(dev->apicr_arg);
             break;
         case 0xa7:
             regs[addr] = val & 0x0f;
             i450kx_apicr_log("PB", regs);
+            if (dev->apicr_cb)
+                dev->apicr_cb(dev->apicr_arg);
             break;
 
         /* CONFVR: the compatibility PB's only on the 450GX. */
@@ -824,6 +835,8 @@ i450kx_reset(void *priv)
     i450kx_pb_reset(&dev->pb);
     if (dev->gx == I450_GX_2)
         i450kx_pb_reset(&dev->aux);
+    if (dev->apicr_cb)
+        dev->apicr_cb(dev->apicr_arg);
 
     /* Defaults MC */
     dev->mc_pci_conf[0x00] = 0x86;
@@ -946,6 +959,41 @@ i450kx_init(const device_t *info)
     i450kx_reset(dev);
 
     return dev;
+}
+
+/* The I/O APIC range a PB forwards to its PCI bus (APICR, 82454GX 2.4.33):
+   "(base + x000h) through (base + yFFFh) where x is the I/O APIC Starting
+   Unit ID and y is the highest unit ID number". Answers whether it is
+   enabled. */
+int
+i450gx_apic_range(void *priv, int aux, uint32_t *lo, uint32_t *hi)
+{
+    const i450kx_t    *dev = (const i450kx_t *) priv;
+    const i450kx_pb_t *pb;
+    uint32_t           v;
+    uint32_t           base;
+
+    if ((dev == NULL) || (aux && (dev->gx != I450_GX_2)))
+        return 0;
+    pb   = aux ? &dev->aux : &dev->pb;
+    v    = pb->regs[0xa4] | (pb->regs[0xa5] << 8) | (pb->regs[0xa6] << 16) | ((uint32_t) pb->regs[0xa7] << 24);
+    base = ((v >> 12) & 0xffff) << 20;
+    *lo  = base + (((v >> 8) & 0x0f) << 12);
+    *hi  = base + (((v >> 4) & 0x0f) << 12) + 0xfff;
+    return (v & 0x01) && (*hi >= *lo);
+}
+
+/* The board's hook for APICR changes, called at once with the current
+   ranges. */
+void
+i450gx_set_apicr_callback(void *priv, void (*cb)(void *arg), void *arg)
+{
+    i450kx_t *dev = (i450kx_t *) priv;
+
+    dev->apicr_cb  = cb;
+    dev->apicr_arg = arg;
+    if (cb)
+        cb(arg);
 }
 
 /* The auxiliary PB's bus, for the board to put its slots on. */

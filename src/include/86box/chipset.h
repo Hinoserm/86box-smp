@@ -111,6 +111,8 @@ extern const device_t i450kx_device;
 extern const device_t i450gx_device;
 extern const device_t i450gx_dual_device;
 extern uint8_t        i450gx_aux_bus_index(void *priv);
+extern int            i450gx_apic_range(void *priv, int aux, uint32_t *lo, uint32_t *hi);
+extern void           i450gx_set_apicr_callback(void *priv, void (*cb)(void *arg), void *arg);
 
 extern const device_t pceb_device;
 extern const device_t esc_device;
@@ -139,6 +141,7 @@ extern const device_t ioapic_device;
 extern const device_t ioapic_ami_device;
 extern const device_t ioapic_esc_device;
 extern void           ioapic_set_mmio_base(void *ioapic, uint32_t base);
+extern void           ioapic_set_host_decode(void *ioapic, uint32_t lo, uint32_t hi, int open);
 extern int            ioapic_apic_path_active(const void *ioapic);
 extern void           ioapic_set_intr_masked(void *ioapic, int masked);
 extern const device_t ioapic_validated_up_device;
