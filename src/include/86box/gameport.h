@@ -116,19 +116,9 @@ typedef struct joystick_state_t {
     int pov_mapping[MAX_JOY_POVS][2];
 } joystick_state_t;
 
-extern device_t game_ports[GAMEPORT_MAX];
-
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-extern int gameport_available(int port);
-#ifdef EMU_DEVICE_H
-extern const device_t *gameport_get_device(int port);
-#endif
-extern int         gameport_has_config(int port);
-extern const char *gameport_get_internal_name(int port);
-extern int         gameport_get_from_internal_name(const char *str);
 
 #ifdef EMU_DEVICE_H
 extern const device_t gameport_device;

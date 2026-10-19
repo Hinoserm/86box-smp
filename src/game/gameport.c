@@ -33,12 +33,6 @@
 #include <86box/gameport.h>
 #include <86box/plat_unused.h>
 
-device_t game_ports[GAMEPORT_MAX];
-
-typedef struct {
-    const device_t *device;
-} GAMEPORT;
-
 typedef struct g_axis_t {
     pc_timer_t                  timer;
     int                         axis_nr;
@@ -948,6 +942,7 @@ gameport_card_get_internal_name(int card)
     return device_get_internal_name(gameport_cards[card]);
 }
 
+/* The card of a name, or -1 for a name it does not know. */
 int
 gameport_card_get_from_internal_name(const char *s)
 {
@@ -956,7 +951,7 @@ gameport_card_get_from_internal_name(const char *s)
             return c;
     }
 
-    return GAMEPORT_CARD_AUTO;
+    return -1;
 }
 
 int
@@ -1034,64 +1029,3 @@ const device_t gameport_sio_1io_device = {
     .force_redraw  = NULL,
     .config        = NULL
 };
-
-static const GAMEPORT gameports[] = {
-    { &device_none            },
-    { &device_internal        },
-    { &gameport_200_device    },
-    { &gameport_device        },
-    { &gameport_208_device    },
-    { &gameport_pnp_device    },
-    { &gameport_tm_acm_device },
-    { NULL                    }
-    // clang-format on
-};
-
-/* UI */
-int
-gameport_available(int port)
-{
-    if (gameports[port].device)
-        return (device_available(gameports[port].device));
-
-    return 1;
-}
-
-/* UI */
-const device_t *
-gameport_get_device(int port)
-{
-    return (gameports[port].device);
-}
-
-/* UI */
-int
-gameport_has_config(int port)
-{
-    if (!gameports[port].device)
-        return 0;
-
-    return (device_has_config(gameports[port].device) ? 1 : 0);
-}
-
-/* UI */
-const char *
-gameport_get_internal_name(int port)
-{
-    return device_get_internal_name(gameports[port].device);
-}
-
-/* UI */
-int
-gameport_get_from_internal_name(const char *str)
-{
-    int c = 0;
-
-    while (gameports[c].device != NULL) {
-        if (!strcmp(gameports[c].device->internal_name, str))
-            return c;
-        c++;
-    }
-
-    return 0;
-}

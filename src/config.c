@@ -971,6 +971,10 @@ load_input_devices(void)
 
     p                  = ini_section_get_string(cat, "gameport_card", "auto");
     gameport_card_type = gameport_card_get_from_internal_name(p);
+    if (gameport_card_type < 0) {
+        config_unsupported(STRING_UNSUPPORTED_GAMEPORT, p);
+        gameport_card_type = GAMEPORT_CARD_AUTO;
+    }
 }
 
 /* Load "Sound" section. */
@@ -1347,28 +1351,6 @@ load_ports(void)
                                                STRING_UNSUPPORTED_PARALLEL, p);
         }
     }
-
-#if 0
-// TODO: Load
-    for (c = 0; c < GAMEPORT_MAX; c++) {
-        sprintf(temp, "gameport%d_enabled", c + 1);
-        game_ports[c].enabled = !!ini_section_get_int(cat, temp, (c == 0) ? 1 : 0);
-
-        sprintf(temp, "gameport%d_device", c + 1);
-        p                   = ini_section_get_string(cat, temp, "none");
-        game_ports[c].device = config_known(gameport_get_from_internal_name(p), STRING_UNSUPPORTED_GAMEPORT, p);
-    }
-
-    for (uint8_t c = 0; c < GAMEPORT_MAX; c++) {
-        sprintf(temp, "gameport%d_type", c);
-
-        p              = ini_section_get_string(cat, temp, "none");
-        gameport_type[c] = config_known(gameport_get_from_internal_name(p), STRING_UNSUPPORTED_GAMEPORT, p);
-
-        if (!strcmp(p, "none"))
-            ini_section_delete_var(cat, temp);
-    }
-#endif
 }
 
 static char *
@@ -4022,34 +4004,6 @@ save_ports(void)
         else
             ini_section_set_string(cat, temp, char_get_device(lpt_ports[c].device)->internal_name);
     }
-
-#if 0
-// TODO: Save
-    for (c = 0; c < GAMEPORT_MAX; c++) {
-        sprintf(temp, "gameport%d_enabled", c + 1);
-        d = (c == 0) ? 1 : 0;
-        if (game_ports[c].enabled == d)
-            ini_section_delete_var(cat, temp);
-        else
-            ini_section_set_int(cat, temp, game_ports[c].enabled);
-
-        sprintf(temp, "gameport%d_device", c + 1);
-        if (game_ports[c].device == 0)
-            ini_section_delete_var(cat, temp);
-        else
-            ini_section_set_string(cat, temp,
-                                   gameport_get_internal_name(game_ports[c].device));
-    }
-
-    for (uint8_t c = 0; c < GAMEPORT_MAX; c++) {
-        sprintf(temp, "gameport%d_enabled", c);
-        if (gameport_type[c] == 0)
-            ini_section_delete_var(cat, temp);
-        else
-            ini_section_set_string(cat, temp,
-                                   gameport_get_internal_name(gameport_type[c]));
-    }
-#endif
 
     ini_delete_section_if_empty(config, cat);
 }
