@@ -3019,7 +3019,13 @@ msgstr ""
 msgid "&Unmute"
 msgstr ""
 
-msgid "Softfloat FPU"
+msgid "FPU emulation:"
+msgstr ""
+
+msgid "Host x87 (exact)"
+msgstr ""
+
+msgid "Softfloat (exact)"
 msgstr ""
 
 msgid "High performance impact"

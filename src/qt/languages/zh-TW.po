@@ -2924,8 +2924,14 @@ msgstr "退出 %1(&J)"
 msgid "&Unmute"
 msgstr "解除靜音(&U)"
 
-msgid "Softfloat FPU"
-msgstr "Softfloat 浮點運算器模擬"
+msgid "FPU emulation:"
+msgstr ""
+
+msgid "Host x87 (exact)"
+msgstr ""
+
+msgid "Softfloat (exact)"
+msgstr ""
 
 msgid "High performance impact"
 msgstr "對效能影響高"

@@ -2909,8 +2909,14 @@ msgstr "M&ata ut %1"
 msgid "&Unmute"
 msgstr "&Avtysta"
 
-msgid "Softfloat FPU"
-msgstr "Softfloat flyttalsprocessor"
+msgid "FPU emulation:"
+msgstr ""
+
+msgid "Host x87 (exact)"
+msgstr ""
+
+msgid "Softfloat (exact)"
+msgstr ""
 
 msgid "High performance impact"
 msgstr "Hög påverkan på prestanda"

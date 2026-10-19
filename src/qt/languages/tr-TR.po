@@ -2962,8 +2962,14 @@ msgstr "%1 görüntüsünü &çıkar"
 msgid "&Unmute"
 msgstr "&Sesi aç"
 
-msgid "Softfloat FPU"
-msgstr "Softfloat FPU"
+msgid "FPU emulation:"
+msgstr ""
+
+msgid "Host x87 (exact)"
+msgstr ""
+
+msgid "Softfloat (exact)"
+msgstr ""
 
 msgid "High performance impact"
 msgstr "Ciddi performans etkisi"

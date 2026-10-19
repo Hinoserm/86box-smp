@@ -3010,8 +3010,14 @@ msgstr "&Vysunout %1"
 msgid "&Unmute"
 msgstr "&Zrušit ztlumení"
 
-msgid "Softfloat FPU"
-msgstr "Použít Softfloat pro emulaci koprocesoru"
+msgid "FPU emulation:"
+msgstr ""
+
+msgid "Host x87 (exact)"
+msgstr ""
+
+msgid "Softfloat (exact)"
+msgstr ""
 
 msgid "High performance impact"
 msgstr "Výrazný vliv na výkon"

@@ -2904,8 +2904,14 @@ msgstr "%1を取り出す(&J)"
 msgid "&Unmute"
 msgstr "ミュート解除(&U)"
 
-msgid "Softfloat FPU"
-msgstr "Softfloat FPU"
+msgid "FPU emulation:"
+msgstr ""
+
+msgid "Host x87 (exact)"
+msgstr ""
+
+msgid "Softfloat (exact)"
+msgstr ""
 
 msgid "High performance impact"
 msgstr "パフォーマンスへの影響が大きい"

@@ -2913,8 +2913,14 @@ msgstr "&Vystrihnúť %1"
 msgid "&Unmute"
 msgstr "&Roztíšiť"
 
-msgid "Softfloat FPU"
-msgstr "Softfloat FPU"
+msgid "FPU emulation:"
+msgstr ""
+
+msgid "Host x87 (exact)"
+msgstr ""
+
+msgid "Softfloat (exact)"
+msgstr ""
 
 msgid "High performance impact"
 msgstr "Vysoký vplyv na výkon"

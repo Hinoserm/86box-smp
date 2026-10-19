@@ -2919,8 +2919,14 @@ msgstr "I&zvrzi %1"
 msgid "&Unmute"
 msgstr "&Vklopi zvok"
 
-msgid "Softfloat FPU"
-msgstr "Softfloat FPU"
+msgid "FPU emulation:"
+msgstr ""
+
+msgid "Host x87 (exact)"
+msgstr ""
+
+msgid "Softfloat (exact)"
+msgstr ""
 
 msgid "High performance impact"
 msgstr "Visok učinek na hitrost delovanja"

@@ -2905,8 +2905,14 @@ msgstr "Đẩy đĩ&a ra %1"
 msgid "&Unmute"
 msgstr "&Mở tiếng"
 
-msgid "Softfloat FPU"
-msgstr "Softfloat FPU"
+msgid "FPU emulation:"
+msgstr ""
+
+msgid "Host x87 (exact)"
+msgstr ""
+
+msgid "Softfloat (exact)"
+msgstr ""
 
 msgid "High performance impact"
 msgstr "Ảnh hưởng lớn đến hiệu suất"

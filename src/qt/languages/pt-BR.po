@@ -2909,8 +2909,14 @@ msgstr "E&jetar %1"
 msgid "&Unmute"
 msgstr "&Reativar som"
 
-msgid "Softfloat FPU"
-msgstr "FPU Softfloat"
+msgid "FPU emulation:"
+msgstr ""
+
+msgid "Host x87 (exact)"
+msgstr ""
+
+msgid "Softfloat (exact)"
+msgstr ""
 
 msgid "High performance impact"
 msgstr "Alto impacto no desempenho"

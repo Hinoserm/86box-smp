@@ -2908,8 +2908,14 @@ msgstr "E&xtraer %1"
 msgid "&Unmute"
 msgstr "&Reactivar sonido"
 
-msgid "Softfloat FPU"
-msgstr "FPU Softfloat"
+msgid "FPU emulation:"
+msgstr ""
+
+msgid "Host x87 (exact)"
+msgstr ""
+
+msgid "Softfloat (exact)"
+msgstr ""
 
 msgid "High performance impact"
 msgstr "Alto impact en el rendimiento"
