@@ -2392,22 +2392,40 @@ banshee_hwcursor_draw(svga_t *svga, int displine)
         }                                                                                                      \
     } while (0)
 
+/* Each 128-byte row of a tile in turn, contiguous in VRAM unless it runs
+   past the end, with what the loop reads taken once: the stores to buf
+   would otherwise have the compiler read VRAM's pointer and mask, the
+   length and the CLUT setting again at every pixel. */
 #define DECODE_RGB565_TILED(buf)                                                                                        \
     do {                                                                                                                \
-        int      c;                                                                                                     \
-        int      wp        = 0;                                                                                         \
-        uint32_t base_addr = (buf == banshee->overlay_buffer[1]) ? src_addr2 : src_addr;                                \
+        const uint32_t base_addr = (buf == banshee->overlay_buffer[1]) ? src_addr2 : src_addr;                          \
+        const int      bytes     = voodoo->overlay.overlay_bytes;                                                       \
+        const uint8_t *vram      = svga->vram;                                                                          \
+        const uint32_t vmask     = svga->vram_mask;                                                                     \
+        const int      bypass    = !!(banshee->vidProcCfg & VIDPROCCFG_OVERLAY_CLUT_BYPASS);                            \
+        uint32_t      *out       = buf;                                                                                 \
                                                                                                                         \
-        for (c = 0; c < voodoo->overlay.overlay_bytes; c += 2) {                                                        \
-            uint16_t data = *(uint16_t *) &svga->vram[(base_addr + (c & 127) + (c >> 7) * 128 * 32) & svga->vram_mask]; \
-            int      r    = data & 0x1f;                                                                                \
-            int      g    = (data >> 5) & 0x3f;                                                                         \
-            int      b    = data >> 11;                                                                                 \
+        for (int t = 0; t < bytes; t += 128) {                                                                          \
+            const uint32_t row = base_addr + (t >> 7) * 128 * 32;                                                       \
+            const int      n   = ((bytes - t) < 128) ? (bytes - t) : 128;                                               \
+            const int      run = ((row & vmask) + (uint32_t) n) <= (vmask + 1);                                         \
                                                                                                                         \
-            if (banshee->vidProcCfg & VIDPROCCFG_OVERLAY_CLUT_BYPASS)                                                   \
-                buf[wp++] = (r << 3) | (g << 10) | (b << 19);                                                           \
-            else                                                                                                        \
-                buf[wp++] = (clut[r << 3] & 0x0000ff) | (clut[g << 2] & 0x00ff00) | (clut[b << 3] & 0xff0000);          \
+            for (int c = 0; c < n; c += 2) {                                                                            \
+                uint16_t data;                                                                                          \
+                                                                                                                        \
+                if (run)                                                                                                \
+                    memcpy(&data, &vram[(row & vmask) + c], 2);                                                         \
+                else                                                                                                    \
+                    memcpy(&data, &vram[(row + c) & vmask], 2);                                                         \
+                const int r = data & 0x1f;                                                                              \
+                const int g = (data >> 5) & 0x3f;                                                                       \
+                const int b = data >> 11;                                                                               \
+                                                                                                                        \
+                if (bypass)                                                                                             \
+                    *out++ = (r << 3) | (g << 10) | (b << 19);                                                          \
+                else                                                                                                    \
+                    *out++ = (clut[r << 3] & 0x0000ff) | (clut[g << 2] & 0x00ff00) | (clut[b << 3] & 0xff0000);         \
+            }                                                                                                           \
         }                                                                                                               \
     } while (0)
 
