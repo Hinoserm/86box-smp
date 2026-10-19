@@ -2646,22 +2646,70 @@ svga_writel_common(uint32_t addr, uint32_t val, uint8_t linear, void *priv)
 static uint32_t
 svga_writel_run(uint32_t addr, const uint8_t *src, uint32_t n, int down, int per, int cycles_end, void *priv)
 {
-    svga_t  *svga = (svga_t *) priv;
-    uint32_t i;
+    svga_t        *svga = (svga_t *) priv;
+    const int      mmm  = (svga->gdcreg[6] >> 2) & 3;
+    const uint32_t bank = (mmm <= 1) ? svga->write_bank : 0;
+    const uint8_t  wm   = svga->writemask & 0x0f;
+    const int      cost = svga->monitor->mon_video_timing_write_l + per;
+    const uint8_t  fc   = svga->monitor->mon_changeframecount;
+    uint8_t       *vram = svga->vram;
+    uint8_t       *chg  = svga->changedvram;
+    int            cyc  = cycles;
+    int            any  = 0;
+    uint32_t       i;
 
     if (svga->fast || (addr & 3) || !svga_chain4_plain(svga))
         return 0;
+    /* What svga_write_chain4 does for each, the state it reads taken once
+       (none of it changes during a run): kept in locals, as the stores to
+       VRAM would otherwise have the compiler read it all again each time. */
     for (i = 0; i < n;) {
+        uint32_t x = (down ? (addr - (i << 2)) : (addr + (i << 2))) & 0x1ffff;
+        uint32_t a;
         uint32_t val;
+        int      in = 1;
 
-        memcpy(&val, down ? (src - (i << 2)) : (src + (i << 2)), 4);
-        cycles -= svga->monitor->mon_video_timing_write_l;
-        svga_write_chain4(svga, down ? (addr - (i << 2)) : (addr + (i << 2)), val, 4, 0);
+        switch (mmm) {
+            case 0:
+                break;
+            case 1:
+                in = (x < 0x10000);
+                break;
+            case 2:
+                x -= 0x10000;
+                in = (x < 0x8000);
+                break;
+            default:
+                x -= 0x18000;
+                in = (x < 0x8000);
+                break;
+        }
+        any |= in;
+        if (in && wm) {
+            x += bank;
+            a = (((x & 0xfffc) << 2) | ((x & 0x30000) >> 14) | (x & ~0x3ffff)) & svga->decode_mask;
+            if (a < svga->vram_max) {
+                a &= svga->vram_mask;
+                chg[a >> 12] = fc;
+                memcpy(&val, down ? (src - (i << 2)) : (src + (i << 2)), 4);
+                if (wm == 0x0f)
+                    memcpy(&vram[a], &val, 4);
+                else {
+                    for (int p = 0; p < 4; p++, val >>= 8) {
+                        if (wm & (1 << p))
+                            vram[a | p] = val;
+                    }
+                }
+            }
+        }
         i++;
-        cycles -= per;
-        if (cycles < cycles_end)
+        cyc -= cost;
+        if (cyc < cycles_end)
             break;
     }
+    cycles = cyc;
+    if (any && !(svga->gdcreg[6] & 1))
+        svga->fullchange = 2;
     return i;
 }
 
