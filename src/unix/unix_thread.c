@@ -41,6 +41,7 @@ thread_create_named(void (*thread_rout)(void *param), void *param, const char *n
     thrparam->param        = param;
 
     if (pthread_create(thread, NULL, (void *(*) (void *) ) thread_run_wrapper, thrparam)) {
+        pclog("Thread %s could not be started\n", name ? name : "");
         free(thrparam);
         free(thread);
         return NULL;

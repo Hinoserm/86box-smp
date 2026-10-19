@@ -3,6 +3,7 @@
 #include <thread>
 #include <condition_variable>
 
+#include <86box/86box.h>
 #include <86box/plat.h>
 #include <86box/thread.h>
 
@@ -17,8 +18,10 @@ extern "C" {
 thread_t *
 thread_create_named(void (*thread_rout)(void *param), void *param, const char *name)
 {
-    /* NULL when the thread cannot be made, as the C callers expect; a
-       std::system_error must not leave C code. */
+    /* NULL when the thread cannot be made, as on every platform; a
+       std::system_error must not leave C code. A caller that can carry on
+       without the thread checks for it; most do not, and the log says why
+       they then wait for a thread that never ran. */
     try {
         /* The new thread names itself only once it runs, and by then the
            caller's name may be gone (a buffer of its own): it takes a copy. */
@@ -29,6 +32,7 @@ thread_create_named(void (*thread_rout)(void *param), void *param, const char *n
             thread_rout(param);
         });
     } catch (...) {
+        pclog("Thread %s could not be started\n", name ? name : "");
         return nullptr;
     }
 }

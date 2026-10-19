@@ -39,6 +39,14 @@ thread_t *
 thread_create_named(void (*func)(void *param), void *param, const char *name)
 {
     uintptr_t bt = _beginthread(func, 0, param);
+
+    /* NULL when no thread is made, as on the other platforms: here
+       _beginthread() answers -1. */
+    if (bt == (uintptr_t) -1L) {
+        pclog("Thread %s could not be started\n", name ? name : "");
+        return NULL;
+    }
+
     plat_set_thread_name((void *) bt, name);
     return ((thread_t *) bt);
 }
