@@ -481,11 +481,13 @@ reset_common(int hard)
        every local APIC, is RESET's and the board's. */
     if (!reset_init)
         cpu_ven_reset();
-    else if (!reset_apic_init && (cpu_mp_self == 0))
-        /* The INIT pin: the MSRs stay ("All Other Model Specific Registers
-           Unchanged"), and this processor's APIC goes through INIT as the
-           other processors' do (cpu_mp_after_reset) -- its ID kept, the
-           Arb ID from it, nothing pending. */
+    /* The INIT pin: the MSRs stay ("All Other Model Specific Registers
+       Unchanged"), and this processor's APIC goes through INIT as the
+       other processors' do (cpu_mp_after_reset) -- its ID kept, the Arb ID
+       from it, nothing pending. RESET goes through the same after the
+       vendor reset, which sets the registers but not what the APIC holds
+       beside them: an ExtINT marked, an IPI it was still sending. */
+    if (!reset_apic_init && (cpu_mp_self == 0))
         lapic_index_board_reset(0);
 
     in_smm = smi_latched = 0;
