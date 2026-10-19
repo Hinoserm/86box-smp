@@ -84,6 +84,9 @@ typedef struct codeblock_t {
     int32_t link_gnext, link_gprev;
     /*A link to it was made at CPL 3: its pages' user bit counts.*/
     uint8_t link_cpl3;
+    /*Runs it still makes through the dispatcher before a link is made to
+      it, once put back from a version (codegen_block_restore_version).*/
+    uint8_t link_hold;
     /*The physical pages counted for it while it is a link target.*/
     uint32_t link_phys, link_phys_2;
     /*Its places in the lists of linked blocks on those pages (codegen_lp),
@@ -139,6 +142,10 @@ extern void          codegen_ind_fill(codeblock_t *block, uint64_t gen);
   it must hold (codegen_block.c).*/
 extern uint64_t  codegen_lg_solo_word;
 extern uint64_t *codegen_link_group_word(const codeblock_t *block, uint64_t *value);
+/*The runs a block put back from a version makes through the dispatcher
+  before a link is made to it, when it flipped again before the last such
+  runs were over (codeblock_t link_hold).*/
+#    define CODEGEN_LINK_HOLD 8
 /*Point a link stub at a block, under the block's link generation `gen`
   (read before its code was found clean); answers whether it could.*/
 extern int codegen_chain_patch(uint8_t *stub, codeblock_t *target, uint64_t gen);

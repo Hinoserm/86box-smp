@@ -1625,6 +1625,9 @@ codegen_block_start_recompile(codeblock_t *block)
         codegen_allocator_free(block->head_mem_block);
         block->head_mem_block = NULL;
     }
+#ifdef CODEGEN_CHAIN
+    block->link_hold = 0; /* code of its own, no version's */
+#endif
     block->head_mem_block = codegen_allocator_allocate(NULL, block_current);
     block->data           = codeblock_allocator_get_ptr(block->head_mem_block);
 
@@ -1953,8 +1956,16 @@ codegen_block_restore_version(codeblock_t *block)
         block_version_owner_sync(block_nr);
 #ifdef CODEGEN_CHAIN
         /* Other code is the block's now: no link made to the code it had
-           may reach it. */
+           may reach it. Code that flips between versions is often written
+           again at once -- Daggerfall's engine patches its span loops
+           before each span -- and links made to each version would be
+           made over at every flip, each a stub written (on arm64 with the
+           instruction cache made to see it) and used once or not at all.
+           So this run and the next go through the dispatcher before a
+           link is made to the block, and if it flips again before they
+           are over, its next CODEGEN_LINK_HOLD do. */
         codegen_links_drop(block);
+        block->link_hold = block->link_hold ? CODEGEN_LINK_HOLD : 2;
 #endif
         return 1;
     }
