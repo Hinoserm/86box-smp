@@ -442,6 +442,11 @@ load_monitor(int monitor_index)
         ms->mon_window_maximized = 0;
 }
 
+/* The configuration asked for the host-x87 FPU, which this build does not
+   have: softfloat, the other exact FPU, runs instead, and saving keeps the
+   key while softfloat stands in for it. */
+static int config_fpu_host_x87_kept = 0;
+
 /* Load "Machine" section. */
 /* What the configuration names that this build does not have: going on
    loads something else in its place (the first machine, or nothing for a
@@ -669,15 +674,17 @@ load_machine(void)
     cpu_use_dynarec = !!ini_section_get_int(cat, "cpu_use_dynarec", 0);
     fpu_softfloat = !!ini_section_get_int(cat, "fpu_softfloat", 0);
     /* The host-x87 FPU runs on softfloat's state and handlers, so it turns
-       softfloat on underneath; a build without it keeps the default FPU. */
-    fpu_host_x87 = !!ini_section_get_int(cat, "fpu_host_x87", 0);
+       softfloat on underneath; a build without it runs softfloat itself. */
+    fpu_host_x87             = !!ini_section_get_int(cat, "fpu_host_x87", 0);
+    config_fpu_host_x87_kept = 0;
     if (fpu_softfloat) /* softfloat, where a configuration asks for it, wins */
         fpu_host_x87 = 0;
     if (fpu_host_x87 && !X87_HOST_BUILD) {
-        config_log("Config: this build has no host-x87 FPU, using the default FPU\n");
-        fpu_host_x87 = 0;
+        config_log("Config: this build has no host-x87 FPU, using softfloat\n");
+        fpu_host_x87             = 0;
+        config_fpu_host_x87_kept = 1;
     }
-    if (fpu_host_x87)
+    if (fpu_host_x87 || config_fpu_host_x87_kept)
         fpu_softfloat = 1;
     if ((fpu_type != FPU_NONE) && machine_has_flags(machine, MACHINE_SOFTFLOAT_ONLY))
         fpu_softfloat = 1;
@@ -3553,12 +3560,15 @@ save_machine(void)
     ini_section_set_int(cat, "cpu_use_dynarec", cpu_use_dynarec);
 
     /* fpu_softfloat names softfloat itself; the host-x87 FPU, which runs on
-       it, has its own key. */
-    if ((fpu_softfloat == 0) || fpu_host_x87)
+       it, has its own key, kept by a build without it while softfloat stands
+       in (the default FPU chosen instead drops it). */
+    if (fpu_softfloat == 0)
+        config_fpu_host_x87_kept = 0;
+    if ((fpu_softfloat == 0) || fpu_host_x87 || config_fpu_host_x87_kept)
         ini_section_delete_var(cat, "fpu_softfloat");
     else
         ini_section_set_int(cat, "fpu_softfloat", fpu_softfloat);
-    if (fpu_host_x87)
+    if (fpu_host_x87 || config_fpu_host_x87_kept)
         ini_section_set_int(cat, "fpu_host_x87", 1);
     else
         ini_section_delete_var(cat, "fpu_host_x87");
