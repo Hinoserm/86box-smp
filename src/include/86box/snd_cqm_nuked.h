@@ -130,25 +130,25 @@ typedef struct {
        follows the sound clock (*pos_global) and applies the register writes
        queued with the sample they were made at; the emulation waits for it
        only at the end of each buffer. Fields marked [w] are the worker's. */
-    void          *worker;      /* thread_t */
-    void          *wake;        /* event_t */
-    pc_timer_t     wake_timer;  /* wakes the worker as the clock moves */
-    double         wake_us;
-    int            run;
-    const int     *pos_global;  /* sound_pos_global or music_pos_global */
+    void      *worker;     /* thread_t */
+    void      *wake;       /* event_t */
+    pc_timer_t wake_timer; /* wakes the worker as the clock moves */
+    double     wake_us;
+    int        run;
+    const int *pos_global; /* sound_pos_global or music_pos_global */
     /* After a reset, the new period not yet seen: set by the worker only
        while the emulation waits in reset_buffer, cleared by either (the
        emulation at a buffer's end or on a full queue), so the two writers
        never race to set it. */
-    int            gate;
-    int            gate_limit;  /* [w] the old period's end */
-    int            reset_req;   /* the emulation asks for a buffer reset */
-    int            reset_ack;   /* [w] done */
-    uint64_t       emu_base;    /* sample number the emulation's period starts at */
-    uint64_t       worker_base; /* [w] the same, for the worker */
-    uint8_t        newm;        /* OPL3 mode, as the emulation's writes left it */
-    uint32_t       q_head;      /* the emulation adds here */
-    uint32_t       q_tail;      /* [w] the worker takes here */
+    int      gate;
+    int      gate_limit;  /* [w] the old period's end */
+    int      reset_req;   /* the emulation asks for a buffer reset */
+    int      reset_ack;   /* [w] done */
+    uint64_t emu_base;    /* sample number the emulation's period starts at */
+    uint64_t worker_base; /* [w] the same, for the worker */
+    uint8_t  newm;        /* OPL3 mode, as the emulation's writes left it */
+    uint32_t q_head;      /* the emulation adds here */
+    uint32_t q_tail;      /* [w] the worker takes here */
 #define NUKED_CQM_Q 8192
     struct {
         uint64_t at;

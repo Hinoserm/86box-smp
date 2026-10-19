@@ -49,7 +49,7 @@
 static int
 tm_fcs_read_axis(void *priv, int axis)
 {
-    uint8_t gp= JOYSTICK_GP(priv);
+    uint8_t gp = JOYSTICK_GP(priv);
 
     if (!JOYSTICK_PRESENT(gp, 0))
         return AXIS_NOT_PRESENT;

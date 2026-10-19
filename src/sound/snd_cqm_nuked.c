@@ -1449,7 +1449,7 @@ nuked_cqm_drv_init(const device_t *info)
     dev->wake       = thread_create_event();
     if (dev->wake == NULL)
         fatal("NUKED CQM: cannot create the synthesis thread's event\n");
-    dev->worker     = thread_create(nuked_cqm_worker, dev);
+    dev->worker = thread_create(nuked_cqm_worker, dev);
     if (dev->worker == NULL)
         fatal("NUKED CQM: cannot start the synthesis thread\n");
 

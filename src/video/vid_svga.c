@@ -1990,9 +1990,7 @@ svga_write_common(uint32_t addr, uint8_t val, uint8_t linear, void *priv)
        or Y does for each byte -- straight to the planes the map mask
        enables. The same as the general path below takes for it, without
        its tests for everything else. */
-    if (!linear && !xga_active && !(svga->adv_flags & (FLAG_ADDR_BY8 | FLAG_ADDR_BY16 | FLAG_EXT_WRITE | FLAG_LATCH8)) &&
-        !svga->chain4 && !svga->chain2_write && !svga->fb_only && (svga->writemode == 0) && (svga->gdcreg[8] == 0xff) &&
-        !(svga->gdcreg[3] & 0x1f) && (!svga->gdcreg[1] || svga->set_reset_disabled) && !svga->translate_address) {
+    if (!linear && !xga_active && !(svga->adv_flags & (FLAG_ADDR_BY8 | FLAG_ADDR_BY16 | FLAG_EXT_WRITE | FLAG_LATCH8)) && !svga->chain4 && !svga->chain2_write && !svga->fb_only && (svga->writemode == 0) && (svga->gdcreg[8] == 0xff) && !(svga->gdcreg[3] & 0x1f) && (!svga->gdcreg[1] || svga->set_reset_disabled) && !svga->translate_address) {
         cycles -= svga->monitor->mon_video_timing_write_b;
         addr = svga_decode_addr_here(svga, addr, 1);
         if (addr == 0xffffffff)

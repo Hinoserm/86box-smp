@@ -3737,7 +3737,7 @@ save_input_devices(void)
                     for (int pov_nr = 0; pov_nr < joystick_get_pov_count(joystick_type[gp]); pov_nr++) {
                         sprintf(temp, "%s_%i_pov_%i", pre, js, pov_nr);
                         sprintf(tmp2, "%i, %i", joystick_state[gp][js].pov_mapping[pov_nr][0],
-                                                joystick_state[gp][js].pov_mapping[pov_nr][1]);
+                                joystick_state[gp][js].pov_mapping[pov_nr][1]);
                         ini_section_set_string(cat, temp, tmp2);
                     }
                 }

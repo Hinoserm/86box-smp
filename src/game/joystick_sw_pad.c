@@ -76,7 +76,7 @@ typedef struct sw_data {
     pc_timer_t trigger_timer;
     int        data_mode;
 
-    uint8_t    gp; /* the game port it is on */
+    uint8_t gp; /* the game port it is on */
 } sw_data;
 
 static void

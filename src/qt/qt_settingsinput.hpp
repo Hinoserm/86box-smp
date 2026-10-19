@@ -63,10 +63,10 @@ private:
 
     /* The second game port's joystick and the game port card, made here
        beside the first joystick's controls. */
-    QComboBox         *comboBoxJoystick1;
-    QPushButton       *joystick1Buttons[4];
-    QComboBox         *comboBoxGameportCard;
-    QPushButton       *pushButtonConfigureGameportCard;
+    QComboBox   *comboBoxJoystick1;
+    QPushButton *joystick1Buttons[4];
+    QComboBox   *comboBoxGameportCard;
+    QPushButton *pushButtonConfigureGameportCard;
 
     void fillJoysticks(QComboBox *cbox, int current);
     void joystickChosen(int gameport);
