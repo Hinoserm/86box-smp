@@ -536,7 +536,13 @@ cmd_print(const char *arg)
     char     fmt = 'd';
     uint32_t val;
 
+    /* A format letter must follow the slash: p/ alone has none, and two
+       characters on from it is past the end of the line. */
     if (*arg == '/') {
+        if (!arg[1] || isspace((unsigned char) arg[1])) {
+            out("p/F VALUE: F is x, d, u, o, t or c.\n");
+            return;
+        }
         fmt = arg[1];
         arg += 2;
     }
