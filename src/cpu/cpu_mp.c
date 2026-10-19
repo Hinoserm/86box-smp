@@ -7,7 +7,10 @@
  *          This file is part of the 86Box distribution.
  *
  *          More than one processor on one board, taking turns on the one
- *          emulation thread with one core, the state copied in and out.
+ *          emulation thread: with one core, the state copied in and out,
+ *          or with a core of their own each (copy mode, cpu_core.h). The
+ *          first way is described here; the second keeps its rules for the
+ *          state.
  *
  *          HOW. Every piece of processor state lives in globals the
  *          interpreter and the recompiler address directly -- the
@@ -17,7 +20,8 @@
  *          in place. A switch copies the running processor's globals out and
  *          the next one's in, at a block boundary and never from inside a
  *          callback. Compiled blocks do not depend on which processor
- *          compiled them, so both share one code cache.
+ *          compiled them, so with one core both share one code cache;
+ *          with a core each, each has its own.
  *
  *          The processors take turns over the same stretch of time: the
  *          first runs a slice and advances the machine's clock as it always
@@ -124,15 +128,22 @@ int cpu_smp_drift_us = CPU_SMP_DRIFT_DEFAULT;
 static int cpu_mp_slice_now_us = CPU_MP_SLICE_MIN_US;
 static int cpu_mp_interacted;
 
-/* Every per-processor variable, in the order the images hold them. */
-static cpu_mp_var_t cpu_mp_vars[CPU_MP_VARS_MAX];
-static int          cpu_mp_var_count;
-static uint32_t     cpu_mp_blob_size;
+/* Each processor core's list of its per-processor variables: the same
+   variables in the same order, at its own addresses. The images hold them
+   in that order. */
+static cpu_mp_var_t cpu_mp_vars[CPU_MP_MAX][CPU_MP_VARS_MAX];
+static int          cpu_mp_var_counts[CPU_MP_MAX];
+static uint32_t     cpu_mp_blob_sizes[CPU_MP_MAX];
+static int          cpu_mp_reg_copy; /* whose list cpu_mp_register() adds to */
+#define cpu_mp_var_count cpu_mp_var_counts[0]
+#define cpu_mp_blob_size cpu_mp_blob_sizes[0]
 static cpu_mp_ctx_t cpu_mp_ctx[CPU_MP_MAX];
 static int          cpu_mp_in_smm(int index);
 static int          cpu_mp_smm_wait_over(int index);
 static uint8_t     *cpu_mp_reset_blob; /* a processor straight out of RESET */
-/* Room to build what INIT leaves. */
+/* Room to build what INIT leaves: the processor's state before it, and the
+   image made from it. */
+static uint8_t     *cpu_mp_init_cur;
 static uint8_t     *cpu_mp_init_img;
 /* A reset asked for by a processor other than the first, for the first to
    do (cpu_mp_run_pending_reset). */
@@ -142,18 +153,21 @@ static uint64_t     cpu_mp_slice_tsc;
 void
 cpu_mp_register(void *addr, uint32_t size)
 {
-    for (int i = 0; i < cpu_mp_var_count; i++)
-        if (cpu_mp_vars[i].addr == addr)
+    cpu_mp_var_t *vars = cpu_mp_vars[cpu_mp_reg_copy];
+    int          *n    = &cpu_mp_var_counts[cpu_mp_reg_copy];
+
+    for (int i = 0; i < *n; i++)
+        if (vars[i].addr == addr)
             return;
 
-    if (cpu_mp_var_count >= CPU_MP_VARS_MAX)
+    if (*n >= CPU_MP_VARS_MAX)
         fatal("cpu_mp: too many per-processor variables\n");
 
-    cpu_mp_vars[cpu_mp_var_count].addr       = addr;
-    cpu_mp_vars[cpu_mp_var_count].size       = size;
-    cpu_mp_vars[cpu_mp_var_count].init_keeps = 0;
-    cpu_mp_var_count++;
-    cpu_mp_blob_size += size;
+    vars[*n].addr       = addr;
+    vars[*n].size       = size;
+    vars[*n].init_keeps = 0;
+    (*n)++;
+    cpu_mp_blob_sizes[cpu_mp_reg_copy] += size;
 }
 
 /* A per-processor variable INIT leaves as it is: the floating-point state,
@@ -163,9 +177,9 @@ void
 cpu_mp_register_keep(void *addr, uint32_t size)
 {
     cpu_mp_register(addr, size);
-    for (int i = 0; i < cpu_mp_var_count; i++)
-        if (cpu_mp_vars[i].addr == addr)
-            cpu_mp_vars[i].init_keeps = 1;
+    for (int i = 0; i < cpu_mp_var_counts[cpu_mp_reg_copy]; i++)
+        if (cpu_mp_vars[cpu_mp_reg_copy][i].addr == addr)
+            cpu_mp_vars[cpu_mp_reg_copy][i].init_keeps = 1;
 }
 
 /* What INIT leaves, into img, from the processor's state cur: what RESET
@@ -183,9 +197,9 @@ cpu_mp_init_image(uint8_t *img, const uint8_t *cur, const uint8_t *reset)
 
     memcpy(img, reset, cpu_mp_blob_size);
     for (int i = 0; i < cpu_mp_var_count; i++) {
-        if (cpu_mp_vars[i].init_keeps)
-            memcpy(img + off, cur + off, cpu_mp_vars[i].size);
-        off += cpu_mp_vars[i].size;
+        if (cpu_mp_vars[0][i].init_keeps)
+            memcpy(img + off, cur + off, cpu_mp_vars[0][i].size);
+        off += cpu_mp_vars[0][i].size;
     }
 
     /* The floating-point registers, and where the last FPU instruction and
@@ -222,42 +236,145 @@ cpu_mp_init_image(uint8_t *img, const uint8_t *cur, const uint8_t *reset)
     s->_smbase = c->_smbase;
 }
 
+/* ---- processor cores ------------------------------------------------------
+
+   Where the build has it (CPU_MP_SECOND_CORE, src/CMakeLists.txt), the
+   core is built a second time with its globals renamed (cpu_core.h), and
+   the second processor runs in that copy: its state stays where it is
+   between turns and nothing is copied to switch. Otherwise the processors
+   share the one core and their state is swapped in and out of it. */
+static const cpu_core_ops_t *cpu_mp_core[CPU_MP_MAX];
+static int                   cpu_mp_copy_mode;
+#ifdef CPU_MP_SECOND_CORE
+static int cpu_mp_core_inited[CPU_MP_MAX];
+#endif
+static int32_t cpu_mp_c0_cycles; /* the first core's, while another runs */
+
+int
+cpu_mp_copy_mode_active(void)
+{
+    return cpu_mp_copy_mode;
+}
+
+/* The core the processor in place runs in. */
+static const cpu_core_ops_t *
+cpu_mp_cur_core(void)
+{
+    return cpu_mp_copy_mode ? cpu_mp_core[cpu_mp_cur] : cpu_core_ops();
+}
+
+/* CR0 of the processor in place, for a device that asks (in copy mode
+   another processor's is in its own core). */
+uint32_t
+cpu_mp_current_cr0(void)
+{
+    if (cpu_mp_copy_mode && (cpu_mp_cur > 0) && (cpu_mp_cur < cpu_mp_count))
+        return ((const cpu_state_t *) cpu_mp_vars[cpu_mp_cur][0].addr)->CR0.l;
+    return cr0;
+}
+
+/* IGNNE# to every processor: the board drives one line to all of them, and
+   a processor with a core of its own keeps its own copy of the pin. Taking
+   turns in one core, they share it already. */
+void
+cpu_mp_ignne_assert(void)
+{
+    if (!cpu_mp_copy_mode)
+        return;
+    for (int i = 1; i < cpu_mp_count; i++)
+        cpu_mp_core[i]->ignne_assert();
+}
+
+#ifdef CPU_MP_SECOND_CORE
+/* Processor index's core, when it has one of its own. */
+static const cpu_core_ops_t *
+cpu_mp_ap_core_ops(int index)
+{
+    return (index == 1) ? s1_cpu_core_ops() : NULL;
+}
+#endif
+
+/* Every core's state list, the first's first. */
 static void
-cpu_mp_save_blob(uint8_t *blob)
+cpu_mp_register_all(void)
+{
+    cpu_mp_reg_copy = 0;
+    cpu_core_ops()->register_state();
+    /* cpu_mp_init_image finds cpu_state at the start of every image. */
+    if ((cpu_mp_var_counts[0] < 1) || (cpu_mp_vars[0][0].size != sizeof(cpu_state_t)))
+        fatal("cpu_mp: cpu_state is not the first per-processor variable\n");
+#ifdef CPU_MP_SECOND_CORE
+    for (int c = 1; c < CPU_MP_MAX; c++) {
+        cpu_mp_reg_copy = c;
+        cpu_mp_ap_core_ops(c)->register_state();
+
+        /* One image fits every core: the same variables, the same sizes,
+           the same order, each at the core's own address. */
+        if ((cpu_mp_var_counts[c] != cpu_mp_var_counts[0]) || (cpu_mp_blob_sizes[c] != cpu_mp_blob_sizes[0]))
+            fatal("cpu_mp: core %i's state list differs from the first's\n", c);
+        for (int i = 0; i < cpu_mp_var_counts[0]; i++)
+            if ((cpu_mp_vars[c][i].size != cpu_mp_vars[0][i].size) || (cpu_mp_vars[c][i].addr == cpu_mp_vars[0][i].addr))
+                fatal("cpu_mp: core %i's state list differs from the first's at %i\n", c, i);
+    }
+    cpu_mp_reg_copy = 0;
+#endif
+}
+
+static void
+cpu_mp_save_blob_of(int copy, uint8_t *blob)
 {
     uint32_t off = 0;
 
-    for (int i = 0; i < cpu_mp_var_count; i++) {
-        memcpy(blob + off, cpu_mp_vars[i].addr, cpu_mp_vars[i].size);
-        off += cpu_mp_vars[i].size;
+    for (int i = 0; i < cpu_mp_var_counts[copy]; i++) {
+        memcpy(blob + off, cpu_mp_vars[copy][i].addr, cpu_mp_vars[copy][i].size);
+        off += cpu_mp_vars[copy][i].size;
     }
 }
 
 static void
-cpu_mp_load_blob(const uint8_t *blob)
+cpu_mp_load_blob_into(int copy, const uint8_t *blob)
 {
     uint32_t off = 0;
 
-    for (int i = 0; i < cpu_mp_var_count; i++) {
-        memcpy(cpu_mp_vars[i].addr, blob + off, cpu_mp_vars[i].size);
-        off += cpu_mp_vars[i].size;
+    for (int i = 0; i < cpu_mp_var_counts[copy]; i++) {
+        memcpy(cpu_mp_vars[copy][i].addr, blob + off, cpu_mp_vars[copy][i].size);
+        off += cpu_mp_vars[copy][i].size;
     }
 }
 
-/* Processor `index` back in the state an image holds, for its next turn,
-   its TLB empty. */
+#define cpu_mp_save_blob(b) cpu_mp_save_blob_of(0, (b))
+#define cpu_mp_load_blob(b) cpu_mp_load_blob_into(0, (b))
+
+/* Processor `index` back in the state an image holds, its TLB empty:
+   loaded into its own core in copy mode, or into its saved context for its
+   next turn. */
 static void
 cpu_mp_load_state(int index, const uint8_t *blob)
 {
-    memcpy(cpu_mp_ctx[index].blob, blob, cpu_mp_blob_size);
-    cpu_mp_ctx[index].tlb->stale = MEM_TLB_STALE_ALL;
+    if (cpu_mp_copy_mode) {
+        cpu_mp_load_blob_into(index, blob);
+        cpu_mp_core[index]->after_load();
+    } else {
+        memcpy(cpu_mp_ctx[index].blob, blob, cpu_mp_blob_size);
+        cpu_mp_ctx[index].tlb->stale = MEM_TLB_STALE_ALL;
+    }
+}
+
+/* Processor index's state as it stands, as an image, into img. */
+static void
+cpu_mp_state_image(int index, uint8_t *img)
+{
+    if (cpu_mp_copy_mode)
+        cpu_mp_save_blob_of(index, img);
+    else
+        memcpy(img, cpu_mp_ctx[index].blob, cpu_mp_blob_size);
 }
 
 /* End the slice of the processor in place now. */
 static void
 cpu_mp_stop_current(void)
 {
-    cycles = 0;
+    cpu_mp_cur_core()->stop();
 }
 
 /* ---- switching ---------------------------------------------------------- */
@@ -295,12 +412,13 @@ cpu_mp_switch(int index)
 
 /* Whether a halted processor's maskable interrupts could end its HLT:
    "An enabled interrupt, NMI, or a reset will resume execution" (Pentium
-   Vol. 3, HLT). Its IF, from its saved state (cpu_state is the first thing
-   saved). */
+   Vol. 3, HLT). Its IF, from its own core or its saved state (cpu_state is
+   the first thing saved). */
 static int
 cpu_mp_interrupts_enabled(int index)
 {
-    const cpu_state_t *st = (const cpu_state_t *) cpu_mp_ctx[index].blob;
+    const cpu_state_t *st = cpu_mp_copy_mode ? (const cpu_state_t *) cpu_mp_vars[index][0].addr :
+                                               (const cpu_state_t *) cpu_mp_ctx[index].blob;
 
     return (st == NULL) || !!(st->flags & I_FLAG);
 }
@@ -364,7 +482,7 @@ static void
 cpu_mp_nmi_ex(int index, int apic)
 {
     if ((cpu_mp_count < 2) || (index < 0) || (index >= cpu_mp_count) || (index == cpu_mp_cur)) {
-        cpu_nmi_raise_core(apic);
+        cpu_mp_cur_core()->nmi_raise(apic);
         return;
     }
 
@@ -395,7 +513,7 @@ void
 cpu_mp_smi(int index)
 {
     if ((cpu_mp_count < 2) || (index < 0) || (index >= cpu_mp_count) || (index == cpu_mp_cur)) {
-        cpu_smi_raise_direct();
+        cpu_mp_cur_core()->smi_raise();
         return;
     }
 
@@ -415,6 +533,48 @@ cpu_mp_begin_slice(int index, uint64_t start_tsc)
 
     if ((cpu_mp_ctx[index].state == CPU_MP_WAIT_SIPI) && cpu_mp_ctx[index].smi_pending)
         cpu_mp_ctx[index].state = CPU_MP_SMM_WAIT;
+
+    if (cpu_mp_copy_mode) {
+        const cpu_core_ops_t *core = cpu_mp_core[index];
+        cpu_core_config_t     cfg;
+
+        /* Anything the machine charges while this one runs lands in the
+           first core's count; it is taken back at the end of the slice. */
+        cpu_mp_c0_cycles = cycles;
+        cpu_mp_cur       = index;
+
+        cpu_core_ops()->config_get(&cfg);
+        core->config_set(&cfg);
+        core->tlb_catch_up();
+        core->tsc_set(start_tsc);
+        mem_tlb_flush_running  = core->tlb_flush_now;
+        mem_fill_read_running  = core->fill_read;
+        mem_fill_write_running = core->fill_write;
+
+        if (cpu_mp_ctx[index].nmi_pending) {
+            const int apic = (cpu_mp_ctx[index].nmi_pending == 2);
+
+            cpu_mp_ctx[index].nmi_pending = 0;
+            core->nmi_raise(apic);
+        }
+        if (cpu_mp_ctx[index].smi_pending) {
+            cpu_mp_ctx[index].smi_pending = 0;
+            core->smi_raise();
+        }
+
+        if (cpu_mp_ctx[index].state == CPU_MP_STARTING) {
+            const uint8_t vector = cpu_mp_ctx[index].sipi_vector;
+
+            core->startup(vector);
+            cpu_mp_ctx[index].state = CPU_MP_RUNNING;
+            cpu_mp_log("CPU MP: processor %i starts at %04X:0000\n", index, vector << 8);
+        }
+
+        core->halted_set(cpu_mp_ctx[index].halted);
+        cpu_mp_timers_frozen = 1;
+        return 1;
+    }
+
     cpu_mp_switch(index);
     tsc = start_tsc;
 
@@ -437,6 +597,18 @@ cpu_mp_begin_slice(int index, uint64_t start_tsc)
     return 1;
 }
 
+/* A device bringing the clock up to date while another core runs: it is
+   that core's cycles that have passed. Answers whether it was handled. */
+int
+cpu_mp_update_tsc_running(void)
+{
+    if (!cpu_mp_copy_mode || (cpu_mp_cur == 0))
+        return 0;
+
+    cpu_mp_core[cpu_mp_cur]->update_tsc();
+    return 1;
+}
+
 /* End the slice of whichever processor is running (a reset the machine
    asked of the first processor, which acts on it when back in place). */
 void
@@ -444,6 +616,14 @@ cpu_mp_stop_running(void)
 {
     if (cpu_mp_count > 1)
         cpu_mp_stop_current();
+}
+
+/* The processor in place runs its share of the slice in its own core.
+   Answers non-zero if the debugger wants control back. */
+int
+cpu_mp_run_slice(int32_t cycs)
+{
+    return cpu_mp_core[cpu_mp_cur]->run(cycs);
 }
 
 /* A reset asked for by a processor other than the first, done now with
@@ -484,11 +664,39 @@ cpu_mp_run_pending_reset(void)
 void
 cpu_mp_end_slice(void)
 {
-    cpu_mp_ctx[cpu_mp_cur].halted = cpu_halted;
+    cpu_mp_ctx[cpu_mp_cur].halted = cpu_mp_cur_core()->halted_get();
     cpu_mp_timers_frozen          = 0;
 
-    cpu_mp_switch(0);
-    tsc = cpu_mp_slice_tsc;
+    if (cpu_mp_copy_mode) {
+        const cpu_core_ops_t *core = cpu_mp_core[cpu_mp_cur];
+
+        mem_tlb_flush_running  = NULL;
+        mem_fill_read_running  = NULL;
+        mem_fill_write_running = NULL;
+        /* What the machine charged the first core's count while this one
+           ran was this one's: it pays at its next turn. */
+        core->charge(cpu_mp_c0_cycles - cycles);
+        cycles     = cpu_mp_c0_cycles;
+        cpu_mp_cur = 0;
+        tsc        = cpu_mp_slice_tsc;
+        mem_tlb_catch_up();
+
+        /* An NMI or SMI for the first processor that came while the other
+           ran waited in its context; it is taken now it is back. */
+        if (cpu_mp_ctx[0].nmi_pending) {
+            const int apic = (cpu_mp_ctx[0].nmi_pending == 2);
+
+            cpu_mp_ctx[0].nmi_pending = 0;
+            cpu_core_ops()->nmi_raise(apic);
+        }
+        if (cpu_mp_ctx[0].smi_pending) {
+            cpu_mp_ctx[0].smi_pending = 0;
+            cpu_core_ops()->smi_raise();
+        }
+    } else {
+        cpu_mp_switch(0);
+        tsc = cpu_mp_slice_tsc;
+    }
 
     for (int i = 1; i < cpu_mp_count; i++) {
         /* Out of the SMM it entered from waiting for a STARTUP. */
@@ -525,7 +733,10 @@ cpu_mp_defer_reset(int self, int hard)
     /* The reset happens at the end of this processor's slice, so end it
        now: left as it is, a processor that shut down on a triple fault
        faults again at once, costing no cycles, and the slice never ends. */
-    cpu_mp_stop_current();
+    if (cpu_mp_copy_mode)
+        cpu_mp_core[self]->stop();
+    else
+        cpu_mp_stop_current();
     return 1;
 }
 
@@ -558,7 +769,8 @@ cpu_mp_park_others(int hard)
         if (hard)
             cpu_mp_load_state(i, cpu_mp_reset_blob); /* RESET empties the TLB too */
         else {
-            cpu_mp_init_image(cpu_mp_init_img, cpu_mp_ctx[i].blob, cpu_mp_reset_blob);
+            cpu_mp_state_image(i, cpu_mp_init_cur);
+            cpu_mp_init_image(cpu_mp_init_img, cpu_mp_init_cur, cpu_mp_reset_blob);
             cpu_mp_load_state(i, cpu_mp_init_img);
         }
         cpu_mp_smm_forget(i);
@@ -656,11 +868,14 @@ cpu_mp_startup(uint8_t index, uint8_t vector)
     return 1;
 }
 
-/* Processor index's cpu_state, wherever it is: the live one of the
-   processor in place, or its saved context. NULL before there is one. */
+/* Processor index's cpu_state, wherever it is: its own core's, the live
+   one of the processor in place, or its saved context. NULL before there
+   is one. */
 static const cpu_state_t *
 cpu_mp_state_of(int index)
 {
+    if (cpu_mp_copy_mode)
+        return (const cpu_state_t *) cpu_mp_vars[index][0].addr;
     if (index == cpu_mp_cur)
         return &cpu_state;
     return (const cpu_state_t *) cpu_mp_ctx[index].blob;
@@ -760,7 +975,8 @@ cpu_mp_init_signal(uint8_t index)
     }
 
     cpu_mp_ctx[index].init_pending = 0;
-    cpu_mp_init_image(cpu_mp_init_img, cpu_mp_ctx[index].blob, cpu_mp_reset_blob);
+    cpu_mp_state_image(index, cpu_mp_init_cur);
+    cpu_mp_init_image(cpu_mp_init_img, cpu_mp_init_cur, cpu_mp_reset_blob);
     cpu_mp_load_state(index, cpu_mp_init_img); /* INIT empties the TLB too */
     cpu_mp_smm_forget(index);
     cpu_mp_ctx[index].state       = CPU_MP_WAIT_SIPI;
@@ -789,6 +1005,18 @@ cpu_mp_configure(int count)
     count = 1;
 #endif
 
+#ifdef CPU_MP_SECOND_CORE
+    /* The other cores leave the machine's memory. */
+    if (cpu_mp_copy_mode) {
+        for (int i = 1; i < cpu_mp_count; i++)
+            cpu_mp_core[i]->detach();
+    }
+#endif
+    cpu_mp_copy_mode       = 0;
+    mem_tlb_flush_running  = NULL;
+    mem_fill_read_running  = NULL;
+    mem_fill_write_running = NULL;
+
     /* Processor 0 keeps the TLB set every machine has; the others' go. */
     mem_tlb_select(mem_tlb_default());
     for (int i = 0; i < CPU_MP_MAX; i++) {
@@ -797,10 +1025,13 @@ cpu_mp_configure(int count)
         if ((i > 0) && (cpu_mp_ctx[i].tlb != NULL))
             mem_tlb_destroy(cpu_mp_ctx[i].tlb);
         cpu_mp_ctx[i].tlb = NULL;
+        cpu_mp_core[i]    = NULL;
     }
     free(cpu_mp_reset_blob);
+    free(cpu_mp_init_cur);
     free(cpu_mp_init_img);
     cpu_mp_reset_blob = NULL;
+    cpu_mp_init_cur   = NULL;
     cpu_mp_init_img   = NULL;
 
     cpu_mp_count         = count;
@@ -813,23 +1044,52 @@ cpu_mp_configure(int count)
     if (count < 2)
         return;
 
-    if (cpu_mp_var_count == 0) {
-        cpu_core_ops()->register_state();
-        /* cpu_mp_init_image finds cpu_state at the start of every image. */
-        if ((cpu_mp_var_count < 1) || (cpu_mp_vars[0].size != sizeof(cpu_state_t)))
-            fatal("cpu_mp: cpu_state is not the first per-processor variable\n");
+    if (cpu_mp_var_count == 0)
+        cpu_mp_register_all();
+
+#ifdef CPU_MP_SECOND_CORE
+    /* Each other processor gets a core of its own: its tables and code
+       cache once, the machine's model and settings, its TLB set and page
+       table copy in the machine's memory. */
+    {
+        cpu_core_config_t cfg;
+
+        cpu_core_ops()->config_get(&cfg);
+        cpu_mp_core[0] = cpu_core_ops();
+        for (int i = 1; i < count; i++) {
+            const cpu_core_ops_t *core = cpu_mp_ap_core_ops(i);
+
+            if (!cpu_mp_core_inited[i]) {
+                core->init();
+                cpu_mp_core_inited[i] = 1;
+            }
+            core->self_set(i);
+            core->config_set(&cfg);
+            core->set_model();
+            /* cpu_set() put its own defaults in; the machine's again. */
+            core->config_set(&cfg);
+            core->attach();
+            cpu_mp_core[i] = core;
+        }
+        cpu_mp_copy_mode = 1;
     }
+#endif
 
     cpu_mp_reset_blob = calloc(1, cpu_mp_blob_size);
+    cpu_mp_init_cur   = calloc(1, cpu_mp_blob_size);
     cpu_mp_init_img   = calloc(1, cpu_mp_blob_size);
     for (int i = 0; i < count; i++) {
-        cpu_mp_ctx[i].blob         = calloc(1, cpu_mp_blob_size);
-        cpu_mp_ctx[i].tlb          = (i == 0) ? mem_tlb_default() : mem_tlb_create();
+        cpu_mp_ctx[i].blob = calloc(1, cpu_mp_blob_size);
+        /* A processor taking its turns in the first core has a TLB set of
+           its own put in place for them; one with a core of its own has
+           its core's. */
+        cpu_mp_ctx[i].tlb          = (i == 0) ? mem_tlb_default() : (cpu_mp_copy_mode ? NULL : mem_tlb_create());
         cpu_mp_ctx[i].halted       = 0;
         cpu_mp_ctx[i].nmi_pending  = 0;
         cpu_mp_ctx[i].smi_pending  = 0;
         cpu_mp_ctx[i].init_pending = 0;
         cpu_mp_ctx[i].state        = (i == 0) ? CPU_MP_RUNNING : CPU_MP_WAIT_SIPI;
     }
-    cpu_mp_log("CPU MP: %i processors, %u bytes of state each, sharing one core\n", count, cpu_mp_blob_size);
+    cpu_mp_log("CPU MP: %i processors, %u bytes of state each, %s\n", count, cpu_mp_blob_size,
+               cpu_mp_copy_mode ? "each in a core of its own" : "sharing one core");
 }

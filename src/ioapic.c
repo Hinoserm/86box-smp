@@ -1402,7 +1402,7 @@ ioapic_write(UNUSED(uint16_t port), uint8_t val, void *priv)
     /* The tables are built by the BIOS's POST, in real mode; an operating
        system's port 80h delays come from protected mode, Windows 2000's by
        the thousand a second, and each walked the whole MP table again. */
-    if (cr0 & 1)
+    if (cpu_mp_current_cr0() & 1) /* the writing processor's mode */
         return;
 
     policy.expose_mp_tables = dev->expose_mp_tables;

@@ -113,9 +113,6 @@ x86seg _oldds;
 uint8_t rep_op = 0x00;
 uint8_t is_smint = 0;
 
-uint16_t io_port = 0x0000;
-uint32_t io_val  = 0x00000000;
-
 int opcode_has_modrm[256] = {
     1, 1, 1, 1,  0, 0, 0, 0,  1, 1, 1, 1,  0, 0, 0, 0, /*00*/
     1, 1, 1, 1,  0, 0, 0, 0,  1, 1, 1, 1,  0, 0, 0, 0, /*10*/

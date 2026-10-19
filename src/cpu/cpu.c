@@ -44,6 +44,7 @@
 #include <86box/smram.h>
 #include <86box/timer.h>
 #include <86box/gdbstub.h>
+#include <86box/cpu_mp.h>
 #include <86box/plat_fallthrough.h>
 #include <86box/plat_unused.h>
 
@@ -4616,6 +4617,7 @@ cpu_write(uint16_t addr, uint8_t val, UNUSED(void *priv))
                clears it as it goes down (x87_ferr_clear) */
             if (fpu_ferr)
                 fpu_ignne = 1;
+            cpu_mp_ignne_assert();
         } else
             nmi = 0;
     } else if ((addr < 0xf1) && !(addr & 1))

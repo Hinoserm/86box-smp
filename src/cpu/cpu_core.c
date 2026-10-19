@@ -191,6 +191,14 @@ cpu_core_detach(void)
 static void
 cpu_core_after_load(void)
 {
+    /* The image is the first core's: what in cpu_state points into a core
+       points into this one again. */
+    cpu_state.ea_seg = &cpu_state.seg_ds;
+#ifdef USE_DYNAREC
+    cpu_state.lookup2_r = readlookup2;
+    cpu_state.lookup2_w = writelookup2;
+#endif
+
     mem_smm_view(!!(cpu_cur_status & CPU_STATUS_SMM));
     flushmmucache_cpu();
 

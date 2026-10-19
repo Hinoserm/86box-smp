@@ -336,6 +336,12 @@ io_debug_check_addr(uint16_t port)
    this stays as it was. */
 uint64_t io_port_count;
 
+/* The last port accessed and the value written: what an SMI the access
+   raises saves for an I/O restart (386_common.c). The access is the
+   running processor's, whichever core it runs in. */
+uint16_t io_port = 0x0000;
+uint32_t io_val  = 0x00000000;
+
 /* Set by a device during a byte read whose only effects repeat: read again
    before the next timer event it gives the same value, or alternates
    between two (a status register such as the VGA's 3DAh). Cleared before

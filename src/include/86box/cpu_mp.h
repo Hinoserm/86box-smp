@@ -73,6 +73,15 @@ extern int  cpu_mp_begin_slice(int index, uint64_t start_tsc);
 extern void cpu_mp_end_slice(void);
 extern void cpu_mp_stop_running(void);
 
+/* With a core of their own each (cpu_core.h): whether they have, the
+   processor in place's share of a slice run in its core, and what devices
+   ask of the processor in place while another than the first runs. */
+extern int      cpu_mp_copy_mode_active(void);
+extern int      cpu_mp_run_slice(int32_t cycs);
+extern int      cpu_mp_update_tsc_running(void);
+extern uint32_t cpu_mp_current_cr0(void);
+extern void     cpu_mp_ignne_assert(void);
+
 /* A reset asked for by a processor other than the first, for the first to
    do: 0 none, 1 soft, 2 hard, 3 the first processor's INIT from its APIC. */
 extern int cpu_mp_reset_pending;

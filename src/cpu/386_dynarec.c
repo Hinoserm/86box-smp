@@ -415,6 +415,14 @@ update_tsc(void)
     int      cycdiff;
     uint64_t delta;
 
+#    ifndef CPU_AP_CORE
+    /* Asked by a device while another processor runs its turn in a core
+       of its own: it is that core's cycles that have passed, and its
+       baseline that counts them. */
+    if (cpu_mp_cur && cpu_mp_update_tsc_running())
+        return;
+#    endif
+
     cycdiff = cycles_old - cycles;
 
     delta = tsc - tsc_old;
@@ -614,6 +622,32 @@ codegen_chain_service(void)
     }
 #        endif
     return 0;
+}
+
+/* A relink and a translation change, taken by the loop before its next
+   dispatch. */
+static void
+exec386_chain_take_code(void)
+{
+    if (__atomic_load_n(&mem_chain_signal.code, __ATOMIC_RELAXED)) {
+        const uint8_t why = __atomic_exchange_n(&mem_chain_signal.code, 0, __ATOMIC_SEQ_CST);
+
+        if (why & MEM_CHAIN_CODE_RELINK)
+            codegen_links_drop_all(1);
+        if (why & MEM_CHAIN_CODE_REVALIDATE)
+            codegen_links_revalidate();
+    }
+}
+
+/* Processors taking turns in cores of their own (cpu_mp.c): the signal
+   word is one for every core, the links each core's own. A core takes
+   what it asked of its own loop before another runs. A write to another
+   core's code drops that core's links itself (codegen_page_code_hit): the
+   other core is not running. */
+static void
+exec386_chain_leave(void)
+{
+    exec386_chain_take_code();
 }
 
 /* STI compiled in a block: an interrupt already pending breaks the chain,
@@ -1230,14 +1264,7 @@ exec386_dynarec_blocks(void)
            next dispatch. */
         if (__atomic_load_n(&mem_chain_signal.brk, __ATOMIC_RELAXED))
             __atomic_store_n(&mem_chain_signal.brk, 0, __ATOMIC_SEQ_CST);
-        if (__atomic_load_n(&mem_chain_signal.code, __ATOMIC_RELAXED)) {
-            const uint8_t why = __atomic_exchange_n(&mem_chain_signal.code, 0, __ATOMIC_SEQ_CST);
-
-            if (why & MEM_CHAIN_CODE_RELINK)
-                codegen_links_drop_all(1);
-            if (why & MEM_CHAIN_CODE_REVALIDATE)
-                codegen_links_revalidate();
-        }
+        exec386_chain_take_code();
 #    endif
 
         if (cpu_init) {
@@ -1394,11 +1421,19 @@ exec386_dynarec(int32_t cycs)
            (cpu_mp.c), the first back in place afterwards: exactly as many
            cycles as the first used, so none runs ahead of the machine's
            clock while it stands still. */
+#    ifdef CODEGEN_CHAIN
+        if (cpu_mp_copy_mode_active() && (ran > 0))
+            exec386_chain_leave();
+#    endif
         for (int i = 1; (i < cpu_mp_count) && (ran > 0); i++) {
             if (!cpu_mp_begin_slice(i, tsc_start))
                 continue;
-            cycles += ran;
-            (void) exec386_dynarec_blocks();
+            if (cpu_mp_copy_mode_active())
+                (void) cpu_mp_run_slice(ran); /* in its own core */
+            else {
+                cycles += ran;
+                (void) exec386_dynarec_blocks();
+            }
             cpu_mp_end_slice();
         }
     }
@@ -1408,8 +1443,14 @@ exec386_dynarec(int32_t cycs)
 int
 cpu_core_run_chunk(int32_t cycs)
 {
+    int ret;
+
     cycles += cycs;
-    return exec386_dynarec_blocks();
+    ret = exec386_dynarec_blocks();
+#    ifdef CODEGEN_CHAIN
+    exec386_chain_leave();
+#    endif
+    return ret;
 }
 #endif
 

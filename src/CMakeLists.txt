@@ -217,6 +217,96 @@ if(DYNAREC)
     add_subdirectory(codegen)
 endif()
 
+# The other processor's core (cpu/cpu_core.h): the core built once more,
+# then copied with every symbol it defines renamed s1_*, so a machine's
+# second processor runs in state and code of its own. x86-64 hosts with
+# the recompiler only; without objcopy the processors take turns in the
+# one core.
+#
+# Apple's toolchain has no objcopy; LLVM's handles Mach-O (Homebrew: llvm,
+# keg-only). Mach-O prefixes every C symbol with an underscore, which the
+# rename keeps in front.
+set(CPU_AP_SYMPREFIX "")
+if(APPLE)
+    set(CPU_AP_SYMPREFIX "_")
+    if(NOT CMAKE_OBJCOPY OR NOT EXISTS "${CMAKE_OBJCOPY}")
+        find_program(CPU_AP_LLVM_OBJCOPY llvm-objcopy
+                     HINTS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin)
+        if(CPU_AP_LLVM_OBJCOPY)
+            set(CMAKE_OBJCOPY ${CPU_AP_LLVM_OBJCOPY})
+        endif()
+    endif()
+endif()
+set(CPU_AP_TOOLS ON)
+foreach(tool CMAKE_OBJCOPY CMAKE_NM CMAKE_RANLIB CMAKE_OBJDUMP)
+    if(NOT ${tool} OR NOT EXISTS "${${tool}}")
+        set(CPU_AP_TOOLS OFF)
+    endif()
+endforeach()
+if(DYNAREC AND (ARCH STREQUAL "x86_64") AND CPU_AP_TOOLS)
+    set(CPU_AP_SOURCES
+        cpu/cpu.c
+        cpu/cpu_core.c
+        cpu/fpu.c
+        cpu/x86.c
+        cpu/386_common.c
+        cpu/386_dynarec.c
+        cpu/386_dynarec_ops.c
+        cpu/x86_ops_mmx.c
+        cpu/x86seg_common.c
+        cpu/x86seg.c
+        cpu/x87.c
+        cpu/x87_ferr.c
+        cpu/x87_timings.c
+        cpu/x86_idle.c
+        cpu/codegen_timing_486.c
+        cpu/codegen_timing_686.c
+        cpu/codegen_timing_common.c
+        cpu/codegen_timing_k6.c
+        cpu/codegen_timing_pentium.c
+        cpu/codegen_timing_p6.c
+        cpu/codegen_timing_winchip.c
+        cpu/codegen_timing_winchip2.c
+        mem/mem_cpu.c
+    )
+    if(AMD_K5)
+        list(APPEND CPU_AP_SOURCES cpu/codegen_timing_k5.c)
+    endif()
+    get_target_property(CPU_AP_DYNAREC_SOURCES dynarec SOURCES)
+    foreach(src IN LISTS CPU_AP_DYNAREC_SOURCES)
+        list(APPEND CPU_AP_SOURCES codegen/${src})
+    endforeach()
+
+    add_library(cpu_ap STATIC ${CPU_AP_SOURCES})
+    target_compile_definitions(cpu_ap PRIVATE CPU_AP_CORE CPU_MP_SECOND_CORE)
+    if(AMD_K5)
+        target_compile_definitions(cpu_ap PRIVATE USE_AMD_K5)
+    endif()
+    # No COMDAT (.refptr) sections: they would merge with the first core's.
+    target_compile_options(cpu_ap PRIVATE -mcmodel=small)
+
+    set(CPU_AP_RENAMED ${CMAKE_CURRENT_BINARY_DIR}/libcpu_ap1_renamed.a)
+    add_custom_command(OUTPUT ${CPU_AP_RENAMED}
+        COMMAND ${CMAKE_COMMAND}
+            -DNM=${CMAKE_NM} -DOBJCOPY=${CMAKE_OBJCOPY} -DRANLIB=${CMAKE_RANLIB} -DOBJDUMP=${CMAKE_OBJDUMP}
+            -DIN=$<TARGET_FILE:cpu_ap> -DOUT=${CPU_AP_RENAMED} -DPREFIX=s1_
+            -DSYMPREFIX=${CPU_AP_SYMPREFIX}
+            -DLIST=${CMAKE_CURRENT_BINARY_DIR}/cpu_ap1.syms
+            -DUNDEF=${CMAKE_CURRENT_BINARY_DIR}/cpu_ap1.undef
+            -DSHARED=${CMAKE_CURRENT_SOURCE_DIR}/cpu/cpu_ap_shared.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cpu/cpu_ap_rename.cmake
+        DEPENDS cpu_ap ${CMAKE_CURRENT_SOURCE_DIR}/cpu/cpu_ap_rename.cmake
+                ${CMAKE_CURRENT_SOURCE_DIR}/cpu/cpu_ap_shared.txt
+        VERBATIM)
+    add_custom_target(cpu_ap1_renamed DEPENDS ${CPU_AP_RENAMED})
+    add_dependencies(86Box cpu_ap1_renamed)
+    target_link_libraries(86Box ${CPU_AP_RENAMED})
+    target_compile_definitions(cpu PRIVATE CPU_MP_SECOND_CORE)
+elseif(DYNAREC AND (ARCH STREQUAL "x86_64"))
+    message(WARNING "No objcopy (on macOS: brew install llvm): the processors of a "
+                    "multiprocessor machine take turns in one core")
+endif()
+
 if(MINITRACE)
     add_compile_definitions(MTR_ENABLED)
     add_library(minitrace OBJECT minitrace/minitrace.c)
