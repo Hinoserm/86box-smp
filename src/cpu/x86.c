@@ -239,6 +239,8 @@ makeznptable(void)
 extern void codegen_set_rounding_mode(int mode); /* x87.h */
 /* An INIT to the processor's local APIC resets that APIC (lapic.c). */
 extern void lapic_index_board_reset(uint8_t index);
+/* The board's processor reset: the MP table hook looks afresh (ioapic.c). */
+extern void ioapic_processor_reset(void);
 
 /* An INIT message from the processor's local APIC (apic_initx86): this
    processor's alone, not the board's. */
@@ -305,8 +307,12 @@ reset_common(int hard)
     /* The board resets under the other processors: those on threads of
        their own stay out of it until their own reset reaches them
        (cpu_mp_after_reset). */
-    if ((cpu_mp_self == 0) && !reset_apic_init)
+    if ((cpu_mp_self == 0) && !reset_apic_init) {
         cpu_mp_hold_others();
+        /* The BIOS's POST runs again, and builds its MP table again,
+           perhaps elsewhere. */
+        ioapic_processor_reset();
+    }
 
     /* Make sure to gracefully leave SMM. */
     if (in_smm)

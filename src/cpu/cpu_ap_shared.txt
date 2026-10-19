@@ -227,6 +227,7 @@ cpu_lapic_irr_live
 ioapic_external_interrupt_pending_at
 ioapic_irq_path_active
 ioapic_lint1_raise
+ioapic_processor_reset
 lapic_index_board_reset
 
 # What another processor asks of the machine's thread when it runs on a
