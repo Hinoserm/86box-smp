@@ -92,9 +92,11 @@ load_lookup_table(codeblock_t *block, int reg, uintptr_t **field)
 
 /*ea_rule: take the direct load whenever the address is at most 0xffc into
   its page, aligned or not, as the interpreter's eal_r path does; readmemwl
-  and readmemll charge timing_misaligned only on the slow path.*/
+  and readmemll charge timing_misaligned only on the slow path.
+  ordered: processors run side by side, and the direct access is a
+  load-acquire (codegen_mem_order).*/
 static void
-build_load_routine(codeblock_t *block, int size, int is_float, int ea_rule)
+build_load_routine(codeblock_t *block, int size, int is_float, int ordered, int ea_rule)
 {
     uint32_t *branch_offset;
     uint32_t *misaligned_offset;
@@ -115,7 +117,7 @@ build_load_routine(codeblock_t *block, int size, int is_float, int ea_rule)
       LDP X29, X30, [SP, #-16]
       RET
     */
-    codegen_alloc(block, 80);
+    codegen_alloc(block, 128);
     host_arm64_MOV_REG_LSR(block, REG_W1, REG_W0, 12);
     load_lookup_table(block, REG_X2, &cpu_state.lookup2_r);
     host_arm64_LDRX_REG_LSL3(block, REG_X1, REG_X2, REG_X1);
@@ -129,7 +131,39 @@ build_load_routine(codeblock_t *block, int size, int is_float, int ea_rule)
     }
     host_arm64_CMPX_IMM(block, REG_X1, -1);
     branch_offset = host_arm64_BEQ_(block);
-    if (size == 1 && !is_float)
+    if (ordered) {
+        /*A load-acquire: another processor's stores are seen in their
+          order.*/
+        host_arm64_ADDX_REG(block, REG_X1, REG_X1, REG_X0);
+        if (ea_rule) {
+            /*Unaligned inside the page: an acquire across 16 bytes faults,
+              so a plain load ordered by a barrier.*/
+            uint32_t *aligned_offset;
+
+            host_arm64_TST_IMM(block, REG_W0, size - 1);
+            aligned_offset = host_arm64_BEQ_(block);
+            if (size == 2)
+                host_arm64_LDRH_IMM(block, REG_W0, REG_X1, 0);
+            else
+                host_arm64_LDR_IMM_W(block, REG_W0, REG_X1, 0);
+            host_arm64_DMB_ISHLD(block);
+            host_arm64_MOVZ_IMM(block, REG_W1, 0);
+            host_arm64_RET(block, REG_X30);
+            host_arm64_branch_set_offset(aligned_offset, &block_write_data[block_pos]);
+        }
+        if (size == 1)
+            host_arm64_LDAPR(block, 0, REG_W0, REG_X1);
+        else if (size == 2)
+            host_arm64_LDAPR(block, 1, REG_W0, REG_X1);
+        else if (size == 4) {
+            host_arm64_LDAPR(block, 2, REG_W0, REG_X1);
+            if (is_float)
+                host_arm64_FMOV_S_W(block, REG_V_TEMP, REG_W0);
+        } else if (size == 8) {
+            host_arm64_LDAPR(block, 3, REG_X0, REG_X1);
+            host_arm64_FMOV_D_Q(block, REG_V_TEMP, REG_X0);
+        }
+    } else if (size == 1 && !is_float)
         host_arm64_LDRB_REG(block, REG_W0, REG_W1, REG_W0);
     else if (size == 2 && !is_float)
         host_arm64_LDRH_REG(block, REG_W0, REG_W1, REG_W0);
@@ -166,7 +200,7 @@ build_load_routine(codeblock_t *block, int size, int is_float, int ea_rule)
 }
 
 static void
-build_store_routine(codeblock_t *block, int size, int is_float)
+build_store_routine(codeblock_t *block, int size, int is_float, int ordered)
 {
     uint32_t *branch_offset;
     uint32_t *misaligned_offset;
@@ -187,7 +221,7 @@ build_store_routine(codeblock_t *block, int size, int is_float)
       LDP X29, X30, [SP, #-16]
       RET
     */
-    codegen_alloc(block, 80);
+    codegen_alloc(block, 128);
     host_arm64_MOV_REG_LSR(block, REG_W2, REG_W0, 12);
     load_lookup_table(block, REG_X3, &cpu_state.lookup2_w);
     host_arm64_LDRX_REG_LSL3(block, REG_X2, REG_X3, REG_X2);
@@ -197,7 +231,23 @@ build_store_routine(codeblock_t *block, int size, int is_float)
     }
     host_arm64_CMPX_IMM(block, REG_X2, -1);
     branch_offset = host_arm64_BEQ_(block);
-    if (size == 1 && !is_float)
+    if (ordered) {
+        /*A store-release: another processor sees this one's stores in
+          their order.*/
+        host_arm64_ADDX_REG(block, REG_X2, REG_X2, REG_X0);
+        if (size == 1)
+            host_arm64_STLR(block, 0, REG_W1, REG_X2);
+        else if (size == 2)
+            host_arm64_STLR(block, 1, REG_W1, REG_X2);
+        else if (size == 4) {
+            if (is_float)
+                host_arm64_FMOV_W_S(block, REG_W1, REG_V_TEMP);
+            host_arm64_STLR(block, 2, REG_W1, REG_X2);
+        } else if (size == 8) {
+            host_arm64_FMOV_Q_D(block, REG_X1, REG_V_TEMP);
+            host_arm64_STLR(block, 3, REG_X1, REG_X2);
+        }
+    } else if (size == 1 && !is_float)
         host_arm64_STRB_REG(block, REG_X1, REG_X2, REG_X0);
     else if (size == 2 && !is_float)
         host_arm64_STRH_REG(block, REG_X1, REG_X2, REG_X0);
@@ -233,38 +283,73 @@ build_store_routine(codeblock_t *block, int size, int is_float)
     host_arm64_RET(block, REG_X30);
 }
 
+/*Both sets, plain and ordered (codegen_backend_mem_ordered picks one):
+  loads, then stores, byte, word, long, quad, single, double; then the word
+  and long loads with the interpreter's eal_r rule.*/
+static void *mem_routines[2][14];
+
 static void
 build_loadstore_routines(codeblock_t *block)
 {
-    codegen_mem_load_byte = &block_write_data[block_pos];
-    build_load_routine(block, 1, 0, 0);
-    codegen_mem_load_word = &block_write_data[block_pos];
-    build_load_routine(block, 2, 0, 0);
-    codegen_mem_load_long = &block_write_data[block_pos];
-    build_load_routine(block, 4, 0, 0);
-    codegen_mem_load_quad = &block_write_data[block_pos];
-    build_load_routine(block, 8, 0, 0);
-    codegen_mem_load_single = &block_write_data[block_pos];
-    build_load_routine(block, 4, 1, 0);
-    codegen_mem_load_double = &block_write_data[block_pos];
-    build_load_routine(block, 8, 1, 0);
-    codegen_mem_load_word_ea = &block_write_data[block_pos];
-    build_load_routine(block, 2, 0, 1);
-    codegen_mem_load_long_ea = &block_write_data[block_pos];
-    build_load_routine(block, 4, 0, 1);
+    static const struct {
+        int size, is_float;
+    } kind[6] = { { 1, 0 }, { 2, 0 }, { 4, 0 }, { 8, 0 }, { 4, 1 }, { 8, 1 } };
 
-    codegen_mem_store_byte = &block_write_data[block_pos];
-    build_store_routine(block, 1, 0);
-    codegen_mem_store_word = &block_write_data[block_pos];
-    build_store_routine(block, 2, 0);
-    codegen_mem_store_long = &block_write_data[block_pos];
-    build_store_routine(block, 4, 0);
-    codegen_mem_store_quad = &block_write_data[block_pos];
-    build_store_routine(block, 8, 0);
-    codegen_mem_store_single = &block_write_data[block_pos];
-    build_store_routine(block, 4, 1);
-    codegen_mem_store_double = &block_write_data[block_pos];
-    build_store_routine(block, 8, 1);
+    for (int ordered = 0; ordered < 2; ordered++) {
+        for (int k = 0; k < 6; k++) {
+            mem_routines[ordered][k] = &block_write_data[block_pos];
+            build_load_routine(block, kind[k].size, kind[k].is_float, ordered, 0);
+        }
+        for (int k = 0; k < 6; k++) {
+            mem_routines[ordered][6 + k] = &block_write_data[block_pos];
+            build_store_routine(block, kind[k].size, kind[k].is_float, ordered);
+        }
+        mem_routines[ordered][12] = &block_write_data[block_pos];
+        build_load_routine(block, 2, 0, ordered, 1);
+        mem_routines[ordered][13] = &block_write_data[block_pos];
+        build_load_routine(block, 4, 0, ordered, 1);
+    }
+}
+
+/*The routines blocks compiled from now on call, and how the inline
+  accesses are made (codegen_backend_arm64_uops.c): plain loads and stores
+  for one processor, load-acquire and store-release while others run
+  beside it (x86 keeps a processor's memory accesses in order for the
+  others, ARM64 does not).*/
+int codegen_arm64_mem_ordered;
+
+static void
+codegen_backend_mem_ordered(int ordered)
+{
+    void **r = mem_routines[!!ordered];
+
+    codegen_arm64_mem_ordered = !!ordered;
+
+    codegen_mem_load_byte    = r[0];
+    codegen_mem_load_word    = r[1];
+    codegen_mem_load_long    = r[2];
+    codegen_mem_load_quad    = r[3];
+    codegen_mem_load_single  = r[4];
+    codegen_mem_load_double  = r[5];
+    codegen_mem_store_byte   = r[6];
+    codegen_mem_store_word   = r[7];
+    codegen_mem_store_long   = r[8];
+    codegen_mem_store_quad   = r[9];
+    codegen_mem_store_single = r[10];
+    codegen_mem_store_double = r[11];
+    codegen_mem_load_word_ea = r[12];
+    codegen_mem_load_long_ea = r[13];
+}
+
+/*Whether this core's compiled guest loads and stores are ordered: what it
+  compiled the other way goes.*/
+void
+codegen_mem_order(int ordered)
+{
+    if (!!ordered == codegen_arm64_mem_ordered)
+        return;
+    codegen_backend_mem_ordered(ordered);
+    codegen_reset();
 }
 
 static void
@@ -338,6 +423,13 @@ codegen_backend_init(void)
     cpu_state.lookup2_r   = readlookup2;
     cpu_state.lookup2_w   = writelookup2;
     build_loadstore_routines(block);
+    /*The other processors' cores always run beside the first; the first
+      is told when they do (codegen_mem_order).*/
+#    ifdef CPU_AP_CORE
+    codegen_backend_mem_ordered(1);
+#    else
+    codegen_backend_mem_ordered(0);
+#    endif
 
     codegen_fp_round = &block_write_data[block_pos];
     build_fp_round_routine(block, 0);

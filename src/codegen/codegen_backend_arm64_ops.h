@@ -156,6 +156,11 @@ uint32_t *host_arm64_insn_(codeblock_t *block, uint32_t insn);
 void host_arm64_LDRH_REG(codeblock_t *block, int dest_reg, int base_reg, int offset_reg);
 
 void host_arm64_LDRX_REG_LSL3(codeblock_t *block, int dest_reg, int base_reg, int offset_reg);
+void host_arm64_ADDX_REG(codeblock_t *block, int dst_reg, int src_n_reg, int src_m_reg);
+/* size: 0 byte, 1 halfword, 2 word, 3 doubleword */
+void host_arm64_LDAPR(codeblock_t *block, int size, int dst_reg, int base_reg);
+void host_arm64_STLR(codeblock_t *block, int size, int src_reg, int base_reg);
+void host_arm64_DMB_ISHLD(codeblock_t *block);
 
 void host_arm64_LSL(codeblock_t *block, int dst_reg, int src_n_reg, int shift_reg);
 void host_arm64_LSR(codeblock_t *block, int dst_reg, int src_n_reg, int shift_reg);

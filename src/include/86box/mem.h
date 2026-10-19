@@ -21,6 +21,67 @@
 
 #include <stdint.h>
 
+/* A processor's loads and stores of guest RAM, as another processor
+   running beside it must see them: in program order, as x86 keeps them
+   (less a store passing a later load, which x86 allows too). x86-64 hosts
+   keep that order themselves; on ARM64 a load is a load-acquire and a
+   store a store-release while processors run side by side (always in the
+   other processors' cores, CPU_AP_CORE; in the first while cpu_mp_atomic
+   is set). One not naturally aligned, where an acquire or release access
+   takes an alignment fault on a host without LSE2, is a plain access with
+   the fence it stands for. */
+#if defined(__aarch64__) || defined(_M_ARM64)
+extern int cpu_mp_atomic;
+#    ifdef CPU_AP_CORE
+#        define MEM_ORDERED 1
+#    else
+#        define MEM_ORDERED cpu_mp_atomic
+#    endif
+#    define MEM_LD_FN(name, T)                                           \
+        static __inline T name(const void *p)                            \
+        {                                                                \
+            T v;                                                         \
+            if (!MEM_ORDERED)                                            \
+                return *(const T *) p;                                   \
+            if (!(((uintptr_t) p) & (sizeof(T) - 1)))                    \
+                return __atomic_load_n((const T *) p, __ATOMIC_ACQUIRE); \
+            v = *(const volatile T *) p;                                 \
+            __atomic_thread_fence(__ATOMIC_ACQUIRE);                     \
+            return v;                                                    \
+        }
+#    define MEM_ST_FN(name, T)                                  \
+        static __inline void name(void *p, T v)                 \
+        {                                                       \
+            if (!MEM_ORDERED)                                   \
+                *(T *) p = v;                                   \
+            else if (!(((uintptr_t) p) & (sizeof(T) - 1)))      \
+                __atomic_store_n((T *) p, v, __ATOMIC_RELEASE); \
+            else {                                              \
+                __atomic_thread_fence(__ATOMIC_RELEASE);        \
+                *(volatile T *) p = v;                          \
+            }                                                   \
+        }
+#else
+#    define MEM_LD_FN(name, T)                \
+        static __inline T name(const void *p) \
+        {                                     \
+            return *(const T *) p;            \
+        }
+#    define MEM_ST_FN(name, T)                  \
+        static __inline void name(void *p, T v) \
+        {                                       \
+            *(T *) p = v;                       \
+        }
+#endif
+MEM_LD_FN(mem_ld8, uint8_t)
+MEM_LD_FN(mem_ld16, uint16_t)
+MEM_LD_FN(mem_ld32, uint32_t)
+MEM_LD_FN(mem_ld64, uint64_t)
+MEM_ST_FN(mem_st8, uint8_t)
+MEM_ST_FN(mem_st16, uint16_t)
+MEM_ST_FN(mem_st32, uint32_t)
+MEM_ST_FN(mem_st64, uint64_t)
+
 #define MEM_MAP_TO_SHADOW_RAM_MASK 1
 #define MEM_MAP_TO_RAM_ADDR_MASK   2
 

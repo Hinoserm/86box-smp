@@ -136,3 +136,6 @@ extern void *codegen_fp_round_quad;
 extern void *codegen_gpf_rout;
 extern void *codegen_ss_rout;
 extern void *codegen_exit_rout;
+
+/*Blocks compiled now use load-acquire and store-release (codegen_mem_order)*/
+extern int codegen_arm64_mem_ordered;

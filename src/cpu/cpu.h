@@ -803,6 +803,11 @@ extern void cpu_WRMSR(void);
 // extern int  checkio(uint32_t port, int mask);
 extern void codegen_block_end(void);
 extern void codegen_reset(void);
+/* Whether this core's compiled guest loads and stores are ordered: while
+   other processors run beside it, on a host that does not keep a
+   processor's accesses in order for the others (ARM64). What it compiled
+   the other way goes. */
+extern void codegen_mem_order(int ordered);
 extern void cpu_set_edx(void);
 extern int  divl(uint32_t val);
 extern void execx86(int32_t cycs);

@@ -451,6 +451,12 @@ codegen_backend_prologue(codeblock_t *block)
     }
 }
 
+/* Processors do not run side by side on this backend. */
+void
+codegen_mem_order(UNUSED(int ordered))
+{
+}
+
 void
 codegen_backend_epilogue(codeblock_t *block)
 {

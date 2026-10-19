@@ -29,6 +29,7 @@
  */
 #include <stdint.h>
 #include <string.h>
+#include <86box/mem.h>
 #include "x86_rep_host.h"
 
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
@@ -47,6 +48,23 @@
 #endif
 
 uint8_t rep_host_mode = REP_HOST_OFF;
+
+/* A string run as one of the processor's accesses, as another processor
+   running beside it sees them: after everything before it and before
+   everything after, its own stores in any order among themselves (as an
+   x86 fast string's). x86 hosts keep that order; ARM64 needs the fence
+   (MEM_ORDERED, <86box/mem.h>). */
+#if defined(__aarch64__) || defined(_M_ARM64)
+#    define REP_ORDER()                                  \
+        do {                                             \
+            if (MEM_ORDERED)                             \
+                __atomic_thread_fence(__ATOMIC_SEQ_CST); \
+        } while (0)
+#else
+#    define REP_ORDER() \
+        do {            \
+        } while (0)
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Plain C, for hosts without either and for the ends of generic runs */
@@ -487,6 +505,7 @@ cmp_zen5(const uint8_t *alo, const uint8_t *blo, uint32_t n, uint32_t esz, int d
 void
 rep_host_copy(uint8_t *dlo, const uint8_t *slo, uint32_t bytes, int down)
 {
+    REP_ORDER();
 #if REP_HOST_X86
     if (rep_host_mode == REP_HOST_ZEN5)
         copy_zen5(dlo, slo, bytes, down);
@@ -496,6 +515,7 @@ rep_host_copy(uint8_t *dlo, const uint8_t *slo, uint32_t bytes, int down)
     (void) down;
     memmove(dlo, slo, bytes);
 #endif
+    REP_ORDER();
 }
 
 void
@@ -503,6 +523,7 @@ rep_host_copy_elems(uint8_t *d0, const uint8_t *s0, uint32_t n, uint32_t esz, in
 {
     const intptr_t step = down ? -(intptr_t) esz : (intptr_t) esz;
 
+    REP_ORDER();
     /* Each element read whole and then written, as the guest does, so
        what an earlier element wrote is what a later one reads. */
     for (; n--; d0 += step, s0 += step) {
@@ -510,11 +531,13 @@ rep_host_copy_elems(uint8_t *d0, const uint8_t *s0, uint32_t n, uint32_t esz, in
 
         memcpy(d0, &v, esz);
     }
+    REP_ORDER();
 }
 
 void
 rep_host_fill(uint8_t *dlo, uint32_t value, uint32_t n, uint32_t esz, int down)
 {
+    REP_ORDER();
 #if REP_HOST_X86
     if (rep_host_mode == REP_HOST_ZEN5)
         fill_zen5(dlo, value, n, esz, down);
@@ -525,34 +548,47 @@ rep_host_fill(uint8_t *dlo, uint32_t value, uint32_t n, uint32_t esz, int down)
 #else
     fill_c(dlo, value, n, esz, down);
 #endif
+    REP_ORDER();
 }
 
 uint32_t
 rep_host_scan(const uint8_t *lo, uint32_t n, uint32_t esz, int down, uint32_t value, int repe)
 {
+    uint32_t r;
+
+    REP_ORDER();
 #if REP_HOST_X86
     if (rep_host_mode == REP_HOST_ZEN5)
-        return scan_zen5(lo, n, esz, down, value, repe);
-    return scan_generic(lo, n, esz, down, value, repe);
+        r = scan_zen5(lo, n, esz, down, value, repe);
+    else
+        r = scan_generic(lo, n, esz, down, value, repe);
 #elif REP_HOST_NEON
-    return scan_neon(lo, n, esz, down, value, repe);
+    r = scan_neon(lo, n, esz, down, value, repe);
 #else
-    return scan_c(lo, n, esz, down, value, repe);
+    r = scan_c(lo, n, esz, down, value, repe);
 #endif
+    REP_ORDER();
+    return r;
 }
 
 uint32_t
 rep_host_cmp(const uint8_t *alo, const uint8_t *blo, uint32_t n, uint32_t esz, int down, int repe)
 {
+    uint32_t r;
+
+    REP_ORDER();
 #if REP_HOST_X86
     if (rep_host_mode == REP_HOST_ZEN5)
-        return cmp_zen5(alo, blo, n, esz, down, repe);
-    return cmp_generic(alo, blo, n, esz, down, repe);
+        r = cmp_zen5(alo, blo, n, esz, down, repe);
+    else
+        r = cmp_generic(alo, blo, n, esz, down, repe);
 #elif REP_HOST_NEON
-    return cmp_neon(alo, blo, n, esz, down, repe);
+    r = cmp_neon(alo, blo, n, esz, down, repe);
 #else
-    return cmp_c(alo, blo, n, esz, down, repe);
+    r = cmp_c(alo, blo, n, esz, down, repe);
 #endif
+    REP_ORDER();
+    return r;
 }
 
 /* ------------------------------------------------------------------ */

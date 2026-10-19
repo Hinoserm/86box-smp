@@ -1575,8 +1575,12 @@ cpu_mp_configure(int count)
     cpu_mp_reset_blob_seq  = 0;
     cpu_mp_ap_lock         = 0;
 
-    if (count < 2)
+    if (count < 2) {
+#ifdef USE_DYNAREC
+        codegen_mem_order(0);
+#endif
         return;
+    }
 
     if (cpu_mp_var_count == 0)
         cpu_mp_register_all();
@@ -1623,6 +1627,11 @@ cpu_mp_configure(int count)
         }
         cpu_mp_atomic = cpu_thread_active();
     }
+#endif
+#ifdef USE_DYNAREC
+    /* The first processor's compiled loads and stores, ordered while the
+       others run beside it (the others' always are). */
+    codegen_mem_order(cpu_mp_atomic);
 #endif
 
     cpu_mp_reset_blob = calloc(1, cpu_mp_blob_size);

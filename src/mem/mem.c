@@ -833,7 +833,7 @@ mem_read_ram(uint32_t addr, UNUSED(void *priv))
     if (cpu_use_exec)
         mem_ram_fill_read(mem_logical_addr, addr);
 
-    return ram[addr];
+    return mem_ld8(&ram[addr]);
 }
 
 uint16_t
@@ -847,7 +847,7 @@ mem_read_ramw(uint32_t addr, UNUSED(void *priv))
     if (cpu_use_exec)
         mem_ram_fill_read(mem_logical_addr, addr);
 
-    return *(uint16_t *) &ram[addr];
+    return mem_ld16(&ram[addr]);
 }
 
 uint32_t
@@ -861,7 +861,7 @@ mem_read_raml(uint32_t addr, UNUSED(void *priv))
     if (cpu_use_exec)
         mem_ram_fill_read(mem_logical_addr, addr);
 
-    return *(uint32_t *) &ram[addr];
+    return mem_ld32(&ram[addr]);
 }
 
 void
@@ -879,7 +879,7 @@ mem_write_ramb_page(uint32_t addr, uint8_t val, page_t *page)
         int      byte_offset = (addr >> PAGE_BYTE_MASK_SHIFT) & PAGE_BYTE_MASK_OFFSET_MASK;
         uint64_t byte_mask   = (uint64_t) 1 << (addr & PAGE_BYTE_MASK_MASK);
 
-        page->mem[addr & 0xfff] = val;
+        mem_st8(&page->mem[addr & 0xfff], val);
         MEM_DIRTY_OR(page->dirty_mask, mask);
         if ((page->code_present_mask & mask) && !page_in_evict_list(page))
             mem_page_add_evict(page);
@@ -912,7 +912,7 @@ mem_write_ramw_page(uint32_t addr, uint16_t val, page_t *page)
 
         if ((addr & 0xf) == 0xf)
             mask |= (mask << 1);
-        *(uint16_t *) &page->mem[addr & 0xfff] = val;
+        mem_st16(&page->mem[addr & 0xfff], val);
         MEM_DIRTY_OR(page->dirty_mask, mask);
         if ((page->code_present_mask & mask) && !page_in_evict_list(page))
             mem_page_add_evict(page);
@@ -953,7 +953,7 @@ mem_write_raml_page(uint32_t addr, uint32_t val, page_t *page)
 
         if ((addr & 0xf) >= 0xd)
             mask |= (mask << 1);
-        *(uint32_t *) &page->mem[addr & 0xfff] = val;
+        mem_st32(&page->mem[addr & 0xfff], val);
         MEM_DIRTY_OR(page->dirty_mask, mask);
         MEM_DIRTY_OR(page->byte_dirty_mask[byte_offset], byte_mask);
         if (!page_in_evict_list(page) && ((page->code_present_mask & mask) || (page->byte_code_present_mask[byte_offset] & byte_mask)))
@@ -1010,7 +1010,7 @@ mem_write_ram(uint32_t addr, uint8_t val, UNUSED(void *priv))
         mem_ram_fill_write(mem_logical_addr, addr);
         mem_write_ramb_page(addr, val, &pages[addr >> 12]);
     } else
-        ram[addr] = val;
+        mem_st8(&ram[addr], val);
 }
 
 void
@@ -1024,7 +1024,7 @@ mem_write_ramw(uint32_t addr, uint16_t val, UNUSED(void *priv))
         mem_ram_fill_write(mem_logical_addr, addr);
         mem_write_ramw_page(addr, val, &pages[addr >> 12]);
     } else
-        *(uint16_t *) &ram[addr] = val;
+        mem_st16(&ram[addr], val);
 }
 
 void
@@ -1038,7 +1038,7 @@ mem_write_raml(uint32_t addr, uint32_t val, UNUSED(void *priv))
         mem_ram_fill_write(mem_logical_addr, addr);
         mem_write_raml_page(addr, val, &pages[addr >> 12]);
     } else
-        *(uint32_t *) &ram[addr] = val;
+        mem_st32(&ram[addr], val);
 }
 
 static uint8_t

@@ -4,6 +4,9 @@
 #    include <stdint.h>
 #    include <stdlib.h>
 #    include <string.h>
+#    if defined(__linux__)
+#        include <sys/auxv.h>
+#    endif
 #    include <86box/86box.h>
 #    include "cpu.h"
 #    include <86box/mem.h>
@@ -1281,6 +1284,61 @@ void
 host_arm64_LDRB_REG(codeblock_t *block, int dest_reg, int base_reg, int offset_reg)
 {
     codegen_addlong(block, OPCODE_LDRB_REG | Rn(base_reg) | Rm(offset_reg) | Rt(dest_reg));
+}
+
+/*Xd = Xn + Xm*/
+void
+host_arm64_ADDX_REG(codeblock_t *block, int dst_reg, int src_n_reg, int src_m_reg)
+{
+    codegen_addlong(block, OPCODE_ADDX_LSL | Rd(dst_reg) | Rn(src_n_reg) | Rm(src_m_reg) | DATPROC_SHIFT(0));
+}
+
+/*Whether the host has the RCpc load-acquire (FEAT_LRCPC, LDAPR): every
+  Apple core does; elsewhere the kernel says. Without it a load-acquire is
+  LDAR, which orders more than x86 asks.*/
+static int
+host_arm64_has_lrcpc(void)
+{
+    static int lrcpc = -1;
+
+    if (lrcpc < 0) {
+#    if defined(__APPLE__)
+        lrcpc = 1;
+#    elif defined(__linux__)
+        lrcpc = !!(getauxval(AT_HWCAP) & (1UL << 15)); /*HWCAP_LRCPC*/
+#    else
+        lrcpc = 0;
+#    endif
+    }
+    return lrcpc;
+}
+
+/*Load-acquire and store-release of guest memory, from [Xn] alone: what
+  makes the order of one processor's loads and stores the order another
+  sees (x86's), less store-then-load, which x86 lets pass too. size: 0
+  byte, 1 halfword, 2 word, 3 doubleword.*/
+void
+host_arm64_LDAPR(codeblock_t *block, int size, int dst_reg, int base_reg)
+{
+    static const uint32_t ldapr[4] = { 0x38bfc000, 0x78bfc000, 0xb8bfc000, 0xf8bfc000 }; /*B, H, W, X*/
+    static const uint32_t ldar[4]  = { 0x08dffc00, 0x48dffc00, 0x88dffc00, 0xc8dffc00 };
+
+    codegen_addlong(block, (host_arm64_has_lrcpc() ? ldapr : ldar)[size] | Rn(base_reg) | Rt(dst_reg));
+}
+
+void
+host_arm64_STLR(codeblock_t *block, int size, int src_reg, int base_reg)
+{
+    static const uint32_t op[4] = { 0x089ffc00, 0x489ffc00, 0x889ffc00, 0xc89ffc00 }; /*B, H, W, X*/
+
+    codegen_addlong(block, op[size] | Rn(base_reg) | Rt(src_reg));
+}
+
+/*DMB ISHLD: the loads before it are ordered before every access after it*/
+void
+host_arm64_DMB_ISHLD(codeblock_t *block)
+{
+    codegen_addlong(block, 0xd50339bf);
 }
 
 /*One raw instruction, its address returned so it can be patched (a branch

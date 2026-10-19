@@ -890,6 +890,14 @@ codegen_chain_patch(uint8_t *stub, codeblock_t *target, uint64_t gen)
 }
 #endif
 
+/* x86 keeps one processor's loads and stores in order (TSO) for another
+   to see: nothing to change. */
+void
+codegen_mem_order(int ordered)
+{
+    (void) ordered;
+}
+
 void
 codegen_backend_epilogue(codeblock_t *block)
 {

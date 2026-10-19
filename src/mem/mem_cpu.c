@@ -74,7 +74,7 @@ mem_cpu_ram_rb(uint32_t a)
 {
     if (cpu_use_exec)
         addreadlookup(mem_logical_addr, a);
-    return ram[a];
+    return mem_ld8(&ram[a]);
 }
 
 static inline uint16_t
@@ -82,7 +82,7 @@ mem_cpu_ram_rw(uint32_t a)
 {
     if (cpu_use_exec)
         addreadlookup(mem_logical_addr, a);
-    return *(uint16_t *) &ram[a];
+    return mem_ld16(&ram[a]);
 }
 
 static inline uint32_t
@@ -90,7 +90,7 @@ mem_cpu_ram_rl(uint32_t a)
 {
     if (cpu_use_exec)
         addreadlookup(mem_logical_addr, a);
-    return *(uint32_t *) &ram[a];
+    return mem_ld32(&ram[a]);
 }
 
 static inline void
@@ -100,7 +100,7 @@ mem_cpu_ram_wb(uint32_t a, uint8_t v)
         addwritelookup(mem_logical_addr, a);
         mem_write_ramb_page(a, v, &pages[a >> 12]);
     } else
-        ram[a] = v;
+        mem_st8(&ram[a], v);
 }
 
 static inline void
@@ -110,7 +110,7 @@ mem_cpu_ram_ww(uint32_t a, uint16_t v)
         addwritelookup(mem_logical_addr, a);
         mem_write_ramw_page(a, v, &pages[a >> 12]);
     } else
-        *(uint16_t *) &ram[a] = v;
+        mem_st16(&ram[a], v);
 }
 
 static inline void
@@ -120,7 +120,7 @@ mem_cpu_ram_wl(uint32_t a, uint32_t v)
         addwritelookup(mem_logical_addr, a);
         mem_write_raml_page(a, v, &pages[a >> 12]);
     } else
-        *(uint32_t *) &ram[a] = v;
+        mem_st32(&ram[a], v);
 }
 
 #    define MAP_READ_B(m, a)     (((m)->read_b == mem_read_ram) ? mem_cpu_ram_rb(a) : cpu_ap_map_read_b((m), (a)))
@@ -1755,7 +1755,7 @@ readmemwl(uint32_t addr)
 
             return readmembl_no_mmut(addr, addr64a[0]) | (((uint16_t) readmembl_no_mmut(addr + 1, addr64a[1])) << 8);
         } else if (*rl2 != (uintptr_t) LOOKUP_INV)
-            return *(uint16_t *) (*rl2 + addr);
+            return mem_ld16((void *) (*rl2 + addr));
     }
 
     if (cr0 >> 31) {
@@ -1828,7 +1828,7 @@ writememwl(uint32_t addr, uint16_t val)
             writemembl_no_mmut(addr + 1, addr64a[1], val >> 8);
             return;
         } else if (writelookup2[addr >> 12] != (uintptr_t) LOOKUP_INV) {
-            *(uint16_t *) (writelookup2[addr >> 12] + addr) = val;
+            mem_st16((void *) (writelookup2[addr >> 12] + addr), val);
             return;
         }
     }
@@ -1887,7 +1887,7 @@ readmemwl_no_mmut(uint32_t addr, uint32_t *a64)
 
             return readmembl_no_mmut(addr, a64[0]) | (((uint16_t) readmembl_no_mmut(addr + 1, a64[1])) << 8);
         } else if (*rl2 != (uintptr_t) LOOKUP_INV)
-            return *(uint16_t *) (*rl2 + addr);
+            return mem_ld16((void *) (*rl2 + addr));
     }
 
     if (cr0 >> 31) {
@@ -1934,7 +1934,7 @@ writememwl_no_mmut(uint32_t addr, uint32_t *a64, uint16_t val)
             writemembl_no_mmut(addr + 1, a64[1], val >> 8);
             return;
         } else if (writelookup2[addr >> 12] != (uintptr_t) LOOKUP_INV) {
-            *(uint16_t *) (writelookup2[addr >> 12] + addr) = val;
+            mem_st16((void *) (writelookup2[addr >> 12] + addr), val);
             return;
         }
     }
@@ -2019,7 +2019,7 @@ readmemll(uint32_t addr)
                their result as a parameter to be used if needed. */
             return readmemwl_no_mmut(addr, addr64a) | (((uint32_t) readmemwl_no_mmut(addr + 2, &(addr64a[2]))) << 16);
         } else if (*rl2 != (uintptr_t) LOOKUP_INV)
-            return *(uint32_t *) (*rl2 + addr);
+            return mem_ld32((void *) (*rl2 + addr));
     }
 
     if (cr0 >> 31) {
@@ -2106,7 +2106,7 @@ writememll(uint32_t addr, uint32_t val)
             writememwl_no_mmut(addr + 2, &(addr64a[2]), val >> 16);
             return;
         } else if (writelookup2[addr >> 12] != (uintptr_t) LOOKUP_INV) {
-            *(uint32_t *) (writelookup2[addr >> 12] + addr) = val;
+            mem_st32((void *) (writelookup2[addr >> 12] + addr), val);
             return;
         }
     }
@@ -2171,7 +2171,7 @@ readmemll_no_mmut(uint32_t addr, uint32_t *a64)
 
             return readmemwl_no_mmut(addr, a64) | ((uint32_t) (readmemwl_no_mmut(addr + 2, &(a64[2]))) << 16);
         } else if (*rl2 != (uintptr_t) LOOKUP_INV)
-            return *(uint32_t *) (*rl2 + addr);
+            return mem_ld32((void *) (*rl2 + addr));
     }
 
     if (cr0 >> 31) {
@@ -2220,7 +2220,7 @@ writememll_no_mmut(uint32_t addr, uint32_t *a64, uint32_t val)
             writememwl_no_mmut(addr + 2, &(a64[2]), val >> 16);
             return;
         } else if (writelookup2[addr >> 12] != (uintptr_t) LOOKUP_INV) {
-            *(uint32_t *) (writelookup2[addr >> 12] + addr) = val;
+            mem_st32((void *) (writelookup2[addr >> 12] + addr), val);
             return;
         }
     }
@@ -2310,7 +2310,7 @@ readmemql(uint32_t addr)
                their result as a parameter to be used if needed. */
             return readmemll_no_mmut(addr, addr64a) | (((uint64_t) readmemll_no_mmut(addr + 4, &(addr64a[4]))) << 32);
         } else if (*rl2 != (uintptr_t) LOOKUP_INV)
-            return *(uint64_t *) (*rl2 + addr);
+            return mem_ld64((void *) (*rl2 + addr));
     }
 
     if (cr0 >> 31) {
@@ -2407,7 +2407,7 @@ writememql(uint32_t addr, uint64_t val)
             writememll_no_mmut(addr + 4, &(addr64a[4]), val >> 32);
             return;
         } else if (writelookup2[addr >> 12] != (uintptr_t) LOOKUP_INV) {
-            *(uint64_t *) (writelookup2[addr >> 12] + addr) = val;
+            mem_st64((void *) (writelookup2[addr >> 12] + addr), val);
             return;
         }
     }

@@ -1086,7 +1086,8 @@ enum {
 static void
 codegen_mem_inline_ex(codeblock_t *block, int size, int store, int ea_rule, void *rout, int src, int src_kind, int dest)
 {
-    const int ent     = store ? REG_X2 : REG_X1; /*the page's entry*/
+    const int ordered = codegen_arm64_mem_ordered; /*processors side by side (codegen_mem_order)*/
+    const int ent     = store ? REG_X2 : REG_X1;   /*the page's entry*/
     const int tbl     = store ? REG_X3 : REG_X2;
     const int val     = (store && (src_kind != MEM_SRC_W1)) ? src : REG_W1;
     const int to      = (!store && (dest >= 0)) ? dest : REG_W0;
@@ -1101,13 +1102,22 @@ codegen_mem_inline_ex(codeblock_t *block, int size, int store, int ea_rule, void
         host_arm64_AND_IMM(block, REG_W3, REG_W0, 0xfff);
         host_arm64_CMP_IMM(block, REG_W3, 0xffc);
         slow[0] = mem_inline_branch(block, MEM_INLINE_BCOND(MEM_INLINE_HI));
-    } else if (size != 1) {
+    }
+    /*An ordered access takes the fast path aligned only: an acquire or
+      release across 16 bytes faults.*/
+    if ((size != 1) && (!ea_rule || ordered)) {
         host_arm64_TST_IMM(block, REG_W0, size - 1);
         slow[1] = mem_inline_branch(block, MEM_INLINE_BCOND(MEM_INLINE_NE));
     }
     host_arm64_CMNX_IMM(block, ent, 1);
     slow[2] = mem_inline_branch(block, MEM_INLINE_BCOND(MEM_INLINE_EQ));
-    if (store) {
+    if (ordered) {
+        host_arm64_ADDX_REG(block, ent, ent, REG_X0);
+        if (store)
+            host_arm64_STLR(block, (size == 1) ? 0 : (size == 2) ? 1 : 2, val, ent);
+        else
+            host_arm64_LDAPR(block, (size == 1) ? 0 : (size == 2) ? 1 : 2, to, ent);
+    } else if (store) {
         if (size == 1)
             host_arm64_STRB_REG(block, val, ent, REG_X0);
         else if (size == 2)
