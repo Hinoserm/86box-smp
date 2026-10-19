@@ -171,7 +171,7 @@ codegen_ir_compile(ir_data_t *ir, codeblock_t *block)
             continue;
 
 #ifdef CODEGEN_BACKEND_HAS_MOV_IMM
-        if ((uop->type & UOP_MASK) == (UOP_MOV_IMM & UOP_MASK) && reg_is_native_size(uop->dest_reg_a) && !codegen_reg_is_loaded(uop->dest_reg_a) && reg_version[IREG_GET_REG(uop->dest_reg_a.reg)][uop->dest_reg_a.version].refcount <= 0) {
+        if ((uop->type & UOP_MASK) == (UOP_MOV_IMM & UOP_MASK) && reg_is_native_size(uop->dest_reg_a) && codegen_reg_imm_storable(uop->dest_reg_a) && !codegen_reg_is_loaded(uop->dest_reg_a) && reg_version[IREG_GET_REG(uop->dest_reg_a.reg)][uop->dest_reg_a.version].refcount <= 0) {
             /*Special case for UOP_MOV_IMM - if destination not already in host register
               and won't be used again then just store directly to memory*/
             codegen_reg_write_imm(block, uop->dest_reg_a, uop->imm_data);

@@ -403,6 +403,7 @@ codegen_reg_read(int reg)
 }
 
 int reg_is_native_size(ir_reg_t ir_reg);
+int codegen_reg_imm_storable(ir_reg_t ir_reg);
 int ireg_is_byte_accessed(int ireg);
 
 static inline ir_reg_t

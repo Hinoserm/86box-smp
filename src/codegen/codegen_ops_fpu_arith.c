@@ -60,7 +60,7 @@ ropFADD(UNUSED(codeblock_t *block), ir_data_t *ir, UNUSED(uint8_t opcode), uint3
     uop_FP_ENTER(ir);
     uop_FADD(ir, IREG_ST(0), IREG_ST(0), IREG_ST(src_reg));
     uop_FROUND_PC(ir, IREG_ST(0));
-    uop_MOV_IMM(ir, IREG_tag(0), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(0), TAG_VALID);
 
     return op_pc;
 }
@@ -74,7 +74,7 @@ ropFADDr(UNUSED(codeblock_t *block), ir_data_t *ir, UNUSED(uint8_t opcode), uint
     uop_FP_ENTER(ir);
     uop_FADD(ir, IREG_ST(dest_reg), IREG_ST(dest_reg), IREG_ST(0));
     uop_FROUND_PC(ir, IREG_ST(dest_reg));
-    uop_MOV_IMM(ir, IREG_tag(dest_reg), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(dest_reg), TAG_VALID);
 
     return op_pc;
 }
@@ -88,7 +88,7 @@ ropFADDP(codeblock_t *block, ir_data_t *ir, UNUSED(uint8_t opcode), uint32_t fet
     uop_FP_ENTER(ir);
     uop_FADD(ir, IREG_ST(dest_reg), IREG_ST(dest_reg), IREG_ST(0));
     uop_FROUND_PC(ir, IREG_ST(dest_reg));
-    uop_MOV_IMM(ir, IREG_tag(dest_reg), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(dest_reg), TAG_VALID);
     fpu_POP(block, ir);
 
     return op_pc;
@@ -216,7 +216,7 @@ ropFMUL(UNUSED(codeblock_t *block), ir_data_t *ir, UNUSED(uint8_t opcode), uint3
     uop_FP_ENTER(ir);
     uop_FMUL(ir, IREG_ST(0), IREG_ST(0), IREG_ST(src_reg));
     uop_FROUND_PC(ir, IREG_ST(0));
-    uop_MOV_IMM(ir, IREG_tag(0), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(0), TAG_VALID);
 
     return op_pc;
 }
@@ -230,7 +230,7 @@ ropFMULr(UNUSED(codeblock_t *block), ir_data_t *ir, UNUSED(uint8_t opcode), uint
     uop_FP_ENTER(ir);
     uop_FMUL(ir, IREG_ST(dest_reg), IREG_ST(dest_reg), IREG_ST(0));
     uop_FROUND_PC(ir, IREG_ST(dest_reg));
-    uop_MOV_IMM(ir, IREG_tag(dest_reg), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(dest_reg), TAG_VALID);
 
     return op_pc;
 }
@@ -244,7 +244,7 @@ ropFMULP(codeblock_t *block, ir_data_t *ir, UNUSED(uint8_t opcode), uint32_t fet
     uop_FP_ENTER(ir);
     uop_FMUL(ir, IREG_ST(dest_reg), IREG_ST(dest_reg), IREG_ST(0));
     uop_FROUND_PC(ir, IREG_ST(dest_reg));
-    uop_MOV_IMM(ir, IREG_tag(dest_reg), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(dest_reg), TAG_VALID);
     fpu_POP(block, ir);
 
     return op_pc;
@@ -260,7 +260,7 @@ ropFSUB(UNUSED(codeblock_t *block), ir_data_t *ir, UNUSED(uint8_t opcode), uint3
     uop_FP_ENTER(ir);
     uop_FSUB(ir, IREG_ST(0), IREG_ST(0), IREG_ST(src_reg));
     uop_FROUND_PC(ir, IREG_ST(0));
-    uop_MOV_IMM(ir, IREG_tag(0), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(0), TAG_VALID);
 
     return op_pc;
 }
@@ -274,7 +274,7 @@ ropFSUBR(UNUSED(codeblock_t *block), ir_data_t *ir, UNUSED(uint8_t opcode), uint
     uop_FP_ENTER(ir);
     uop_FSUB(ir, IREG_ST(0), IREG_ST(src_reg), IREG_ST(0));
     uop_FROUND_PC(ir, IREG_ST(0));
-    uop_MOV_IMM(ir, IREG_tag(0), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(0), TAG_VALID);
 
     return op_pc;
 }
@@ -288,7 +288,7 @@ ropFSUBr(UNUSED(codeblock_t *block), ir_data_t *ir, UNUSED(uint8_t opcode), uint
     uop_FP_ENTER(ir);
     uop_FSUB(ir, IREG_ST(dest_reg), IREG_ST(dest_reg), IREG_ST(0));
     uop_FROUND_PC(ir, IREG_ST(dest_reg));
-    uop_MOV_IMM(ir, IREG_tag(dest_reg), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(dest_reg), TAG_VALID);
 
     return op_pc;
 }
@@ -302,7 +302,7 @@ ropFSUBRr(UNUSED(codeblock_t *block), ir_data_t *ir, UNUSED(uint8_t opcode), uin
     uop_FP_ENTER(ir);
     uop_FSUB(ir, IREG_ST(dest_reg), IREG_ST(0), IREG_ST(dest_reg));
     uop_FROUND_PC(ir, IREG_ST(dest_reg));
-    uop_MOV_IMM(ir, IREG_tag(dest_reg), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(dest_reg), TAG_VALID);
 
     return op_pc;
 }
@@ -316,7 +316,7 @@ ropFSUBP(codeblock_t *block, ir_data_t *ir, UNUSED(uint8_t opcode), uint32_t fet
     uop_FP_ENTER(ir);
     uop_FSUB(ir, IREG_ST(dest_reg), IREG_ST(dest_reg), IREG_ST(0));
     uop_FROUND_PC(ir, IREG_ST(dest_reg));
-    uop_MOV_IMM(ir, IREG_tag(dest_reg), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(dest_reg), TAG_VALID);
     fpu_POP(block, ir);
 
     return op_pc;
@@ -331,7 +331,7 @@ ropFSUBRP(codeblock_t *block, ir_data_t *ir, UNUSED(uint8_t opcode), uint32_t fe
     uop_FP_ENTER(ir);
     uop_FSUB(ir, IREG_ST(dest_reg), IREG_ST(0), IREG_ST(dest_reg));
     uop_FROUND_PC(ir, IREG_ST(dest_reg));
-    uop_MOV_IMM(ir, IREG_tag(dest_reg), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(dest_reg), TAG_VALID);
     fpu_POP(block, ir);
 
     return op_pc;
@@ -391,7 +391,7 @@ ropFUCOMPP(codeblock_t *block, ir_data_t *ir, UNUSED(uint8_t opcode), UNUSED(uin
         load_uop(ir, IREG_temp0_D, ireg_seg_base(target_seg), IREG_eaaddr);                    \
         uop_FADD(ir, IREG_ST(0), IREG_ST(0), IREG_temp0_D);                                    \
         uop_FROUND_PC(ir, IREG_ST(0));                                                         \
-        uop_MOV_IMM(ir, IREG_tag(0), TAG_VALID);                                               \
+        uop_MOV_IMM(ir, IREG_tag_B(0), TAG_VALID);                                               \
                                                                                                \
         return op_pc + 1;                                                                      \
     }                                                                                          \
@@ -486,7 +486,7 @@ ropFUCOMPP(codeblock_t *block, ir_data_t *ir, UNUSED(uint8_t opcode), UNUSED(uin
         load_uop(ir, IREG_temp0_D, ireg_seg_base(target_seg), IREG_eaaddr);                    \
         uop_FMUL(ir, IREG_ST(0), IREG_ST(0), IREG_temp0_D);                                    \
         uop_FROUND_PC(ir, IREG_ST(0));                                                         \
-        uop_MOV_IMM(ir, IREG_tag(0), TAG_VALID);                                               \
+        uop_MOV_IMM(ir, IREG_tag_B(0), TAG_VALID);                                               \
                                                                                                \
         return op_pc + 1;                                                                      \
     }                                                                                          \
@@ -506,7 +506,7 @@ ropFUCOMPP(codeblock_t *block, ir_data_t *ir, UNUSED(uint8_t opcode), UNUSED(uin
         load_uop(ir, IREG_temp0_D, ireg_seg_base(target_seg), IREG_eaaddr);                    \
         uop_FSUB(ir, IREG_ST(0), IREG_ST(0), IREG_temp0_D);                                    \
         uop_FROUND_PC(ir, IREG_ST(0));                                                         \
-        uop_MOV_IMM(ir, IREG_tag(0), TAG_VALID);                                               \
+        uop_MOV_IMM(ir, IREG_tag_B(0), TAG_VALID);                                               \
                                                                                                \
         return op_pc + 1;                                                                      \
     }                                                                                          \
@@ -526,7 +526,7 @@ ropFUCOMPP(codeblock_t *block, ir_data_t *ir, UNUSED(uint8_t opcode), UNUSED(uin
         load_uop(ir, IREG_temp0_D, ireg_seg_base(target_seg), IREG_eaaddr);                    \
         uop_FSUB(ir, IREG_ST(0), IREG_temp0_D, IREG_ST(0));                                    \
         uop_FROUND_PC(ir, IREG_ST(0));                                                         \
-        uop_MOV_IMM(ir, IREG_tag(0), TAG_VALID);                                               \
+        uop_MOV_IMM(ir, IREG_tag_B(0), TAG_VALID);                                               \
                                                                                                \
         return op_pc + 1;                                                                      \
     }
@@ -554,7 +554,7 @@ ropF_arith_mem(d, uop_MEM_LOAD_DOUBLE, 8)
         uop_MOV_DOUBLE_INT(ir, IREG_temp0_D, temp_reg);                                        \
         uop_FADD(ir, IREG_ST(0), IREG_ST(0), IREG_temp0_D);                                    \
         uop_FROUND_PC(ir, IREG_ST(0));                                                         \
-        uop_MOV_IMM(ir, IREG_tag(0), TAG_VALID);                                               \
+        uop_MOV_IMM(ir, IREG_tag_B(0), TAG_VALID);                                               \
                                                                                                \
         return op_pc + 1;                                                                      \
     }                                                                                          \
@@ -654,7 +654,7 @@ ropF_arith_mem(d, uop_MEM_LOAD_DOUBLE, 8)
         uop_MOV_DOUBLE_INT(ir, IREG_temp0_D, temp_reg);                                        \
         uop_FMUL(ir, IREG_ST(0), IREG_ST(0), IREG_temp0_D);                                    \
         uop_FROUND_PC(ir, IREG_ST(0));                                                         \
-        uop_MOV_IMM(ir, IREG_tag(0), TAG_VALID);                                               \
+        uop_MOV_IMM(ir, IREG_tag_B(0), TAG_VALID);                                               \
                                                                                                \
         return op_pc + 1;                                                                      \
     }                                                                                          \
@@ -675,7 +675,7 @@ ropF_arith_mem(d, uop_MEM_LOAD_DOUBLE, 8)
         uop_MOV_DOUBLE_INT(ir, IREG_temp0_D, temp_reg);                                        \
         uop_FSUB(ir, IREG_ST(0), IREG_ST(0), IREG_temp0_D);                                    \
         uop_FROUND_PC(ir, IREG_ST(0));                                                         \
-        uop_MOV_IMM(ir, IREG_tag(0), TAG_VALID);                                               \
+        uop_MOV_IMM(ir, IREG_tag_B(0), TAG_VALID);                                               \
                                                                                                \
         return op_pc + 1;                                                                      \
     }                                                                                          \
@@ -696,7 +696,7 @@ ropF_arith_mem(d, uop_MEM_LOAD_DOUBLE, 8)
         uop_MOV_DOUBLE_INT(ir, IREG_temp0_D, temp_reg);                                        \
         uop_FSUB(ir, IREG_ST(0), IREG_temp0_D, IREG_ST(0));                                    \
         uop_FROUND_PC(ir, IREG_ST(0));                                                         \
-        uop_MOV_IMM(ir, IREG_tag(0), TAG_VALID);                                               \
+        uop_MOV_IMM(ir, IREG_tag_B(0), TAG_VALID);                                               \
                                                                                                \
         return op_pc + 1;                                                                      \
     }
@@ -711,7 +711,7 @@ ropFABS(UNUSED(codeblock_t *block), ir_data_t *ir, UNUSED(uint8_t opcode), UNUSE
 {
     uop_FP_ENTER(ir);
     uop_FABS(ir, IREG_ST(0), IREG_ST(0));
-    uop_MOV_IMM(ir, IREG_tag(0), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(0), TAG_VALID);
 
     return op_pc;
 }
@@ -721,7 +721,7 @@ ropFCHS(UNUSED(codeblock_t *block), ir_data_t *ir, UNUSED(uint8_t opcode), UNUSE
 {
     uop_FP_ENTER(ir);
     uop_FCHS(ir, IREG_ST(0), IREG_ST(0));
-    uop_MOV_IMM(ir, IREG_tag(0), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(0), TAG_VALID);
 
     return op_pc;
 }
@@ -733,7 +733,7 @@ ropFSQRT(UNUSED(codeblock_t *block), ir_data_t *ir, UNUSED(uint8_t opcode), UNUS
     uop_FP_ENTER(ir);
     uop_FSQRT(ir, IREG_ST(0), IREG_ST(0));
     uop_FROUND_PC(ir, IREG_ST(0));
-    uop_MOV_IMM(ir, IREG_tag(0), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(0), TAG_VALID);
 
     return op_pc;
 }

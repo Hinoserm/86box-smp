@@ -50,7 +50,7 @@ fpu_POP(codeblock_t *block, ir_data_t *ir)
 {
     /* The legacy FPU stores TAG_EMPTY as zero. Clear the physical tag
        before advancing TOP, including for compare and arithmetic pops. */
-    uop_MOV_IMM(ir, IREG_tag(0), 0);
+    uop_MOV_IMM(ir, IREG_tag_B(0), 0);
     if (block->flags & CODEBLOCK_STATIC_TOP)
         uop_MOV_IMM(ir, IREG_FPU_TOP, cpu_state.TOP + 1);
     else
@@ -59,8 +59,8 @@ fpu_POP(codeblock_t *block, ir_data_t *ir)
 static inline void
 fpu_POP2(codeblock_t *block, ir_data_t *ir)
 {
-    uop_MOV_IMM(ir, IREG_tag(0), 0);
-    uop_MOV_IMM(ir, IREG_tag(1), 0);
+    uop_MOV_IMM(ir, IREG_tag_B(0), 0);
+    uop_MOV_IMM(ir, IREG_tag_B(1), 0);
     if (block->flags & CODEBLOCK_STATIC_TOP)
         uop_MOV_IMM(ir, IREG_FPU_TOP, cpu_state.TOP + 2);
     else

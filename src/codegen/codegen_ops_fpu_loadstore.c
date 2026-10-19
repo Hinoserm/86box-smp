@@ -42,7 +42,7 @@ ropFLDs(codeblock_t *block, ir_data_t *ir, UNUSED(uint8_t opcode), uint32_t fetc
     codegen_check_seg_read(block, ir, target_seg);
     CHECK_SEG_LIMITS(block, ir, target_seg, IREG_eaaddr, 3);
     uop_MEM_LOAD_SINGLE(ir, IREG_ST(-1), ireg_seg_base(target_seg), IREG_eaaddr);
-    uop_MOV_IMM(ir, IREG_tag(-1), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(-1), TAG_VALID);
     fpu_PUSH(block, ir);
 
     return op_pc + 1;
@@ -59,7 +59,7 @@ ropFLDd(codeblock_t *block, ir_data_t *ir, UNUSED(uint8_t opcode), uint32_t fetc
     codegen_check_seg_read(block, ir, target_seg);
     CHECK_SEG_LIMITS(block, ir, target_seg, IREG_eaaddr, 7);
     uop_MEM_LOAD_DOUBLE(ir, IREG_ST(-1), ireg_seg_base(target_seg), IREG_eaaddr);
-    uop_MOV_IMM(ir, IREG_tag(-1), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(-1), TAG_VALID);
     fpu_PUSH(block, ir);
 
     return op_pc + 1;
@@ -106,7 +106,7 @@ ropFSTPs(codeblock_t *block, ir_data_t *ir, UNUSED(uint8_t opcode), uint32_t fet
     CHECK_SEG_LIMITS(block, ir, target_seg, IREG_eaaddr, 3);
     uop_MEM_STORE_SINGLE(ir, ireg_seg_base(target_seg), IREG_eaaddr, IREG_ST(0));
     uop_AND_IMM(ir, IREG_NPXS, IREG_NPXS, ~FPU_SW_C1); /*no rounding to report*/
-    uop_MOV_IMM(ir, IREG_tag(0), TAG_EMPTY);
+    uop_MOV_IMM(ir, IREG_tag_B(0), TAG_EMPTY);
     fpu_POP(block, ir);
 
     return op_pc + 1;
@@ -142,7 +142,7 @@ ropFSTPd(codeblock_t *block, ir_data_t *ir, UNUSED(uint8_t opcode), uint32_t fet
     CHECK_SEG_LIMITS(block, ir, target_seg, IREG_eaaddr, 7);
     uop_MEM_STORE_DOUBLE(ir, ireg_seg_base(target_seg), IREG_eaaddr, IREG_ST(0));
     uop_AND_IMM(ir, IREG_NPXS, IREG_NPXS, ~FPU_SW_C1); /*no rounding to report*/
-    uop_MOV_IMM(ir, IREG_tag(0), TAG_EMPTY);
+    uop_MOV_IMM(ir, IREG_tag_B(0), TAG_EMPTY);
     fpu_POP(block, ir);
 
     return op_pc + 1;
@@ -161,7 +161,7 @@ ropFILDw(codeblock_t *block, ir_data_t *ir, UNUSED(uint8_t opcode), uint32_t fet
     CHECK_SEG_LIMITS(block, ir, target_seg, IREG_eaaddr, 1);
     uop_MEM_LOAD_REG(ir, IREG_temp0_W, ireg_seg_base(target_seg), IREG_eaaddr);
     uop_MOV_DOUBLE_INT(ir, IREG_ST(-1), IREG_temp0_W);
-    uop_MOV_IMM(ir, IREG_tag(-1), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(-1), TAG_VALID);
     fpu_PUSH(block, ir);
 
     return op_pc + 1;
@@ -179,7 +179,7 @@ ropFILDl(codeblock_t *block, ir_data_t *ir, uint8_t UNUSED(opcode), uint32_t fet
     CHECK_SEG_LIMITS(block, ir, target_seg, IREG_eaaddr, 3);
     uop_MEM_LOAD_REG(ir, IREG_temp0, ireg_seg_base(target_seg), IREG_eaaddr);
     uop_MOV_DOUBLE_INT(ir, IREG_ST(-1), IREG_temp0);
-    uop_MOV_IMM(ir, IREG_tag(-1), TAG_VALID);
+    uop_MOV_IMM(ir, IREG_tag_B(-1), TAG_VALID);
     fpu_PUSH(block, ir);
 
     return op_pc + 1;
@@ -197,7 +197,7 @@ ropFILDq(codeblock_t *block, ir_data_t *ir, UNUSED(uint8_t opcode), uint32_t fet
     CHECK_SEG_LIMITS(block, ir, target_seg, IREG_eaaddr, 7);
     uop_MEM_LOAD_REG(ir, IREG_ST_i64(-1), ireg_seg_base(target_seg), IREG_eaaddr);
     uop_MOV_DOUBLE_INT(ir, IREG_ST(-1), IREG_ST_i64(-1));
-    uop_MOV_IMM(ir, IREG_tag(-1), TAG_VALID | TAG_UINT64);
+    uop_MOV_IMM(ir, IREG_tag_B(-1), TAG_VALID | TAG_UINT64);
     fpu_PUSH(block, ir);
 
     return op_pc + 1;
@@ -245,7 +245,7 @@ ropFISTPw(codeblock_t *block, ir_data_t *ir, UNUSED(uint8_t opcode), uint32_t fe
     CHECK_SEG_LIMITS(block, ir, target_seg, IREG_eaaddr, 1);
     uop_MEM_STORE_REG(ir, ireg_seg_base(target_seg), IREG_eaaddr, IREG_temp0_W);
     uop_AND_IMM(ir, IREG_NPXS, IREG_NPXS, ~FPU_SW_C1); /*no rounding to report*/
-    uop_MOV_IMM(ir, IREG_tag(0), TAG_EMPTY);
+    uop_MOV_IMM(ir, IREG_tag_B(0), TAG_EMPTY);
     fpu_POP(block, ir);
 
     return op_pc + 1;
@@ -292,7 +292,7 @@ ropFISTPl(codeblock_t *block, ir_data_t *ir, UNUSED(uint8_t opcode), uint32_t fe
     CHECK_SEG_LIMITS(block, ir, target_seg, IREG_eaaddr, 3);
     uop_MEM_STORE_REG(ir, ireg_seg_base(target_seg), IREG_eaaddr, IREG_temp0);
     uop_AND_IMM(ir, IREG_NPXS, IREG_NPXS, ~FPU_SW_C1); /*no rounding to report*/
-    uop_MOV_IMM(ir, IREG_tag(0), TAG_EMPTY);
+    uop_MOV_IMM(ir, IREG_tag_B(0), TAG_EMPTY);
     fpu_POP(block, ir);
 
     return op_pc + 1;
@@ -313,7 +313,7 @@ ropFISTPq(codeblock_t *block, ir_data_t *ir, uint8_t opcode, uint32_t fetchdat, 
     uop_MOV_INT_DOUBLE_64(ir, IREG_temp0_Q, IREG_ST(0), IREG_ST_i64(0), IREG_tag(0));
     uop_MEM_STORE_REG(ir, ireg_seg_base(target_seg), IREG_eaaddr, IREG_temp0_Q);
     uop_AND_IMM(ir, IREG_NPXS, IREG_NPXS, ~FPU_SW_C1); /*no rounding to report*/
-    uop_MOV_IMM(ir, IREG_tag(0), TAG_EMPTY);
+    uop_MOV_IMM(ir, IREG_tag_B(0), TAG_EMPTY);
     fpu_POP(block, ir);
 
     return op_pc + 1;

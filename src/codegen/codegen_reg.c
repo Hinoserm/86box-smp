@@ -297,6 +297,22 @@ host_reg_can_hold(const host_reg_set_t *reg_set, int c, ir_reg_t ir_reg)
     return !(reg_set->reg_list[c].flags & HOST_REG_FLAG_NO_BYTE) || !ireg_is_byte_accessed(IREG_GET_REG(ir_reg.reg));
 }
 
+/* Whether an immediate can be written straight to the register's place
+   (codegen_reg_write_imm): not to an FPU stack register, whose place moves
+   with TOP. */
+int
+codegen_reg_imm_storable(ir_reg_t ir_reg)
+{
+    switch (ireg_data[IREG_GET_REG(ir_reg.reg)].native_size) {
+        case REG_FPU_ST_BYTE:
+        case REG_FPU_ST_QWORD:
+        case REG_FPU_ST_DOUBLE:
+            return 0;
+        default:
+            return 1;
+    }
+}
+
 int
 reg_is_native_size(ir_reg_t ir_reg)
 {
