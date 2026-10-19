@@ -329,7 +329,7 @@ extern int memspeed[11];
 
 extern uint8_t high_page; /* if a high (> 4 gb) page was detected */
 
-extern uint8_t *_mem_exec[MEM_MAPPINGS_NO];
+extern uint8_t **_mem_exec;
 
 extern uint32_t pages_sz; /* #pages in table */
 extern int      read_type;
@@ -546,13 +546,25 @@ extern void mem_remap_top_nomid(int kb);
 
 extern void pcjr_waitstates(void *);
 
-extern mem_mapping_t *read_mapping[MEM_MAPPINGS_NO];
-extern mem_mapping_t *write_mapping[MEM_MAPPINGS_NO];
+/* The map as the processor in place sees it: its view (mem_smm_view) of
+   the two every map change fills, outside SMM and in it. */
+extern mem_mapping_t **read_mapping;
+extern mem_mapping_t **write_mapping;
+extern mem_mapping_t  *mem_read_mapping_view[2][MEM_MAPPINGS_NO];
+extern mem_mapping_t  *mem_write_mapping_view[2][MEM_MAPPINGS_NO];
+extern uint8_t        *mem_exec_view[2][MEM_MAPPINGS_NO];
+
+extern void mem_smm_view(int smm);
+extern int  mem_smm_enter(int cpu);
+extern int  mem_smm_leave(int cpu);
+extern void mem_set_exec_all_views(uint32_t addr, uint8_t *exec);
 
 /* For the debug console. */
 extern mem_mapping_t *mem_debug_first_mapping(void);
+extern void           mem_debug_granule(uint32_t addr, int view, mem_mapping_t **rd, mem_mapping_t **wr, uint8_t **ex);
 extern void           mem_debug_bus(uint32_t addr, mem_mapping_t **rd, mem_mapping_t **wr);
 extern uint16_t       mem_debug_state(uint32_t addr, int n);
+extern uint32_t       mem_debug_smm_cpus(void);
 
 #ifdef EMU_CPU_H
 static __inline uint32_t

@@ -1217,7 +1217,8 @@ describe_mapping(const char *what, const mem_mapping_t *m)
         dev_name(m->priv) ? dev_name(m->priv) : "");
 }
 
-/* With an address: what the processor and the bus masters meet there.
+/* With an address: what the processor meets there in each view of the map,
+   outside SMM and in it, and what the bus masters meet.
    Without: every mapping, in the order the map is built from. */
 static void
 cmd_info_mem(const char *arg)
@@ -1227,8 +1228,8 @@ cmd_info_mem(const char *arg)
     arg = skip_ws(arg);
     if (*arg) {
         uint32_t       phys;
-        uint32_t       g;
         mem_mapping_t *rd, *wr;
+        uint8_t       *ex;
 
         if (!parse_addr(&arg, &a))
             return;
@@ -1240,11 +1241,14 @@ cmd_info_mem(const char *arg)
         }
         out("physical 0x%08x (A20 %s)\n", phys, (rammask & 0x100000) ? "on" : "masked");
 
-        g = phys >> MEM_GRANULARITY_BITS;
-        out(" processor, %s SMM now:\n", in_smm ? "in" : "outside");
-        describe_mapping("read", read_mapping[g]);
-        describe_mapping("write", write_mapping[g]);
-        out("  %-14s %s\n", "execute", _mem_exec[g] ? "memory" : "not directly");
+        for (int view = 0; view < 2; view++) {
+            mem_debug_granule(phys, view, &rd, &wr, &ex);
+            out(" processor, %s SMM:%s\n", view ? "in" : "outside",
+                (view == !!(cpu_cur_status & CPU_STATUS_SMM)) ? "  (this processor's view now)" : "");
+            describe_mapping("read", rd);
+            describe_mapping("write", wr);
+            out("  %-14s %s\n", "execute", ex ? "memory" : "not directly");
+        }
 
         mem_debug_bus(phys, &rd, &wr);
         out(" bus masters:\n");

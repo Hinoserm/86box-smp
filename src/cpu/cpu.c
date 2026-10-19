@@ -4621,10 +4621,10 @@ cpu_write(uint16_t addr, uint8_t val, UNUSED(void *priv))
             if ((ccr3 & CCR3_SMI_LOCK) && !in_smm)
                 val = (val & ~(CCR1_USE_SMI | CCR1_SMAC | CCR1_SM3)) | (ccr1 & (CCR1_USE_SMI | CCR1_SMAC | CCR1_SM3));
             ccr1 = val;
+            /* SMAC: SMRAM in this processor's view outside SMM too. */
             if ((old ^ ccr1) & (CCR1_SMAC)) {
-                if (ccr1 & CCR1_SMAC)
-                    smram_backup_all();
-                smram_recalc_all(!(ccr1 & CCR1_SMAC));
+                cpu_smm_view_update();
+                flushmmucache_cpu();
             }
             break;
         } case 0xc2: /* CCR2 */

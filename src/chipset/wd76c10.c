@@ -589,7 +589,7 @@ wd76c10_recalc_exec(wd76c10_t *dev, uint32_t base, uint32_t size)
 
     for (uint32_t i = base; i < (base + size); i += 4096)
         if (dev->ram_state[i >> 12])
-            _mem_exec[i >> 12] = exec;
+            mem_set_exec_all_views(i, exec);
 
     if (cpu_use_exec)
         flushmmucache_nopc();

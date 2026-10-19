@@ -34,6 +34,7 @@
 #include <86box/io.h>
 #include <86box/keyboard.h>
 #include <86box/mem.h>
+#include <86box/smram.h>
 #include <86box/rom.h>
 #include <86box/nmi.h>
 #include <86box/pic.h>
@@ -433,6 +434,12 @@ reset_common(int hard)
     /* Out of any HLT: the block end must not step past the reset vector's
        first byte (386_dynarec.c). */
     cpu_halted = 0;
+    /* Out of SMM however it got here (and with a Cyrix's SMAC cleared): its
+       view of the map, its compiled blocks' key and its part in SMIACT# go
+       with it. */
+    if (mem_smm_leave(0))
+        smram_recalc_all(1);
+    cpu_smm_view_update();
     smi_line = smm_in_hlt = 0;
     smi_block             = 0;
 

@@ -107,10 +107,20 @@ mem_page_set_byte_masks(page_t *p, uint32_t page_nr)
 uint32_t purgable_page_list_head = 0;
 int      purgeable_page_count    = 0;
 
-mem_mapping_t        *read_mapping[MEM_MAPPINGS_NO];
-mem_mapping_t        *write_mapping[MEM_MAPPINGS_NO];
+/* What a processor sees, twice over: [0] outside SMM, [1] inside it (or
+   with a Cyrix's SMAC set). The two differ only where the chipset decodes
+   SMRAM, and every map change fills both, so entering or leaving SMM
+   selects the other view instead of rebuilding the map -- and two
+   processors, one in SMM and one not, each see their own. The view in use
+   is the processor's own (mem_cpu.c, mem_smm_view). */
+mem_mapping_t *mem_read_mapping_view[2][MEM_MAPPINGS_NO];
+mem_mapping_t *mem_write_mapping_view[2][MEM_MAPPINGS_NO];
+uint8_t       *mem_exec_view[2][MEM_MAPPINGS_NO];
 
-uint8_t              *_mem_exec[MEM_MAPPINGS_NO];
+/* Processors in SMM, one bit each. Bus masters see SMRAM as the chipset
+   decodes it with SMIACT# asserted, which it is while any processor is in
+   SMM. */
+static uint32_t mem_smm_cpus;
 
 /* Moves on whenever the map is rebuilt: a pointer mem_phys_ptr gave holds
    while it is unchanged. */
@@ -868,26 +878,80 @@ mem_mapping_access_allowed(uint32_t flags, uint16_t access)
     return ret;
 }
 
-/* One granule of one mapping, put where an access of each kind will find it. */
+/* One granule of one mapping, put where an access of each kind will find it:
+   both processor views, and the bus. */
 static void
-mem_mapping_apply_granule(mem_mapping_t *map, uint64_t c, int n)
+mem_mapping_apply_granule(mem_mapping_t *map, uint64_t c)
 {
-    uint8_t wp = _mem_wp[c >> MEM_GRANULARITY_BITS];
+    uint32_t g  = (uint32_t) (c >> MEM_GRANULARITY_BITS);
+    uint8_t  wp = _mem_wp[g];
+    int      n;
 
-    if (map->exec && mem_mapping_access_allowed(map->flags, _mem_state[c >> MEM_GRANULARITY_BITS].states[n].x))
-        _mem_exec[c >> MEM_GRANULARITY_BITS] = map->exec + (c - map->base);
-    if (!wp && (map->write_b || map->write_w || map->write_l) && mem_mapping_access_allowed(map->flags, _mem_state[c >> MEM_GRANULARITY_BITS].states[n].w))
-        write_mapping[c >> MEM_GRANULARITY_BITS] = map;
-    if ((map->read_b || map->read_w || map->read_l) && mem_mapping_access_allowed(map->flags, _mem_state[c >> MEM_GRANULARITY_BITS].states[n].r))
-        read_mapping[c >> MEM_GRANULARITY_BITS] = map;
+    for (n = 0; n < 2; n++) {
+        if (map->exec && mem_mapping_access_allowed(map->flags, _mem_state[g].states[n].x))
+            mem_exec_view[n][g] = map->exec + (c - map->base);
+        if (!wp && (map->write_b || map->write_w || map->write_l) && mem_mapping_access_allowed(map->flags, _mem_state[g].states[n].w))
+            mem_write_mapping_view[n][g] = map;
+        if ((map->read_b || map->read_w || map->read_l) && mem_mapping_access_allowed(map->flags, _mem_state[g].states[n].r))
+            mem_read_mapping_view[n][g] = map;
+    }
 
-    n |= STATE_BUS;
-    wp = _mem_wp_bus[c >> MEM_GRANULARITY_BITS];
+    /* A bus master sees SMIACT# as the processor that last owned the bus
+       left it ("It does not float during bus HOLD", Pentium Vol. 1,
+       5.1.61). Which one that was is not tracked; any processor in SMM
+       stands for it -- exact with one processor, and with two whenever
+       both agree. */
+    n  = STATE_BUS | !!mem_smm_cpus;
+    wp = _mem_wp_bus[g];
 
-    if (!wp && (map->write_b || map->write_w || map->write_l) && mem_mapping_access_allowed(map->flags, _mem_state[c >> MEM_GRANULARITY_BITS].states[n].w))
-        write_mapping_bus[c >> MEM_GRANULARITY_BITS] = map;
-    if ((map->read_b || map->read_w || map->read_l) && mem_mapping_access_allowed(map->flags, _mem_state[c >> MEM_GRANULARITY_BITS].states[n].r))
-        read_mapping_bus[c >> MEM_GRANULARITY_BITS] = map;
+    if (!wp && (map->write_b || map->write_w || map->write_l) && mem_mapping_access_allowed(map->flags, _mem_state[g].states[n].w))
+        write_mapping_bus[g] = map;
+    if ((map->read_b || map->read_w || map->read_l) && mem_mapping_access_allowed(map->flags, _mem_state[g].states[n].r))
+        read_mapping_bus[g] = map;
+}
+
+static void
+mem_mapping_clear_granule(uint64_t c)
+{
+    uint32_t g = (uint32_t) (c >> MEM_GRANULARITY_BITS);
+
+    for (int n = 0; n < 2; n++) {
+        mem_exec_view[n][g]          = NULL;
+        mem_write_mapping_view[n][g] = NULL;
+        mem_read_mapping_view[n][g]  = NULL;
+    }
+    write_mapping_bus[g] = NULL;
+    read_mapping_bus[g]  = NULL;
+}
+
+/* Processor `cpu` enters or leaves SMM. Answers 1 when SMIACT# changes for
+   the bus -- the first processor in, or the last out -- so the caller has
+   the SMRAM ranges' bus view rebuilt; 0 when only this processor's view
+   changes. */
+int
+mem_smm_enter(int cpu)
+{
+    const uint32_t old = mem_smm_cpus;
+
+    mem_smm_cpus |= 1u << cpu;
+    return !old;
+}
+
+int
+mem_smm_leave(int cpu)
+{
+    const uint32_t old = mem_smm_cpus;
+
+    mem_smm_cpus &= ~(1u << cpu);
+    return (old & (1u << cpu)) && !(old & ~(1u << cpu));
+}
+
+/* A chipset that sets the execute pointer itself sets it in both views. */
+void
+mem_set_exec_all_views(uint32_t addr, uint8_t *exec)
+{
+    mem_exec_view[0][addr >> MEM_GRANULARITY_BITS] = exec;
+    mem_exec_view[1][addr >> MEM_GRANULARITY_BITS] = exec;
 }
 
 /* The tables cover the 32-bit address space and end at 4 GB. */
@@ -916,9 +980,7 @@ void
 mem_mapping_recalc(uint64_t base, uint64_t size, uint32_t base_ignore)
 {
     mem_mapping_t *map;
-    int            n;
     uint64_t       c;
-    uint8_t        wp;
     uint64_t       mask = (cpu_16bitbus ?
                            (is6117 ? 0x03ffffffULL : 0x00ffffffULL) :
                            0xffffffffULL);
@@ -944,21 +1006,11 @@ mem_mapping_recalc(uint64_t base, uint64_t size, uint32_t base_ignore)
     uint64_t o_c   = 0x00000000ULL;
 
     if (o_e == 0x00000000ULL) {
-        for (c = base; c < base + size; c += MEM_GRANULARITY_SIZE) {
-            _mem_exec[c >> MEM_GRANULARITY_BITS]         = NULL;
-            write_mapping[c >> MEM_GRANULARITY_BITS]     = NULL;
-            read_mapping[c >> MEM_GRANULARITY_BITS]      = NULL;
-            write_mapping_bus[c >> MEM_GRANULARITY_BITS] = NULL;
-            read_mapping_bus[c >> MEM_GRANULARITY_BITS]  = NULL;
-        }
+        for (c = base; c < base + size; c += MEM_GRANULARITY_SIZE)
+            mem_mapping_clear_granule(c);
     } else  for (o_c = o_s; o_c <= o_e; o_c += o_a) {
-        for (c = (base + o_c); c < (base + size + o_c); c += MEM_GRANULARITY_SIZE) {
-            _mem_exec[c >> MEM_GRANULARITY_BITS]         = NULL;
-            write_mapping[c >> MEM_GRANULARITY_BITS]     = NULL;
-            read_mapping[c >> MEM_GRANULARITY_BITS]      = NULL;
-            write_mapping_bus[c >> MEM_GRANULARITY_BITS] = NULL;
-            read_mapping_bus[c >> MEM_GRANULARITY_BITS]  = NULL;
-        }
+        for (c = (base + o_c); c < (base + size + o_c); c += MEM_GRANULARITY_SIZE)
+            mem_mapping_clear_granule(c);
     }
 
     /* Walk mapping list. */
@@ -978,67 +1030,11 @@ mem_mapping_recalc(uint64_t base, uint64_t size, uint32_t base_ignore)
                 start = map->base;
 
             if (i_e == 0x00000000ULL) {
-                for (c = start; c < end; c += MEM_GRANULARITY_SIZE) {
-                    /* CPU */
-                    n = !!in_smm;
-                    wp = _mem_wp[c >> MEM_GRANULARITY_BITS];
-
-                    if (map->exec && mem_mapping_access_allowed(map->flags,
-                                     _mem_state[c >> MEM_GRANULARITY_BITS].states[n].x))
-                        _mem_exec[c >> MEM_GRANULARITY_BITS] = map->exec + (c - map->base);
-                    if (!wp && (map->write_b || map->write_w || map->write_l) &&
-                        mem_mapping_access_allowed(map->flags,
-                                                   _mem_state[c >> MEM_GRANULARITY_BITS].states[n].w))
-                        write_mapping[c >> MEM_GRANULARITY_BITS] = map;
-                    if ((map->read_b || map->read_w || map->read_l) &&
-                        mem_mapping_access_allowed(map->flags,
-                                                   _mem_state[c >> MEM_GRANULARITY_BITS].states[n].r))
-                        read_mapping[c >> MEM_GRANULARITY_BITS] = map;
-
-                    /* Bus */
-                    n |= STATE_BUS;
-                    wp = _mem_wp_bus[c >> MEM_GRANULARITY_BITS];
-
-                    if (!wp && (map->write_b || map->write_w || map->write_l) &&
-                        mem_mapping_access_allowed(map->flags,
-                                                   _mem_state[c >> MEM_GRANULARITY_BITS].states[n].w))
-                        write_mapping_bus[c >> MEM_GRANULARITY_BITS] = map;
-                    if ((map->read_b || map->read_w || map->read_l) &&
-                        mem_mapping_access_allowed(map->flags,
-                                                   _mem_state[c >> MEM_GRANULARITY_BITS].states[n].r))
-                        read_mapping_bus[c >> MEM_GRANULARITY_BITS] = map;
-                }
+                for (c = start; c < end; c += MEM_GRANULARITY_SIZE)
+                    mem_mapping_apply_granule(map, c);
             } else  for (i_c = i_s; i_c <= i_e; i_c += i_a) {
-                for (c = (start + i_c); c < (end + i_c); c += MEM_GRANULARITY_SIZE) {
-                    /* CPU */
-                    n = (!!in_smm) || (is_cxsmm && (ccr1 & CCR1_SMAC));
-                    wp = _mem_wp[c >> MEM_GRANULARITY_BITS];
-
-                    if (map->exec && mem_mapping_access_allowed(map->flags,
-                                                                _mem_state[c >> MEM_GRANULARITY_BITS].states[n].x))
-                        _mem_exec[c >> MEM_GRANULARITY_BITS] = map->exec + (c - map->base);
-                    if (!wp && (map->write_b || map->write_w || map->write_l) &&
-                        mem_mapping_access_allowed(map->flags,
-                                                   _mem_state[c >> MEM_GRANULARITY_BITS].states[n].w))
-                        write_mapping[c >> MEM_GRANULARITY_BITS] = map;
-                    if ((map->read_b || map->read_w || map->read_l) &&
-                        mem_mapping_access_allowed(map->flags,
-                                                   _mem_state[c >> MEM_GRANULARITY_BITS].states[n].r))
-                        read_mapping[c >> MEM_GRANULARITY_BITS] = map;
-
-                    /* Bus */
-                    n |= STATE_BUS;
-                    wp = _mem_wp_bus[c >> MEM_GRANULARITY_BITS];
-
-                    if (!wp && (map->write_b || map->write_w || map->write_l) &&
-                        mem_mapping_access_allowed(map->flags,
-                                                   _mem_state[c >> MEM_GRANULARITY_BITS].states[n].w))
-                        write_mapping_bus[c >> MEM_GRANULARITY_BITS] = map;
-                    if ((map->read_b || map->read_w || map->read_l) &&
-                        mem_mapping_access_allowed(map->flags,
-                                                   _mem_state[c >> MEM_GRANULARITY_BITS].states[n].r))
-                        read_mapping_bus[c >> MEM_GRANULARITY_BITS] = map;
-                }
+                for (c = (start + i_c); c < (end + i_c); c += MEM_GRANULARITY_SIZE)
+                    mem_mapping_apply_granule(map, c);
             }
         }
         map = map->next;
@@ -1065,7 +1061,7 @@ mem_mapping_recalc(uint64_t base, uint64_t size, uint32_t base_ignore)
                 uint64_t end    = (m_end < a_end) ? m_end : a_end;
 
                 for (c = start; c < end; c += MEM_GRANULARITY_SIZE)
-                    mem_mapping_apply_granule(map, c, !!in_smm);
+                    mem_mapping_apply_granule(map, c);
             }
         }
     }
@@ -1075,7 +1071,7 @@ mem_mapping_recalc(uint64_t base, uint64_t size, uint32_t base_ignore)
 #ifdef ENABLE_MEM_LOG
     pclog("\nMemory map:\n");
     mem_mapping_t *write = (mem_mapping_t *) -1, *read = (mem_mapping_t *) -1, *write_bus = (mem_mapping_t *) -1, *read_bus = (mem_mapping_t *) -1;
-    for (c = 0; c < (sizeof(write_mapping) / sizeof(write_mapping[0])); c++) {
+    for (c = 0; c < MEM_MAPPINGS_NO; c++) {
         if ((write_mapping[c] == write) && (read_mapping[c] == read) && (write_mapping_bus[c] == write_bus) && (read_mapping_bus[c] == read_bus))
             continue;
         write = write_mapping[c];
@@ -1547,12 +1543,15 @@ mem_reset(void)
         mem_page_set_byte_masks(&pages[c], c);
     }
 
-    memset(_mem_exec, 0x00, sizeof(_mem_exec));
+    memset(mem_exec_view, 0x00, sizeof(mem_exec_view));
     mem_cpu_reset();
     memset(_mem_wp, 0x00, sizeof(_mem_wp));
     memset(_mem_wp_bus, 0x00, sizeof(_mem_wp_bus));
-    memset(write_mapping, 0x00, sizeof(write_mapping));
-    memset(read_mapping, 0x00, sizeof(read_mapping));
+    memset(mem_write_mapping_view, 0x00, sizeof(mem_write_mapping_view));
+    memset(mem_read_mapping_view, 0x00, sizeof(mem_read_mapping_view));
+    /* No processor is in SMM on a fresh map. */
+    mem_smm_cpus = 0;
+    mem_smm_view(0);
     memset(write_mapping_bus, 0x00, sizeof(write_mapping_bus));
     memset(read_mapping_bus, 0x00, sizeof(read_mapping_bus));
 
@@ -1803,6 +1802,18 @@ mem_debug_first_mapping(void)
     return base_mapping;
 }
 
+/* What a processor in view 0 (outside SMM) or 1 (inside) meets at addr. */
+void
+mem_debug_granule(uint32_t addr, int view, mem_mapping_t **rd, mem_mapping_t **wr, uint8_t **ex)
+{
+    uint32_t g = addr >> MEM_GRANULARITY_BITS;
+
+    view = !!view;
+    *rd  = mem_read_mapping_view[view][g];
+    *wr  = mem_write_mapping_view[view][g];
+    *ex  = mem_exec_view[view][g];
+}
+
 /* What a bus master meets at addr. */
 void
 mem_debug_bus(uint32_t addr, mem_mapping_t **rd, mem_mapping_t **wr)
@@ -1817,4 +1828,11 @@ uint16_t
 mem_debug_state(uint32_t addr, int n)
 {
     return _mem_state[addr >> MEM_GRANULARITY_BITS].vals[n & 3];
+}
+
+/* The processors in SMM, one bit each: SMIACT# for the bus while any is. */
+uint32_t
+mem_debug_smm_cpus(void)
+{
+    return mem_smm_cpus;
 }

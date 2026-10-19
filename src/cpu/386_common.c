@@ -1258,6 +1258,22 @@ smram_restore_state_cyrix(uint32_t *saved_state)
         EDI = saved_state[9];
 }
 
+/* The memory this processor sees: SMRAM inside SMM, or anywhere on a
+   Cyrix with SMAC set. Selects its view of the map and keys its compiled
+   blocks, so code fetched from SMRAM is never run outside SMM. The caller
+   empties the TLB. */
+void
+cpu_smm_view_update(void)
+{
+    int smm = in_smm || (is_cxsmm && (ccr1 & CCR1_SMAC));
+
+    mem_smm_view(smm);
+    if (smm)
+        cpu_cur_status |= CPU_STATUS_SMM;
+    else
+        cpu_cur_status &= ~CPU_STATUS_SMM;
+}
+
 void
 enter_smm(int in_hlt)
 {
@@ -1308,8 +1324,14 @@ enter_smm(int in_hlt)
 
     flags_rebuild();
     in_smm = 1;
-    smram_backup_all();
-    smram_recalc_all(0);
+    cpu_smm_view_update();
+    /* The first processor in asserts SMIACT# for the bus as well; another
+       only empties its own TLB, filled through the view it leaves. */
+    if (mem_smm_enter(0)) {
+        smram_backup_all();
+        smram_recalc_all(0);
+    } else
+        flushmmucache_cpu();
 
     if (is_cxsmm) {
         if (!(cyrix.smhr & SMHR_VALID))
@@ -1430,10 +1452,10 @@ enter_smm(int in_hlt)
     oldcpl = 0;
 
     cpu_cur_status &= ~(CPU_STATUS_PMODE | CPU_STATUS_V86);
-    /* CR0, CR3 and CR4 were loaded for SMM, with SMRAM mapped or not, and
-       the debug registers cleared: the translations go, and every link with
-       them */
-    flushmmucache();
+    /* CR0, CR3 and CR4 were loaded for SMM, and the debug registers
+       cleared, through its own view of SMRAM: this processor's translations
+       go (mem_smm_view dropped its links). */
+    flushmmucache_cpu();
     CPU_BLOCK_END();
 }
 
@@ -1548,7 +1570,12 @@ leave_smm(void)
     smm_rsm_restart = restart && smi_latched;
 
     in_smm = 0;
-    smram_recalc_all(1);
+    cpu_smm_view_update();
+    /* The last processor out takes SMIACT# away from the bus. */
+    if (mem_smm_leave(0))
+        smram_recalc_all(1);
+    else
+        flushmmucache_cpu();
 
     cpu_386_flags_extract();
     cpu_cur_status &= ~(CPU_STATUS_PMODE | CPU_STATUS_V86);
@@ -1601,8 +1628,8 @@ leave_smm(void)
     x386_common_log("leave_smm()\n");
 
     /* The state before SMM back, CR0, CR3, CR4 and the debug registers
-       with it: as on entry */
-    flushmmucache();
+       with it, through its view outside SMM: as on entry */
+    flushmmucache_cpu();
 }
 
 /* #NM delivered while a block was being recorded (an x87 or MMX

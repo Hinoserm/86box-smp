@@ -803,6 +803,7 @@ extern void execvx0(int32_t cycs);
 extern void enter_smm(int in_hlt);
 extern void enter_smm_check(int in_hlt);
 extern void leave_smm(void);
+extern void cpu_smm_view_update(void);
 
 /* The local APICs (cpu_lapic.c), as the processor core reaches them. */
 extern void     cpu_lapic_reset_all(void);

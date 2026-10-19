@@ -109,6 +109,11 @@ int is_compare      = 0;
 
 uint8_t high_page = 0; /* if a high (> 4 gb) page was detected */
 
+/* This processor's view of the map (mem.c): outside SMM or inside it. */
+mem_mapping_t **read_mapping  = mem_read_mapping_view[0];
+mem_mapping_t **write_mapping = mem_write_mapping_view[0];
+uint8_t       **_mem_exec     = mem_exec_view[0];
+
 extern mem_mapping_t ram_mid_mapping2;
 
 int
@@ -2207,4 +2212,17 @@ mem_cpu_reset(void)
 {
     /* Reads of absent physical memory return floating high bits - see rammap() above. */
     memset(mem_unbacked_pt_page, 0xff, sizeof(mem_unbacked_pt_page));
+}
+
+/* Which view of the map this processor's accesses go through. The caller
+   empties its TLB: entries filled through the other view must not
+   survive. */
+void
+mem_smm_view(int smm)
+{
+    /* What addresses reach changes: no link holds. */
+    LINKS_DROP_OWNED();
+    read_mapping  = mem_read_mapping_view[!!smm];
+    write_mapping = mem_write_mapping_view[!!smm];
+    _mem_exec     = mem_exec_view[!!smm];
 }
