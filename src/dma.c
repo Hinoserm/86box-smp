@@ -698,6 +698,18 @@ dma_count_take(dma_t *dev)
     return dma_count_dec(dev, n);
 }
 
+/* A transfer through dma_channel_read_only() has moved its data and its
+   address, and leaves its count, stop check and terminal count pending
+   until the device calls dma_channel_advance(). A write to the channel's
+   mode, address or count register takes them first: they belong to that
+   transfer, not to what is programmed next. */
+static void
+dma_channel_settle(int channel)
+{
+    if (dma_stat_adv_pend & (1 << channel))
+        (void) dma_channel_advance(channel);
+}
+
 /* Scatter-gather (82374EB 3.2.21-3.2.23, 6.6). A descriptor is a 32-bit
    memory address and a byte count, End of List in the count's top bit. The
    channel's own registers hold the buffers: the base set a prefetched
@@ -972,6 +984,7 @@ dma_ext_mode_write(uint16_t addr, uint8_t val, UNUSED(void *priv))
     if (channel == 4)
         return;
 
+    dma_channel_settle(channel);
     dma[channel].ext_mode   = val & 0x7c;
     dma_chain_mode[channel] = 0; /* so does one to the extended mode register (3.2.17) */
 
@@ -1168,6 +1181,7 @@ dma_write(uint16_t addr, uint8_t val, void *priv)
         case 0x0b:
             channel = val & 3;
             bit = (uint8_t)(1u << channel);
+            dma_channel_settle(channel);
             dma[channel].mode = val;
             dma_xt8237.demand_active &= (uint8_t)~bit;
             dma_xt8237.block_active &= (uint8_t)~bit;
@@ -1360,6 +1374,7 @@ dma_write_legacy(uint16_t addr, uint8_t val, UNUSED(void *priv))
         case 2:
         case 4:
         case 6: /*Address registers*/
+            dma_channel_settle(channel);
             dma_wp[0] ^= 1;
             dma_addr_compat(&dma[channel]);
             if (dma_eisa && dma_addr_shifted(&dma[channel])) {
@@ -1380,6 +1395,7 @@ dma_write_legacy(uint16_t addr, uint8_t val, UNUSED(void *priv))
         case 3:
         case 5:
         case 7: /*Count registers*/
+            dma_channel_settle(channel);
             dma_wp[0] ^= 1;
             if (dma_wp[0])
                 dma[channel].cb = (dma[channel].cb & 0xff00) | val;
@@ -1427,7 +1443,8 @@ dma_write_legacy(uint16_t addr, uint8_t val, UNUSED(void *priv))
             return;
 
         case 0xb: /*Mode*/
-            channel           = (val & 3);
+            channel = (val & 3);
+            dma_channel_settle(channel);
             dma[channel].mode = val;
             dma_chain_mode[channel] = 0; /* an access to the mode register resets chaining (3.2.17) */
             if (dma_ps2.is_ps2) {
@@ -1455,6 +1472,7 @@ dma_write_legacy(uint16_t addr, uint8_t val, UNUSED(void *priv))
                 dma_addr_compat(&dma[c]);
             dma_m |= 0xf;
             dma_sw_req &= ~0x0f;
+            dma_stat_adv_pend &= ~0x0f;
             if (dma_eisa) {
                 dma_command[0] = 0;
                 dma_stat &= ~0x0f;
@@ -1788,6 +1806,7 @@ dma16_write(uint16_t addr, uint8_t val, UNUSED(void *priv))
         case 2:
         case 4:
         case 6: /*Address registers*/
+            dma_channel_settle(channel);
             dma_wp[1] ^= 1;
             dma_addr_compat(&dma[channel]);
             if (dma_ps2.is_ps2) {
@@ -1814,6 +1833,7 @@ dma16_write(uint16_t addr, uint8_t val, UNUSED(void *priv))
         case 3:
         case 5:
         case 7: /*Count registers*/
+            dma_channel_settle(channel);
             dma_wp[1] ^= 1;
             if (dma_wp[1])
                 dma[channel].cb = (dma[channel].cb & 0xff00) | val;
@@ -1848,7 +1868,8 @@ dma16_write(uint16_t addr, uint8_t val, UNUSED(void *priv))
             return;
 
         case 0xb: /*Mode*/
-            channel           = (val & 3) + 4;
+            channel = (val & 3) + 4;
+            dma_channel_settle(channel);
             dma[channel].mode = val;
             dma_chain_mode[channel] = 0; /* an access to the mode register resets chaining (3.2.17) */
             if (dma_ps2.is_ps2) {
@@ -1875,6 +1896,7 @@ dma16_write(uint16_t addr, uint8_t val, UNUSED(void *priv))
                 dma_addr_compat(&dma[c]);
             dma_m |= 0xf0;
             dma_sw_req &= ~0xf0;
+            dma_stat_adv_pend &= ~0xf0;
             if (dma_eisa) {
                 dma_command[1] = 0;
                 dma_stat &= ~0xf0;
@@ -2238,6 +2260,7 @@ dma_high_count_write(uint16_t addr, uint8_t val, UNUSED(void *priv))
     if (channel < 0)
         return;
 
+    dma_channel_settle(channel);
     dma[channel].cb = (dma[channel].cb & 0x00ffff) | ((uint32_t) val << 16);
     if (!dma_chaining(channel))
         dma[channel].cc = (int) dma[channel].cb;
