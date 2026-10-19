@@ -600,6 +600,70 @@ flushmmucache_invlpg(uint32_t addr)
 #endif
 }
 
+/* This copy's bit in mem_code_page: set while it has (or is getting) code
+   on a page, cleared by it alone when its last block there goes, so the
+   page is free for direct writes again once no copy holds code there. */
+static uint8_t
+mem_code_page_bit(void)
+{
+    const int i = mem_page_copy_index(pages);
+
+    return (uint8_t) (1u << (((i >= 0) && (i < 8)) ? i : 0));
+}
+
+/* This copy's code cache was emptied: it has code on no page. */
+void
+mem_code_page_forget_all(void)
+{
+    const uint8_t keep = (uint8_t) ~mem_code_page_bit();
+
+    if (!mem_code_page)
+        return;
+    for (uint32_t i = 0; i < pages_sz; i++) {
+        if (__atomic_load_n(&mem_code_page[i], __ATOMIC_RELAXED) & ~keep)
+            __atomic_fetch_and(&mem_code_page[i], keep, __ATOMIC_SEQ_CST);
+    }
+}
+
+/* This copy may have lost its last block on the page: its bit goes if no
+   block of its starts there or runs into it. */
+void
+mem_code_page_lost(uint32_t addr)
+{
+    if (mem_code_page && ((addr >> 12) < pages_sz) && !pages[addr >> 12].block && !pages[addr >> 12].block_2)
+        __atomic_fetch_and(&mem_code_page[addr >> 12], (uint8_t) ~mem_code_page_bit(), __ATOMIC_SEQ_CST);
+}
+
+/* A set's write entries to the page that take the tracked path. */
+static void
+mem_tlb_drop_tracked(mem_tlb_t *t, const page_t *page_target)
+{
+    if (t == NULL)
+        return;
+    for (uint16_t c = 0; c < 256; c++) {
+        const int v = t->writelookup[c];
+
+        if ((v != (int) 0xffffffff) && (t->page_lookup[v] == page_target)) {
+            t->writelookup2[v] = LOOKUP_INV;
+            t->page_lookup[v]  = NULL;
+            t->writelookup[c]  = 0xffffffff;
+        }
+    }
+}
+
+/* The page has lost its last block in this core: only this core's own
+   tracked write entries to it go, so they can be made direct again.
+   Losing code needs nothing of another core -- its entries to the page
+   stay on the tracked path, which is only slower. */
+void
+mem_flush_write_page_own(uint32_t addr)
+{
+    const page_t *page_target = &pages[addr >> 12];
+
+    mem_tlb_drop_tracked(mem_tlb_cur, page_target);
+    mem_tlb_drop_tracked(mem_tlb_cur->ubank, page_target);
+}
+
 /* A set's write entries to the page, by what they reach: the tracked
    path's page, or the page's RAM less the entry's linear address. */
 static void
@@ -630,6 +694,11 @@ void
 mem_flush_write_page(uint32_t addr, UNUSED(uint32_t virt))
 {
     const page_t *page_target = &pages[addr >> 12];
+
+    /* No core keeps a direct write entry to it from now on, its own or
+       another's (addwritelookup). */
+    if (mem_code_page && ((addr >> 12) < pages_sz))
+        __atomic_fetch_or(&mem_code_page[addr >> 12], mem_code_page_bit(), __ATOMIC_SEQ_CST);
 
     for (int i = 0; i < mem_tlb_count; i++) {
         mem_tlb_drop_page(mem_tlbs[i], page_target, addr);
@@ -1209,13 +1278,22 @@ addwritelookup_bank(uint32_t virt, uint32_t phys)
        code in the second page never invalidates the spanning block. */
 #ifdef USE_DYNAREC
     if (pages[phys >> 12].block || pages[phys >> 12].block_2 || (phys & ~0xfff) == recomp_page ||
-        ((mem_page_copy_count > 1) && mem_page_code_in_other_copy(phys >> 12, pages))) {
+        ((mem_page_copy_count > 1) && __atomic_load_n(&mem_code_page[phys >> 12], __ATOMIC_SEQ_CST))) {
 #else
     if (pages[phys >> 12].block || pages[phys >> 12].block_2) {
 #endif
-        page_lookup[virt >> 12]  = &pages[phys >> 12];
-    } else
+        page_lookup[virt >> 12] = &pages[phys >> 12];
+    } else {
         writelookup2[virt >> 12] = (uintptr_t) &ram[(uintptr_t) (phys & ~0xFFF) - (uintptr_t) (virt & ~0xfff)];
+
+        /* Another core compiling from the page marks it before it reads
+           the code; one that marked it in between is seen here, and the
+           entry becomes a tracked one. */
+        if ((mem_page_copy_count > 1) && __atomic_load_n(&mem_code_page[phys >> 12], __ATOMIC_SEQ_CST)) {
+            writelookup2[virt >> 12] = LOOKUP_INV;
+            page_lookup[virt >> 12]  = &pages[phys >> 12];
+        }
+    }
 
     writelookup[writelnext++] = virt >> 12;
     writelnext &= (cachesize - 1);

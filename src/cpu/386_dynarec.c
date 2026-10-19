@@ -599,7 +599,7 @@ codegen_chain_service(void)
 
     __atomic_store_n(&mem_tlb_cur->brk, 0, __ATOMIC_SEQ_CST); /* cleared before looking */
     if (p & 0xff00ffff)
-        return 1; /* a relink or a translation change, a flush or work posted: the loop's */
+        return 1; /* code another core wrote, a relink or revalidation, a flush or work posted: the loop's */
     if (cpu_init || new_ne || smi_line || NMI_TAKEABLE() || cpu_state.abrt || !CACHE_ON() ||
         x86_was_reset || cpu_force_interpreter || cpu_override_dynarec || cpu_flush_pending)
         return 1;
@@ -624,8 +624,8 @@ codegen_chain_service(void)
     return 0;
 }
 
-/* A relink and a translation change, taken by the loop before its next
-   dispatch. */
+/* Code written by another core, a relink and a translation change, taken
+   by the loop before its next dispatch. */
 static void
 exec386_chain_take_code(void)
 {
@@ -634,6 +634,8 @@ exec386_chain_take_code(void)
 
         if (why & MEM_CHAIN_CODE_RELINK)
             codegen_links_drop_all(1);
+        if (why & MEM_CHAIN_CODE_WRITTEN)
+            codegen_links_written();
         if (why & MEM_CHAIN_CODE_REVALIDATE)
             codegen_links_revalidate();
     }
@@ -653,9 +655,9 @@ static inline int
 exec386_chain_still_clean(codeblock_t *block)
 {
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    if (block->page_mask & *block->dirty_mask)
+    if (block->page_mask & __atomic_load_n(block->dirty_mask, __ATOMIC_RELAXED))
         return 0;
-    if (block->page_mask2 && (block->page_mask2 & *block->dirty_mask2))
+    if (block->page_mask2 && (block->page_mask2 & __atomic_load_n(block->dirty_mask2, __ATOMIC_RELAXED)))
         return 0;
     return 1;
 }
@@ -810,7 +812,7 @@ exec386_dynarec_dyn(void)
             }
         }
 
-        if (valid_block && (block->page_mask & *block->dirty_mask)) {
+        if (valid_block && (block->page_mask & __atomic_load_n(block->dirty_mask, __ATOMIC_RELAXED))) {
             codegen_check_flush(page, page->dirty_mask, phys_addr);
             if (block->valid && (block->flags & CODEBLOCK_IN_DIRTY_LIST))
                 block->flags &= ~CODEBLOCK_WAS_RECOMPILED;
@@ -831,7 +833,7 @@ exec386_dynarec_dyn(void)
 
             if ((block->phys_2 ^ phys_addr_2) & ~0xfff)
                 valid_block = 0;
-            else if (block->page_mask2 & *block->dirty_mask2) {
+            else if (block->page_mask2 & __atomic_load_n(block->dirty_mask2, __ATOMIC_RELAXED)) {
                 codegen_check_flush(page_2, page_2->dirty_mask, phys_addr_2);
                 if (block->valid && (block->flags & CODEBLOCK_IN_DIRTY_LIST))
                     block->flags &= ~CODEBLOCK_WAS_RECOMPILED;
@@ -922,6 +924,7 @@ exec386_dynarec_dyn(void)
         cpu_block_end = 0;
         x86_was_reset = 0;
         int record_discarded = 0;
+        int page2_ready      = 0;
 #    ifdef CODEGEN_CHAIN
         codegen_block_full = 0;
 #    endif
@@ -933,8 +936,8 @@ exec386_dynarec_dyn(void)
 #    endif
         codegen_record_faulted = 0;
         codegen_block_start_recompile(block);
-        codegen_in_recompile = 1;
-        mem_in_recompile     = 1;
+        codegen_in_recompile    = 1;
+        mem_thread_in_recompile = 1;
 
         while (!cpu_block_end) {
             oldcs  = CS;
@@ -945,6 +948,23 @@ exec386_dynarec_dyn(void)
             cpu_state.ea_seg = &cpu_state.seg_ds;
             cpu_state.ssegs  = 0;
 
+            /* About to read past the block's first page: the second page's
+               handshake comes first, so no core writes it unmarked through
+               a direct entry once its bytes have been read (the first
+               page's is in codegen_block_start_recompile or _init). 63
+               bytes ahead: an instruction may carry more prefixes than the
+               15 bytes allowed. */
+            if (!page2_ready && (((cs + cpu_state.pc + 63) ^ start_pc) & ~0xfff)) {
+                uint32_t v2 = (cs + cpu_state.pc + 63) & ~0xfff;
+                uint32_t p2 = get_phys_noabrt(v2);
+
+                if ((p2 != 0xffffffff) && ((p2 >> 12) < pages_sz)) {
+                    codegen_recording_page(1, p2); /* its bit stays while read */
+                    if (!pages[p2 >> 12].block && !pages[p2 >> 12].block_2)
+                        mem_flush_write_page(p2, v2);
+                }
+                page2_ready = 1;
+            }
             fetchdat = fastreadl_fetch(cs + cpu_state.pc);
 #    ifdef ENABLE_386_DYNAREC_LOG
             if (in_smm)
@@ -1089,8 +1109,12 @@ exec386_dynarec_dyn(void)
         if (x86_was_reset)
             codegen_reset();
 
-        codegen_in_recompile = 0;
-        mem_in_recompile     = 0;
+        /* The pages read are settled: one the block never reached, or
+           whose blocks went meanwhile, loses this copy's bit. */
+        codegen_recording_done();
+
+        codegen_in_recompile    = 0;
+        mem_thread_in_recompile = 0;
 #    if defined(__APPLE__) && defined(__aarch64__)
         if (__builtin_available(macOS 11.0, *)) {
             pthread_jit_write_protect_np(1);
@@ -1104,6 +1128,7 @@ exec386_dynarec_dyn(void)
         cpu_block_end = 0;
         x86_was_reset = 0;
         int record_discarded = 0;
+        int page2_ready      = 0;
 
         codegen_record_faulted = 0;
         codegen_block_init(phys_addr);
@@ -1122,6 +1147,23 @@ exec386_dynarec_dyn(void)
                a long last instruction's tail is marked, on whichever page. */
             codegen_endpc = (cs + cpu_state.pc) + 14;
 
+            /* About to read past the block's first page: the second page's
+               handshake comes first, so no core writes it unmarked through
+               a direct entry once its bytes have been read (the first
+               page's is in codegen_block_start_recompile or _init). 63
+               bytes ahead: an instruction may carry more prefixes than the
+               15 bytes allowed. */
+            if (!page2_ready && (((cs + cpu_state.pc + 63) ^ start_pc) & ~0xfff)) {
+                uint32_t v2 = (cs + cpu_state.pc + 63) & ~0xfff;
+                uint32_t p2 = get_phys_noabrt(v2);
+
+                if ((p2 != 0xffffffff) && ((p2 >> 12) < pages_sz)) {
+                    codegen_recording_page(1, p2); /* its bit stays while read */
+                    if (!pages[p2 >> 12].block && !pages[p2 >> 12].block_2)
+                        mem_flush_write_page(p2, v2);
+                }
+                page2_ready = 1;
+            }
             fetchdat      = fastreadl_fetch(cs + cpu_state.pc);
 
 #    ifdef ENABLE_386_DYNAREC_LOG
@@ -1206,6 +1248,7 @@ exec386_dynarec_dyn(void)
         else if ((!cpu_state.abrt || (cpu_state.abrt & ABRT_EXPECTED)) && !new_ne && !x86_was_reset && !record_discarded &&
                  !cpu_fetch_device)
             codegen_block_end();
+        codegen_recording_done();
 
         if (x86_was_reset)
             codegen_reset();
@@ -1270,8 +1313,8 @@ exec386_dynarec_blocks(void)
 #    ifdef CODEGEN_CHAIN
         /* Whatever broke a chain is looked at below: the break is
            cleared first, so one set from now on breaks the next chain.
-           A relink and a translation change are taken here, before the
-           next dispatch. */
+           Code another core wrote, a relink and a translation change are
+           taken here, before the next dispatch. */
         if (__atomic_load_n(&mem_tlb_cur->brk, __ATOMIC_RELAXED))
             __atomic_store_n(&mem_tlb_cur->brk, 0, __ATOMIC_SEQ_CST);
         exec386_chain_take_code();

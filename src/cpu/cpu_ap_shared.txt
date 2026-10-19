@@ -56,6 +56,7 @@ memset_pattern16
 # (msys2 UCRT64): one per module, the machine's.
 __emutls_get_address
 __emutls_v.is_cpu_thread
+__emutls_v.mem_thread_in_recompile
 __mingw_sprintf
 _localtime64_s
 _time64
@@ -141,11 +142,11 @@ mem_a20_alt
 mem_a20_key
 mem_a20_recalc
 mem_a20_state
+mem_code_page
 mem_exec_view
-mem_in_recompile
 mem_mark_written_byte
-mem_page_code_in_other_copy
 mem_page_copy_count
+mem_page_copy_index
 mem_page_copy_register
 mem_page_copy_unregister
 mem_ram_size
@@ -155,6 +156,7 @@ mem_smm_enter
 mem_smm_leave
 mem_split_lock_give
 mem_split_lock_take
+mem_thread_in_recompile
 mem_tlb_clear
 mem_tlb_count
 mem_tlb_mark_others

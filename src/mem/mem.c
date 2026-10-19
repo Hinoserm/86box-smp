@@ -143,22 +143,7 @@ mem_page_copy_unregister(page_t **copy_pages)
     }
 }
 
-/* Whether a core other than the one whose table is `mine` has compiled
-   code on page `idx`: a write there takes the tracked path in every core,
-   or the other core's code never sees it change. */
-int
-mem_page_code_in_other_copy(uint32_t idx, const page_t *mine)
-{
-    for (int i = 0; i < mem_page_copy_count; i++) {
-        const page_t *base = *mem_page_copies[i].pages;
-
-        if ((base == NULL) || (base == mine) || (idx >= pages_sz))
-            continue;
-        if (base[idx].block || base[idx].block_2)
-            return 1;
-    }
-    return 0;
-}
+uint8_t *mem_code_page;
 
 /* Which copy a page entry is in. */
 static int
@@ -171,6 +156,13 @@ mem_page_copy_of(const page_t *page)
             return i;
     }
     return 0;
+}
+
+/* The index of the copy whose page table this is. */
+int
+mem_page_copy_index(const page_t *base)
+{
+    return mem_page_copy_of(base);
 }
 
 /* Put a page on its own copy's list of pages to purge. */
@@ -204,9 +196,9 @@ mem_page_code_written(const page_t *p, uint64_t mask, int byte_offset, uint64_t 
     if (!mem_page_code_reached(p, mask, byte_offset, bm0, bm1))
         return;
     if (mem_page_copy_count <= 1)
-        codegen_page_code_hit(p, mask, byte_offset, bm0, bm1);
+        codegen_page_code_hit(p, mask, byte_offset, bm0, bm1, 1);
     else
-        mem_page_copies[mem_page_copy_of(p)].code_hit(p, mask, byte_offset, bm0, bm1);
+        mem_page_copies[mem_page_copy_of(p)].code_hit(p, mask, byte_offset, bm0, bm1, 1);
 }
 #endif
 
@@ -234,7 +226,7 @@ mem_page_mark_others(const page_t *page, uint64_t mask, int byte_offset, uint64_
             mem_page_copies[i].add_to_evict_list(o);
 #ifdef CODEGEN_CHAIN
         if (mem_page_code_reached(o, mask, byte_offset, bm0, bm1))
-            mem_page_copies[i].code_hit(o, mask, byte_offset, bm0, bm1);
+            mem_page_copies[i].code_hit(o, mask, byte_offset, bm0, bm1, 0);
 #endif
     }
 }
@@ -385,10 +377,10 @@ mem_log(const char *fmt, ...)
 #    define mem_log(fmt, ...)
 #endif
 
-/* Set while the core running is recording a block: its RAM writes are
-   marked even when the value does not change. Each core has its own
-   codegen_in_recompile, and this file serves all of them. */
-int mem_in_recompile;
+/* Set while this thread's core is recording a block: its RAM writes are
+   marked even when the value does not change. Per thread, as each core's
+   own codegen_in_recompile is, and this file serves every core. */
+__thread int mem_thread_in_recompile;
 
 /* A RAM handler fills the TLB of the core whose access it serves. The
    handlers are built once, and addreadlookup()/addwritelookup() named
@@ -806,7 +798,7 @@ mem_write_ramb_page(uint32_t addr, uint8_t val, page_t *page)
         return;
 
 #    ifdef USE_DYNAREC
-    if ((page->mem == NULL) || (page->mem == page_ff) || (val != page->mem[addr & 0xfff]) || mem_in_recompile) {
+    if ((page->mem == NULL) || (page->mem == page_ff) || (val != page->mem[addr & 0xfff]) || mem_thread_in_recompile) {
 #    else
     if ((page->mem == NULL) || (page->mem == page_ff) || (val != page->mem[addr & 0xfff])) {
 #    endif
@@ -836,7 +828,7 @@ mem_write_ramw_page(uint32_t addr, uint16_t val, page_t *page)
         return;
 
 #    ifdef USE_DYNAREC
-    if ((page->mem == NULL) || (page->mem == page_ff) || (val != *(uint16_t *) &page->mem[addr & 0xfff]) || mem_in_recompile) {
+    if ((page->mem == NULL) || (page->mem == page_ff) || (val != *(uint16_t *) &page->mem[addr & 0xfff]) || mem_thread_in_recompile) {
 #    else
     if ((page->mem == NULL) || (page->mem == page_ff) || (val != *(uint16_t *) &page->mem[addr & 0xfff])) {
 #    endif
@@ -878,7 +870,7 @@ mem_write_raml_page(uint32_t addr, uint32_t val, page_t *page)
         return;
 
 #    ifdef USE_DYNAREC
-    if ((page->mem == NULL) || (page->mem == page_ff) || (val != *(uint32_t *) &page->mem[addr & 0xfff]) || mem_in_recompile) {
+    if ((page->mem == NULL) || (page->mem == page_ff) || (val != *(uint32_t *) &page->mem[addr & 0xfff]) || mem_thread_in_recompile) {
 #    else
     if ((page->mem == NULL) || (page->mem == page_ff) || (val != *(uint32_t *) &page->mem[addr & 0xfff])) {
 #    endif
@@ -1128,8 +1120,10 @@ mem_invalidate_range(uint32_t start_addr, uint32_t end_addr)
             if (!page_in_evict_list(page))
                 mem_page_copies[i].add_to_evict_list(page);
 #    ifdef CODEGEN_CHAIN
+            /* A bus master's write, on the machine's thread: the first
+               core's own, another core's for its loop to take. */
             if (page->block || page->block_2)
-                mem_page_copies[i].code_drop(page);
+                mem_page_copies[i].code_drop(page, i == 0);
 #    endif
         }
     }
@@ -1831,6 +1825,9 @@ mem_reset(void)
      */
     pages_sz = m;
     pages    = (page_t *) calloc(m, sizeof(page_t));
+
+    free(mem_code_page);
+    mem_code_page = (uint8_t *) calloc(m, 1);
 
     memset(page_lookup, 0x00, (1 << 20) * sizeof(page_t *));
 

@@ -249,14 +249,25 @@ typedef struct mem_page_copy_t {
     uint64_t **byte_code_present_mask;
     void     (*add_to_evict_list)(page_t *page);
     void     (*reset_evict_list)(void);
-    void     (*code_hit)(const page_t *p, uint64_t mask, int byte_offset, uint64_t bm0, uint64_t bm1);
-    void     (*code_drop)(const page_t *p);
+    /* own: the write is the copy's own core's, on that core's thread. */
+    void     (*code_hit)(const page_t *p, uint64_t mask, int byte_offset, uint64_t bm0, uint64_t bm1, int own);
+    void     (*code_drop)(const page_t *p, int own);
 } mem_page_copy_t;
 
 extern int  mem_page_copy_count;
 extern void mem_page_copy_register(const mem_page_copy_t *c);
 extern void mem_page_copy_unregister(page_t **copy_pages);
-extern int  mem_page_code_in_other_copy(uint32_t idx, const page_t *mine);
+extern int  mem_page_copy_index(const page_t *base);
+
+/* The pages some core holds compiled code from, a bit for each copy of the
+   page table (mem_page_copy_index): set before a core reads code from a
+   page, and cleared by that core alone once its last block there goes. No
+   core keeps a direct write entry to a page with a bit set (mem_cpu.c
+   addwritelookup), so every write to it is seen by every core. */
+extern uint8_t *mem_code_page;
+extern void     mem_code_page_lost(uint32_t addr);
+extern void     mem_code_page_forget_all(void);
+extern void     mem_flush_write_page_own(uint32_t addr);
 extern void mem_pages_mirror(uint32_t first, uint32_t count, int reset_evict);
 extern void mem_cpu_register_pages(void);
 
@@ -433,7 +444,7 @@ extern void     mem_cpu_fill_write(uint32_t phys);
 extern void   (*mem_fill_read_running)(uint32_t phys);
 extern void   (*mem_fill_write_running)(uint32_t phys);
 extern int      mem_bus_master_access(void);
-extern int      mem_in_recompile;
+extern __thread int mem_thread_in_recompile;
 
 extern void mem_mapping_set(mem_mapping_t *,
                             uint32_t base,
@@ -557,11 +568,12 @@ extern void mem_tlb_empty(void);
 /* Chains of linked blocks (the new recompiler): a link stub leaves for the
    dispatcher while its core's signal word (mem_tlb_t.pending, of the set
    in place) is not 0. brk: something the loop must look at (port I/O, an
-   interrupt pending, NMI, SMI, a sooner timer, a reset); code: every link
-   must go (RELINK), or translations may have changed (REVALIDATE).
-   Harmless when nothing is chained. Each core's own: device code breaks
-   the first core's chain, and another processor's through
-   cpu_mp_chain_signal. */
+   interrupt pending, NMI, SMI, a sooner timer, a reset); code: another
+   core wrote compiled code of this one (WRITTEN), every link must go
+   (RELINK), or translations may have changed (REVALIDATE). Harmless when
+   nothing is chained. Each core's own: device code breaks the first
+   core's chain, and another processor's through cpu_mp_chain_signal. */
+#define MEM_CHAIN_CODE_WRITTEN    1
 #define MEM_CHAIN_CODE_RELINK     2
 #define MEM_CHAIN_CODE_REVALIDATE 4
 

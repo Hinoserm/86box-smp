@@ -18,6 +18,7 @@
 
 #include "386_common.h"
 
+#include <86box/cpu_mp.h>
 #include "codegen.h"
 #include "codegen_accumulate.h"
 #include "codegen_allocator.h"
@@ -49,6 +50,20 @@ int        block_pos;
 uint32_t codegen_endpc;
 
 int        codegen_block_cycles;
+
+/* This copy's block lists change under a sequence count, odd while a
+   change is under way: another core's thread walking them
+   (codegen_page_code_hit) knows to distrust what it saw. Nested changes
+   count once. */
+static uint32_t codegen_list_seq;
+static int      codegen_list_depth;
+
+static inline void
+codegen_list_begin(void)
+{
+    if (codegen_list_depth++ == 0)
+        __atomic_fetch_add(&codegen_list_seq, 1, __ATOMIC_SEQ_CST);
+}
 
 #ifdef CODEGEN_CHAIN
 /* Chains of linked blocks: moved whenever compiled code is freed or every
@@ -789,44 +804,172 @@ codegen_page_block_hits(const codeblock_t *b, int second, uint64_t mask, int byt
     return !!(pm & mask);
 }
 
-/* A write with these masks (mem.c) to compiled code: the linked blocks on
+/* The pages of this copy another core wrote compiled code on, a bit
+   each, and a summary bit for each 64 of them: set from that core's thread
+   (codegen_page_code_hit), taken by this core's loop at its next look
+   (codegen_links_written). */
+#    define CODEGEN_WRITTEN_PAGES (1u << 20) /* 4 GB of 4K pages */
+static uint64_t codegen_written[CODEGEN_WRITTEN_PAGES / 64];
+static uint64_t codegen_written_sum[CODEGEN_WRITTEN_PAGES / 64 / 64];
+
+/* Whether a block's code is as compiled, as the dispatcher tests it. */
+static inline int
+codegen_block_code_clean(const codeblock_t *b)
+{
+    if (b->page_mask & __atomic_load_n(b->dirty_mask, __ATOMIC_SEQ_CST))
+        return 0;
+    if (b->page_mask2 && b->dirty_mask2 && (b->page_mask2 & __atomic_load_n(b->dirty_mask2, __ATOMIC_SEQ_CST)))
+        return 0;
+    return 1;
+}
+
+static void
+codegen_written_note(const page_t *p)
+{
+    const uint32_t idx = (uint32_t) (p - pages);
+
+    if (idx >= CODEGEN_WRITTEN_PAGES) {
+        __atomic_store_n(&codegen_written_sum[0], ~0ULL, __ATOMIC_SEQ_CST); /* cannot happen: pages_sz is smaller */
+        return;
+    }
+    __atomic_fetch_or(&codegen_written[idx >> 6], 1ULL << (idx & 63), __ATOMIC_SEQ_CST);
+    __atomic_fetch_or(&codegen_written_sum[idx >> 12], 1ULL << ((idx >> 6) & 63), __ATOMIC_SEQ_CST);
+}
+
+/* This core's loop, after another core wrote its compiled code: on each
+   page noted, the linked blocks whose code is dirty lose their links and
+   leave the lists, as with a write of its own (codegen_page_code_hit),
+   and the page keeps the chunks of those left. One walk a page however
+   many writes it took. */
+void
+codegen_links_written(void)
+{
+    for (uint32_t s = 0; s < (CODEGEN_WRITTEN_PAGES / 64 / 64); s++) {
+        uint64_t sum;
+
+        /* Read first: most summary words are empty, and an exchange is a
+           locked write each. */
+        if (!__atomic_load_n(&codegen_written_sum[s], __ATOMIC_RELAXED))
+            continue;
+        sum = __atomic_exchange_n(&codegen_written_sum[s], 0, __ATOMIC_SEQ_CST);
+
+        while (sum) {
+            const uint32_t w    = (s << 6) | __builtin_ctzll(sum);
+            uint64_t       bits = __atomic_exchange_n(&codegen_written[w], 0, __ATOMIC_SEQ_CST);
+
+            sum &= sum - 1;
+            while (bits) {
+                const uint32_t idx    = (w << 6) | __builtin_ctzll(bits);
+                const uint32_t pg     = idx & (CODEGEN_LINK_PHYS_PAGES - 1);
+                uint64_t       chunks = 0;
+
+                bits &= bits - 1;
+                if (idx >= pages_sz)
+                    continue;
+                for (int32_t node = codegen_lp_head[pg]; node >= 0;) {
+                    codeblock_t *b    = &codeblock[node >> 1];
+                    int32_t      next = b->lp_next[node & 1];
+
+                    if (!codegen_block_code_clean(b)) {
+                        codegen_links_drop_owned(b);
+                        /* Past its other node if that came next (both its
+                           pages in one list). */
+                        while ((next >= 0) && ((next >> 1) == (node >> 1)))
+                            next = codeblock[next >> 1].lp_next[next & 1];
+                    } else
+                        chunks |= codegen_lp_node_chunks(b, node & 1);
+                    node = next;
+                }
+                codegen_lp_chunks[pg] = chunks;
+            }
+        }
+    }
+}
+
+/* A write with these masks (mem.c) to compiled code of this copy.
+
+   own: the write is this core's own, on its thread: the linked blocks on
    the page whose code it reaches lose their links at once, and leave the
    lists (a running chain misses at its next link into one). Only a link
    skips the dirty test a dispatch makes, so a chunk with no linked code
-   needs nothing. */
+   needs nothing.
+
+   Another core's write, from that core's thread, finds this copy's lists
+   possibly changing (codegen_list_seq) and leaves them to this core: if it
+   reaches a block a link could skip the dirty test for, the page is noted,
+   this core's chain leaves at its next link, and its loop drops the links
+   at its next look (codegen_links_written). The walk is bounded, over
+   every block on the page, and on any doubt the answer is yes. */
 void
-codegen_page_code_hit(const struct page_t *p, uint64_t mask, int byte_offset, uint64_t bm0, uint64_t bm1)
+codegen_page_code_hit(const struct page_t *p, uint64_t mask, int byte_offset, uint64_t bm0, uint64_t bm1, int own)
 {
-    const uint32_t pg     = (uint32_t) (p - pages) & (CODEGEN_LINK_PHYS_PAGES - 1);
-    uint64_t       chunks = 0;
+    uint32_t nr;
+    int      steps;
+    uint32_t seq;
 
-    if (!(codegen_lp_chunks[pg] & mask))
+    if (own) {
+        const uint32_t pg     = (uint32_t) (p - pages) & (CODEGEN_LINK_PHYS_PAGES - 1);
+        uint64_t       chunks = 0;
+
+        if (!(codegen_lp_chunks[pg] & mask))
+            return;
+        for (int32_t node = codegen_lp_head[pg]; node >= 0;) {
+            codeblock_t *b    = &codeblock[node >> 1];
+            int32_t      next = b->lp_next[node & 1];
+
+            if (codegen_page_block_hits(b, node & 1, mask, byte_offset, bm0, bm1)) {
+                codegen_links_drop_owned(b);
+                /* Past its other node if that came next (both its pages in
+                   one list): a node taken out keeps its own next. */
+                while ((next >= 0) && ((next >> 1) == (node >> 1)))
+                    next = codeblock[next >> 1].lp_next[next & 1];
+            } else
+                chunks |= codegen_lp_node_chunks(b, node & 1);
+            node = next;
+        }
+        codegen_lp_chunks[pg] = chunks;
         return;
-    for (int32_t node = codegen_lp_head[pg]; node >= 0;) {
-        codeblock_t *b    = &codeblock[node >> 1];
-        int32_t      next = b->lp_next[node & 1];
-
-        if (codegen_page_block_hits(b, node & 1, mask, byte_offset, bm0, bm1)) {
-            codegen_links_drop_owned(b);
-            /* Past its other node if that came next (both its pages in one
-               list): a node taken out keeps its own next. */
-            while ((next >= 0) && ((next >> 1) == (node >> 1)))
-                next = codeblock[next >> 1].lp_next[next & 1];
-        } else
-            chunks |= codegen_lp_node_chunks(b, node & 1);
-        node = next;
     }
-    codegen_lp_chunks[pg] = chunks;
+
+    seq = __atomic_load_n(&codegen_list_seq, __ATOMIC_SEQ_CST);
+    if (seq & 1)
+        goto hit; /* the lists are changing */
+    for (nr = p->block, steps = 0; nr; nr = codeblock[nr].next) {
+        if ((nr >= BLOCK_SIZE) || (++steps > 256))
+            goto hit;
+        if (codegen_page_block_hits(&codeblock[nr], 0, mask, byte_offset, bm0, bm1))
+            goto hit;
+    }
+    for (nr = p->block_2, steps = 0; nr; nr = codeblock[nr].next_2) {
+        if ((nr >= BLOCK_SIZE) || (++steps > 256))
+            goto hit;
+        if (codegen_page_block_hits(&codeblock[nr], 1, mask, byte_offset, bm0, bm1))
+            goto hit;
+    }
+    /* Changed while walked: what was seen proves nothing. */
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&codegen_list_seq, __ATOMIC_SEQ_CST) == seq)
+        return;
+
+hit:
+    codegen_written_note(p);
+    mem_chain_code(MEM_CHAIN_CODE_WRITTEN);
 }
 
-/* The whole page was written behind the processor's back (mem.c
+/* The whole page was written behind the processors' backs (mem.c
    mem_invalidate_range, which marked it all dirty first): every linked
-   block on it loses its links. */
+   block on it loses its links -- at once from this core's own thread
+   (own), else at its loop's next look, as for another core's write. */
 void
-codegen_page_code_drop(const struct page_t *p)
+codegen_page_code_drop(const struct page_t *p, int own)
 {
     const uint32_t pg = (uint32_t) (p - pages) & (CODEGEN_LINK_PHYS_PAGES - 1);
 
+    if (!own) {
+        codegen_written_note(p);
+        mem_chain_code(MEM_CHAIN_CODE_WRITTEN);
+        return;
+    }
     while (codegen_lp_head[pg] >= 0)
         codegen_links_drop_owned(&codeblock[codegen_lp_head[pg] >> 1]);
 }
@@ -857,6 +1000,16 @@ static uint32_t block_dirty_list_head;
 static uint32_t block_dirty_list_tail;
 static int      dirty_list_size = 0;
 #define DIRTY_LIST_MAX_SIZE 64
+
+/* A page whose last block of this copy left: its code-page bit (mem.h
+   mem_code_page) is dropped only once the outermost list change is done
+   (a recompile takes its block off the list and puts it back), and never
+   for a page being recorded. Pages beyond the list's room keep their bit,
+   which is only slower. */
+#define CODEGEN_LOST_MAX 16
+static uint32_t codegen_lost_pages[CODEGEN_LOST_MAX];
+static int      codegen_lost_count;
+static uint32_t codegen_rec_page[2] = { 0xffffffff, 0xffffffff }; /* physical pages being recorded */
 
 /*Earlier compiled versions of byte-mask blocks that read their immediates from
   memory (CODEBLOCK_NO_IMMEDIATES). Code that flips one of its opcodes back and
@@ -1029,7 +1182,57 @@ block_version_chunk_matches(uint32_t phys, const uint8_t *exec, uint64_t mask, c
 }
 
 static void
-block_free_list_add(codeblock_t *block)
+codegen_code_page_maybe_lost(uint32_t phys)
+{
+    if (codegen_lost_count < CODEGEN_LOST_MAX)
+        codegen_lost_pages[codegen_lost_count++] = phys & ~0xfff;
+}
+
+static void
+codegen_code_pages_settle(void)
+{
+    for (int i = 0; i < codegen_lost_count; i++) {
+        uint32_t pg = codegen_lost_pages[i];
+
+        if ((pg == codegen_rec_page[0]) || (pg == codegen_rec_page[1]))
+            continue; /* settled when its recording ends */
+        mem_code_page_lost(pg); /* which looks again at both lists */
+    }
+    codegen_lost_count = 0;
+}
+
+static inline void
+codegen_list_end(void)
+{
+    if (--codegen_list_depth == 0) {
+        __atomic_fetch_add(&codegen_list_seq, 1, __ATOMIC_SEQ_CST);
+        codegen_code_pages_settle();
+    }
+}
+
+/* The recompiler reads code from these physical pages from now until
+   codegen_recording_done(): their code-page bits stay while it does. */
+void
+codegen_recording_page(int which, uint32_t phys)
+{
+    codegen_rec_page[which & 1] = (phys == 0xffffffff) ? 0xffffffff : (phys & ~0xfff);
+}
+
+void
+codegen_recording_done(void)
+{
+    uint32_t p0 = codegen_rec_page[0];
+    uint32_t p1 = codegen_rec_page[1];
+
+    codegen_rec_page[0] = codegen_rec_page[1] = 0xffffffff;
+    if (p0 != 0xffffffff)
+        mem_code_page_lost(p0);
+    if ((p1 != 0xffffffff) && (p1 != p0))
+        mem_code_page_lost(p1);
+}
+
+static void
+block_free_list_add_raw(codeblock_t *block)
 {
 #ifndef RELEASE_BUILD
     if (block->flags & CODEBLOCK_IN_DIRTY_LIST)
@@ -1045,7 +1248,15 @@ block_free_list_add(codeblock_t *block)
 }
 
 static void
-block_dirty_list_add(codeblock_t *block)
+block_free_list_add(codeblock_t *block)
+{
+    codegen_list_begin();
+    block_free_list_add_raw(block);
+    codegen_list_end();
+}
+
+static void
+block_dirty_list_add_raw(codeblock_t *block)
 {
 #ifndef RELEASE_BUILD
     if (block->flags & CODEBLOCK_IN_DIRTY_LIST)
@@ -1087,7 +1298,15 @@ block_dirty_list_add(codeblock_t *block)
 }
 
 static void
-block_dirty_list_remove(codeblock_t *block)
+block_dirty_list_add(codeblock_t *block)
+{
+    codegen_list_begin();
+    block_dirty_list_add_raw(block);
+    codegen_list_end();
+}
+
+static void
+block_dirty_list_remove_raw(codeblock_t *block)
 {
     codeblock_t *prev_block = &codeblock[block->prev];
     codeblock_t *next_block = &codeblock[block->next];
@@ -1115,6 +1334,14 @@ block_dirty_list_remove(codeblock_t *block)
         fatal("remove - dirty_list_size < 0!\n");
 #endif
     block->flags &= ~CODEBLOCK_IN_DIRTY_LIST;
+}
+
+static void
+block_dirty_list_remove(codeblock_t *block)
+{
+    codegen_list_begin();
+    block_dirty_list_remove_raw(block);
+    codegen_list_end();
 }
 
 int
@@ -1248,6 +1475,9 @@ codegen_reset(void)
         codeblock[c].valid = 0;
         block_free_list_add(&codeblock[c]);
     }
+
+    /* No block of this copy is left on any page. */
+    mem_code_page_forget_all();
 }
 
 void
@@ -1274,7 +1504,7 @@ dump_block(void)
 }
 
 static void
-add_to_block_list(codeblock_t *block)
+add_to_block_list_raw(codeblock_t *block)
 {
     uint32_t block_prev_nr = pages[block->phys >> 12].block;
     uint32_t block_nr      = get_block_nr(block);
@@ -1317,7 +1547,15 @@ add_to_block_list(codeblock_t *block)
 }
 
 static void
-remove_from_block_list(codeblock_t *block, UNUSED(uint32_t pc))
+add_to_block_list(codeblock_t *block)
+{
+    codegen_list_begin();
+    add_to_block_list_raw(block);
+    codegen_list_end();
+}
+
+static void
+remove_from_block_list_raw(codeblock_t *block, UNUSED(uint32_t pc))
 {
     if (!block->page_mask)
         return;
@@ -1333,8 +1571,10 @@ remove_from_block_list(codeblock_t *block, UNUSED(uint32_t pc))
         pages[block->phys >> 12].block = block->next;
         if (block->next)
             codeblock[block->next].prev = BLOCK_INVALID;
-        else
-            mem_flush_write_page(block->phys, 0);
+        else {
+            mem_flush_write_page_own(block->phys);
+            codegen_code_page_maybe_lost(block->phys);
+        }
     }
 
     if (!(block->flags & CODEBLOCK_HAS_PAGE2)) {
@@ -1354,9 +1594,19 @@ remove_from_block_list(codeblock_t *block, UNUSED(uint32_t pc))
         pages[block->phys_2 >> 12].block_2 = block->next_2;
         if (block->next_2)
             codeblock[block->next_2].prev_2 = BLOCK_INVALID;
-        else
-            mem_flush_write_page(block->phys_2, 0);
+        else {
+            mem_flush_write_page_own(block->phys_2);
+            codegen_code_page_maybe_lost(block->phys_2);
+        }
     }
+}
+
+static void
+remove_from_block_list(codeblock_t *block, uint32_t pc)
+{
+    codegen_list_begin();
+    remove_from_block_list_raw(block, pc);
+    codegen_list_end();
 }
 
 static void
@@ -1492,17 +1742,42 @@ codegen_delete_random_block(int required_mem_block)
     }
 }
 
+/* What a block's dirty mask held when the page's were taken: the page's
+   word mask, or one of its byte masks for a block kept to the byte. */
+static inline uint64_t
+codegen_taken_mask(const page_t *page, const uint64_t *p, uint64_t dirty, const uint64_t *byte_dirty)
+{
+    if (p == &page->dirty_mask)
+        return dirty;
+    if ((p >= page->byte_dirty_mask) && (p < (page->byte_dirty_mask + 64)))
+        return byte_dirty[p - page->byte_dirty_mask];
+    return *p;
+}
+
 void
 codegen_check_flush(page_t *page, UNUSED(uint64_t mask), UNUSED(uint32_t phys_addr))
 {
     uint32_t block_nr               = page->block;
     int      remove_from_evict_list = 0;
+    uint64_t dirty;
+    uint64_t byte_dirty[64];
+
+    /* The dirty bits are taken, not read and later cleared: with another
+       processor's thread writing, a bit set between the two would be lost
+       and its code never invalidated. Every block below is tested against
+       what was taken; a word read as clear is not taken, and a bit set
+       after the read is left for the next look, as one set after the
+       exchange would be. */
+    dirty = __atomic_exchange_n(&page->dirty_mask, 0, __ATOMIC_SEQ_CST);
+    for (uint8_t c = 0; c < 64; c++)
+        byte_dirty[c] = __atomic_load_n(&page->byte_dirty_mask[c], __ATOMIC_RELAXED) ?
+                            __atomic_exchange_n(&page->byte_dirty_mask[c], 0, __ATOMIC_SEQ_CST) : 0;
 
     while (block_nr) {
         codeblock_t *block      = &codeblock[block_nr];
         uint32_t     next_block = block->next;
 
-        if (*block->dirty_mask & block->page_mask) {
+        if (codegen_taken_mask(page, block->dirty_mask, dirty, byte_dirty) & block->page_mask) {
             invalidate_block(block);
         }
 #ifndef RELEASE_BUILD
@@ -1518,7 +1793,7 @@ codegen_check_flush(page_t *page, UNUSED(uint64_t mask), UNUSED(uint32_t phys_ad
         codeblock_t *block      = &codeblock[block_nr];
         uint32_t     next_block = block->next_2;
 
-        if (*block->dirty_mask2 & block->page_mask2) {
+        if (codegen_taken_mask(page, block->dirty_mask2, dirty, byte_dirty) & block->page_mask2) {
             invalidate_block(block);
         }
 #ifndef RELEASE_BUILD
@@ -1528,18 +1803,18 @@ codegen_check_flush(page_t *page, UNUSED(uint64_t mask), UNUSED(uint32_t phys_ad
         block_nr = next_block;
     }
 
-    if (page->code_present_mask & page->dirty_mask)
+    if (page->code_present_mask & dirty)
         remove_from_evict_list = 1;
-    page->code_present_mask &= ~page->dirty_mask;
-    page->dirty_mask = 0;
+    page->code_present_mask &= ~dirty;
 
     for (uint8_t c = 0; c < 64; c++) {
-        if (page->byte_code_present_mask[c] & page->byte_dirty_mask[c])
+        if (page->byte_code_present_mask[c] & byte_dirty[c])
             remove_from_evict_list = 0;
-        page->byte_code_present_mask[c] &= ~page->byte_dirty_mask[c];
-        page->byte_dirty_mask[c] = 0;
+        page->byte_code_present_mask[c] &= ~byte_dirty[c];
     }
-    if (remove_from_evict_list)
+    /* Dirty bits another core set reach this table without the page
+       joining this core's purge list (mem.c): it may not be on it. */
+    if (remove_from_evict_list && page_in_evict_list(page))
         page_remove_from_evict_list(page);
 }
 
@@ -1549,6 +1824,7 @@ codegen_block_init(uint32_t phys_addr)
     codeblock_t *block;
     page_t      *page = &pages[phys_addr >> 12];
 
+    codegen_recording_page(0, phys_addr); /* before any eviction below */
     if (!page->block)
         mem_flush_write_page(phys_addr, cs + cpu_state.pc);
     block = block_free_list_get();
@@ -1591,6 +1867,7 @@ codegen_block_start_recompile(codeblock_t *block)
 {
     page_t *page = &pages[block->phys >> 12];
 
+    codegen_recording_page(0, block->phys);
     if (!page->block)
         mem_flush_write_page(block->phys, cs + cpu_state.pc);
 
@@ -1608,9 +1885,12 @@ codegen_block_start_recompile(codeblock_t *block)
     }
     /*Only blocks whose second chunk is in the same page get versions: writes
       to the next page during the compile are not tracked (recomp_page covers
-      this page only), and a mapping change there can drop page_mask2.*/
+      this page only), and a mapping change there can drop page_mask2.
+      Only with one processor: another one could write the code bytes
+      after they are compared and before mem_flush_write_page() makes its
+      writes to the page seen.*/
     block_version_start_ok = 0;
-    if ((block->flags & CODEBLOCK_BYTE_MASK) && (block->flags & CODEBLOCK_NO_IMMEDIATES) && ((block->pc & 0xfff) < 0xfc0)) {
+    if ((cpu_mp_count == 1) && (block->flags & CODEBLOCK_BYTE_MASK) && (block->flags & CODEBLOCK_NO_IMMEDIATES) && ((block->pc & 0xfff) < 0xfc0)) {
         block_version_start_exec   = block_version_read_chunk(block->phys, block_version_start_code);
         block_version_start_phys_2 = block->phys + 0x40;
         block_version_start_exec_2 = block_version_read_chunk(block_version_start_phys_2, &block_version_start_code[64]);
@@ -1733,6 +2013,12 @@ codegen_block_generate_end_mask_recompile(void)
             if (((*block->dirty_mask2) & block->page_mask2) && !page_in_evict_list(page_2))
                 page_add_to_evict_list(page_2);
 
+            /* From the handshake on, every write any core makes to the page
+               is marked. One made by another processor to these very bytes
+               between their fetch and here is cross-modifying code without
+               the serialisation the architecture asks for (Intel SDM vol. 3,
+               8.1.3); what the executing processor then sees is undefined on
+               the board as well. */
             if (!pages[block->phys_2 >> 12].block_2)
                 mem_flush_write_page(block->phys_2, pc_2);
 
@@ -1845,6 +2131,7 @@ codegen_block_end_recompile(codeblock_t *block)
     codegen_timing_block_end();
     codegen_accumulate(ir_data, ACCREG_cycles, -codegen_block_cycles);
 
+    codegen_list_begin();
     if (block->flags & CODEBLOCK_IN_DIRTY_LIST)
         block_dirty_list_remove(block);
     else
@@ -1853,6 +2140,7 @@ codegen_block_end_recompile(codeblock_t *block)
     block->next_2 = block->prev_2 = BLOCK_INVALID;
     codegen_block_generate_end_mask_recompile();
     add_to_block_list(block);
+    codegen_list_end();
 
     if (!(block->flags & CODEBLOCK_HAS_FPU))
         block->flags &= ~CODEBLOCK_STATIC_TOP;

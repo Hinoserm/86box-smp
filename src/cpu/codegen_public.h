@@ -52,10 +52,12 @@
 #ifdef CODEGEN_CHAIN
 struct page_t;
 /* A write with these masks (mem.c) reached compiled code on the page: the
-   links into the blocks it reached go (codegen_block.c). */
-extern void codegen_page_code_hit(const struct page_t *p, uint64_t mask, int byte_offset, uint64_t bm0, uint64_t bm1);
-/* The whole page was written behind the processor's back. */
-extern void codegen_page_code_drop(const struct page_t *p);
+   links into the blocks it reached go (codegen_block.c). own: the write is
+   the core's own, on its own thread; another core's leaves the links to
+   this core's loop. */
+extern void codegen_page_code_hit(const struct page_t *p, uint64_t mask, int byte_offset, uint64_t bm0, uint64_t bm1, int own);
+/* The whole page was written behind the processors' backs. */
+extern void codegen_page_code_drop(const struct page_t *p, int own);
 /* Every link goes (`owner`: from the dispatcher's side), or translations
    may have changed (all, or the linear page `lin`). */
 extern void codegen_links_drop_all(int owner);
@@ -64,6 +66,12 @@ extern void codegen_links_revalidate_request(int all, uint32_t lin);
 
 extern void codegen_init(void);
 extern void codegen_flush(void);
+
+/* The recompiler reads code from this physical page until
+   codegen_recording_done() (which: the block's first page, 0, or its
+   second, 1): the page's code-page bit stays meanwhile (mem.h). */
+extern void codegen_recording_page(int which, uint32_t phys);
+extern void codegen_recording_done(void);
 
 /*Current physical page of block being recompiled. -1 if no recompilation taking place */
 extern uint32_t recomp_page;
