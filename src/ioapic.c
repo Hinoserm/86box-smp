@@ -1783,8 +1783,17 @@ ioapic_set_intr_masked_locked(void *ioapic, int masked)
     if (dev == NULL)
         return;
 
+    const int was = dev->intr_masked;
+
     dev->intr_masked = !!masked;
     ioapic_wire_intr_update(dev);
+    /* Released, an INTR the 8259 holds reaches the processors again
+       (ioapic_lint0_pic_fallback_pending): their chains leave to look, as
+       for an INTR that goes up (pic.c). */
+    if (was && !masked && pic.int_pending) {
+        for (int i = 0; i < cpu_mp_count; i++)
+            cpu_mp_chain_signal(i);
+    }
 }
 
 void
