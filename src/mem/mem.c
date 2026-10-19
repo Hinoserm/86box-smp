@@ -3104,6 +3104,7 @@ mem_reset(void)
 {
     size_t m;
     uint8_t large_mem = 0;
+    static int ram_guarded = 0;
 
     memset(page_ff, 0xff, sizeof(page_ff));
 
@@ -3124,7 +3125,10 @@ mem_reset(void)
     }
 
     if (ram != NULL) {
-        plat_munmap(ram, ram_size + 16);
+        if (ram_guarded)
+            plat_munmap_guarded(ram, ram_size + 16);
+        else
+            plat_munmap(ram, ram_size + 16);
         ram      = NULL;
         ram_size = 0;
     }
@@ -3133,7 +3137,15 @@ mem_reset(void)
 
     ram_size = m;
     /* Allocate 16 extra bytes of RAM to mitigate some dynarec recompiler memory access quirks. */
-    ram      = (uint8_t *) plat_mmap(ram_size + 16, 0, &large_mem); /* allocate and clear the RAM block */
+    ram_guarded = mem_guard_pages;
+    if (ram_guarded) {
+        /* For finding stray accesses: normal pages between two inaccessible
+           ones, so that running off the block faults where it happens. */
+        ram = (uint8_t *) plat_mmap_guarded(ram_size + 16);
+        if (ram != NULL)
+            pclog("RAM allocated between guard pages at %p\n", (void *) ram);
+    } else
+        ram = (uint8_t *) plat_mmap(ram_size + 16, 0, &large_mem); /* allocate and clear the RAM block */
     if (ram == NULL) {
         fatal("Failed to allocate RAM block. Make sure you have enough RAM available.\n");
         return;

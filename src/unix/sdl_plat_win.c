@@ -262,6 +262,36 @@ plat_munmap(void *ptr, UNUSED(size_t size))
     VirtualFree(ptr, 0, MEM_RELEASE);
 }
 
+/* Memory between two inaccessible pages, for finding stray accesses: one
+   that runs off the pages holding the block faults where it happens,
+   instead of landing in whatever is mapped next. Normal pages only.
+   Returns the start of the block; free it with plat_munmap_guarded(). */
+void *
+plat_mmap_guarded(size_t size)
+{
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    const size_t pg   = si.dwPageSize;
+    const size_t body = (size + pg - 1) & ~(pg - 1);
+    uint8_t     *base = (uint8_t *) VirtualAlloc(NULL, body + 2 * pg, MEM_RESERVE, PAGE_NOACCESS);
+
+    if (base == NULL)
+        return NULL;
+    if (VirtualAlloc(base + pg, body, MEM_COMMIT, PAGE_READWRITE) == NULL) {
+        VirtualFree(base, 0, MEM_RELEASE);
+        return NULL;
+    }
+    return base + pg;
+}
+
+void
+plat_munmap_guarded(void *ptr, UNUSED(size_t size))
+{
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    VirtualFree((uint8_t *) ptr - si.dwPageSize, 0, MEM_RELEASE);
+}
+
 /*
  * Threads
  */

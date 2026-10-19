@@ -220,6 +220,7 @@ extern int      xga_standalone_enabled;     /* (C) video option */
 extern int      da2_standalone_enabled;     /* (C) video option */
 extern uint32_t mem_size;                   /* (C) memory size (Installed on system board) */
 extern uint32_t isa_mem_size;               /* (C) memory size (ISA Memory Cards) */
+extern int      mem_guard_pages;            /* (C) guest RAM between inaccessible pages */
 extern int      cpu;                        /* (C) cpu type */
 extern int      cpu_use_dynarec;            /* (C) cpu uses/needs Dyna */
 extern int      fpu_type;                   /* (C) fpu type */

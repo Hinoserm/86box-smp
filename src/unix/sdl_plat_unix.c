@@ -390,6 +390,36 @@ plat_munmap(void *ptr, size_t size)
     munmap(ptr, size);
 }
 
+/* Memory between two inaccessible pages, for finding stray accesses: one
+   that runs off the pages holding the block faults where it happens,
+   instead of landing in whatever is mapped next. Normal pages only.
+   Returns the start of the block; free it with plat_munmap_guarded() and
+   the same size. */
+void *
+plat_mmap_guarded(size_t size)
+{
+    const size_t pg   = (size_t) sysconf(_SC_PAGESIZE);
+    const size_t body = (size + pg - 1) & ~(pg - 1);
+    uint8_t     *base = (uint8_t *) mmap(0, body + 2 * pg, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
+
+    if (base == (uint8_t *) MAP_FAILED)
+        return NULL;
+    if (mprotect(base + pg, body, PROT_READ | PROT_WRITE)) {
+        munmap(base, body + 2 * pg);
+        return NULL;
+    }
+    return base + pg;
+}
+
+void
+plat_munmap_guarded(void *ptr, size_t size)
+{
+    const size_t pg   = (size_t) sysconf(_SC_PAGESIZE);
+    const size_t body = (size + pg - 1) & ~(pg - 1);
+
+    munmap((uint8_t *) ptr - pg, body + 2 * pg);
+}
+
 /*
  * Threads
  */

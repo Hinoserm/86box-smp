@@ -685,6 +685,59 @@ plat_munmap(void *ptr, size_t size)
 #endif
 }
 
+/* Memory between two inaccessible pages, for finding stray accesses: one
+   that runs off the pages holding the block faults where it happens,
+   instead of landing in whatever is mapped next. Normal pages only.
+   Returns the start of the block; free it with plat_munmap_guarded() and
+   the same size. */
+void *
+plat_mmap_guarded(size_t size)
+{
+#if defined Q_OS_WINDOWS
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    const size_t pg   = si.dwPageSize;
+    const size_t body = (size + pg - 1) & ~(pg - 1);
+    auto        *base = static_cast<uint8_t *>(VirtualAlloc(nullptr, body + 2 * pg, MEM_RESERVE, PAGE_NOACCESS));
+
+    if (base == nullptr)
+        return nullptr;
+    if (VirtualAlloc(base + pg, body, MEM_COMMIT, PAGE_READWRITE) == nullptr) {
+        VirtualFree(base, 0, MEM_RELEASE);
+        return nullptr;
+    }
+    return base + pg;
+#else
+    const size_t pg   = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+    const size_t body = (size + pg - 1) & ~(pg - 1);
+    void        *base = mmap(nullptr, body + 2 * pg, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
+
+    if (base == MAP_FAILED)
+        return nullptr;
+    if (mprotect(static_cast<uint8_t *>(base) + pg, body, PROT_READ | PROT_WRITE) != 0) {
+        munmap(base, body + 2 * pg);
+        return nullptr;
+    }
+    return static_cast<uint8_t *>(base) + pg;
+#endif
+}
+
+void
+plat_munmap_guarded(void *ptr, size_t size)
+{
+#if defined Q_OS_WINDOWS
+    (void) size;
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    VirtualFree(static_cast<uint8_t *>(ptr) - si.dwPageSize, 0, MEM_RELEASE);
+#else
+    const size_t pg   = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+    const size_t body = (size + pg - 1) & ~(pg - 1);
+
+    munmap(static_cast<uint8_t *>(ptr) - pg, body + 2 * pg);
+#endif
+}
+
 extern bool cpu_thread_running;
 
 #ifdef Q_OS_WINDOWS

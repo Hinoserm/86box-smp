@@ -671,6 +671,8 @@ load_machine(void)
     if (mem_size > machine_get_max_ram(machine))
         mem_size = machine_get_max_ram(machine);
 
+    mem_guard_pages = !!ini_section_get_int(cat, "mem_guard_pages", 0);
+
     cpu_use_dynarec = !!ini_section_get_int(cat, "cpu_use_dynarec", 0);
     fpu_softfloat = !!ini_section_get_int(cat, "fpu_softfloat", 0);
     /* The host-x87 FPU runs on softfloat's state and handlers, so it turns
@@ -3556,6 +3558,11 @@ save_machine(void)
     /* Write the mem_size explicitly to the setttings in order to help managers
        to display it without having the actual machine table. */
     ini_section_set_int(cat, "mem_size", mem_size);
+
+    if (mem_guard_pages)
+        ini_section_set_int(cat, "mem_guard_pages", mem_guard_pages);
+    else
+        ini_section_delete_var(cat, "mem_guard_pages");
 
     ini_section_set_int(cat, "cpu_use_dynarec", cpu_use_dynarec);
 

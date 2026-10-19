@@ -196,6 +196,8 @@ int      da2_standalone_enabled                 = 0;              /* (C) video o
 uint32_t mem_size                               = 0;              /* (C) memory size (Installed on
                                                                          system board)*/
 uint32_t isa_mem_size                           = 0;              /* (C) memory size (ISA Memory Cards) */
+int      mem_guard_pages                        = 0;              /* (C) guest RAM between inaccessible
+                                                                         pages, for finding stray accesses */
 int      cpu_use_dynarec                        = 0;              /* (C) cpu uses/needs Dyna */
 int      cpu                                    = 0;              /* (C) cpu type */
 int      fpu_type                               = 0;              /* (C) fpu type */
