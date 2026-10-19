@@ -1013,6 +1013,10 @@ opLOADALL(UNUSED(uint32_t fetchdat))
     loadall_load_segment(0x854, &ldt);
     loadall_load_segment(0x85a, &idt);
     loadall_load_segment(0x860, &tr);
+    /* CS's access rights were loaded outright, the CPL with them: the
+       processor's lookups follow it, as after any other privilege change. */
+    flushmmucache_cpl();
+    oldcpl = CPL;
     CLOCK_CYCLES(195);
     PREFETCH_RUN(195, 1, -1, 51, 0, 0, 0, 0);
     return 0;

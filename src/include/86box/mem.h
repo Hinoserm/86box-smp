@@ -252,6 +252,20 @@ typedef struct mem_tlb_t {
     int        readlnext[2];
     int        writelnext;
     uint8_t    stale; /* MEM_TLB_STALE_* bits another set's flush left */
+    /* The tables above hold what the processor may reach at CPL 0-2; these
+       (a set of which only the tables are used) what it may reach at CPL 3,
+       made when first needed. A privilege change selects the other bank, as
+       a TLB's entries carry the user bit and are checked on each access,
+       where emptying the tables at every ring change -- tens of thousands a
+       second under Windows 2000 -- walked the page tables again each time.
+       Every flush empties both. */
+    struct mem_tlb_t *ubank;
+    uint8_t           in_user; /* the processor's bank: the CPL 3 one */
+    /* The 4 MB regions a walk resolved through a large page since the banks
+       were last emptied: there the processor's TLB holds one entry for the
+       whole region, which INVLPG of any address in it drops, where the
+       tables hold one per 4K page (mem_tlb_invlpg). */
+    uint64_t          large_regions[1024 / 64];
 } mem_tlb_t;
 
 /* Every processor's set, so a flush in one reaches the others (mem.c). */
@@ -268,6 +282,8 @@ extern void       mem_tlb_clear(mem_tlb_t *t);
 extern void       mem_tlb_mark_others(const mem_tlb_t *except, uint8_t level);
 extern void       mem_tlb_select(mem_tlb_t *t);
 extern void       mem_tlb_flush_local(int read_too);
+extern void       mem_tlb_user(int user);
+extern void       mem_tlb_bank_destroy(mem_tlb_t *b);
 
 extern uint8_t *ram;
 extern uint32_t rammask;

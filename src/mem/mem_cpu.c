@@ -131,6 +131,30 @@ mem_get_phys_forget(void)
     get_phys_virt = ~0ULL;
 }
 
+/* Translations that land outside RAM (a frame buffer, a device's
+   registers), which no TLB entry holds: each access to such a page walked
+   the page tables again -- tens of millions a second for a driver drawing
+   into a linear frame buffer. Kept here as a TLB would keep them, until the
+   processor empties its TLB or invalidates a page (a new generation), by
+   linear page and privilege; one made by a write walk (which set the dirty
+   bit) serves writes, any serves reads. This processor's own. */
+#define MEM_MMIO_TLB 64
+static struct {
+    uint32_t gen;
+    uint32_t vpage;
+    uint64_t phys;
+    uint8_t  user;
+    uint8_t  write;
+} mem_mmio_tlb[MEM_MMIO_TLB];
+static uint32_t mem_mmio_tlb_gen = 1;
+
+static void
+mem_mmio_tlb_forget(void)
+{
+    if (!++mem_mmio_tlb_gen)
+        mem_mmio_tlb_gen = 1;
+}
+
 /* The processor's part of a RESET: its own set emptied, and every other
    set when it is next in place. */
 void
@@ -145,6 +169,7 @@ resetreadlookup(void)
     pccache      = 0xffffffff;
     high_page    = 0;
     mem_get_phys_forget();
+    mem_mmio_tlb_forget();
     mmuflush++;
 }
 
@@ -158,35 +183,191 @@ resetreadlookup(void)
 #    define LINKS_REVAL(a, l)
 #endif
 
+/* The bank of a set the processor is using. */
+static inline mem_tlb_t *
+mem_tlb_active(mem_tlb_t *t)
+{
+    return t->in_user ? t->ubank : t;
+}
+
+/* Where every lookup, fill and flush goes: the bank's tables and rings. */
+static void
+mem_tlb_point(mem_tlb_t *b)
+{
+    page_lookup  = b->page_lookup;
+    readlookup2  = b->readlookup2;
+    writelookup2 = b->writelookup2;
+    readlookup   = b->readlookup;
+    writelookup  = b->writelookup;
+    readlnext[0] = b->readlnext[0];
+    readlnext[1] = b->readlnext[1];
+    writelnext   = b->writelnext;
+#ifdef USE_DYNAREC
+    /* Where the ARM64 recompiler's memory routines find the tables. */
+    cpu_state.lookup2_r = readlookup2;
+    cpu_state.lookup2_w = writelookup2;
+#endif
+}
+
+static void
+mem_tlb_keep(mem_tlb_t *b)
+{
+    b->readlnext[0] = readlnext[0];
+    b->readlnext[1] = readlnext[1];
+    b->writelnext   = writelnext;
+}
+
+/* Empty one bank's entries: its write entries, and its read ones too. */
+static void
+mem_tlb_bank_flush(mem_tlb_t *b, int read_too)
+{
+    if (b == NULL)
+        return;
+    for (uint16_t c = 0; c < 512; c++) {
+        if (read_too && (b->readlookup[c] != (int) 0xffffffff)) {
+            b->readlookup2[b->readlookup[c]]           = LOOKUP_INV;
+            b->readlookup2[b->readlookup[c] | 1048576] = LOOKUP_INV;
+            b->readlookup[c]                           = 0xffffffff;
+        }
+        if ((c < 256) && (b->writelookup[c] != (int) 0xffffffff)) {
+            b->page_lookup[b->writelookup[c]]  = NULL;
+            b->writelookup2[b->writelookup[c]] = LOOKUP_INV;
+            b->writelookup[c]                  = 0xffffffff;
+        }
+    }
+}
+
+/* Both banks of the set in place, and the translations kept outside RAM:
+   the processor's entries carry the user bit, so every flush takes both. */
+static void
+mem_tlb_flush_banks(int read_too)
+{
+    mem_mmio_tlb_forget();
+    mem_tlb_bank_flush(mem_tlb_cur, read_too);
+    mem_tlb_bank_flush(mem_tlb_cur->ubank, read_too);
+    if (read_too)
+        memset(mem_tlb_cur->large_regions, 0, sizeof(mem_tlb_cur->large_regions));
+}
+
 /* The TLB emptied, and nothing else. */
 void
 mem_tlb_empty(void)
 {
     mem_get_phys_forget();
+    mem_tlb_flush_banks(1);
+}
+
+/* A walk resolved addr through a large page (4 MB, or 2 MB under PAE). */
+static inline void
+mem_tlb_large(uint32_t addr)
+{
+    mem_tlb_cur->large_regions[addr >> 28] |= 1ULL << ((addr >> 22) & 63);
+}
+
+/* One bank's entries for a linear page. The rings may still name it; a
+   ring slot reused later only invalidates what is already invalid. */
+static void
+mem_tlb_bank_drop_linear(mem_tlb_t *b, uint32_t vpage)
+{
+    if (b == NULL)
+        return;
+    b->readlookup2[vpage]           = LOOKUP_INV;
+    b->readlookup2[vpage | 1048576] = LOOKUP_INV;
+    b->writelookup2[vpage]          = LOOKUP_INV;
+    b->page_lookup[vpage]           = NULL;
+}
+
+/* One bank's entries for every page of a 4 MB region. */
+static void
+mem_tlb_bank_drop_region(mem_tlb_t *b, uint32_t region)
+{
+    if (b == NULL)
+        return;
     for (uint16_t c = 0; c < 512; c++) {
-        if (readlookup[c] != (int) 0xffffffff) {
-            readlookup2[readlookup[c]] = LOOKUP_INV;
-            readlookup2[readlookup[c] | 1048576] = LOOKUP_INV;
-            readlookup[c]              = 0xffffffff;
+        const int v = b->readlookup[c];
+
+        if ((v != (int) 0xffffffff) && (((uint32_t) v >> 10) == region)) {
+            b->readlookup2[v]           = LOOKUP_INV;
+            b->readlookup2[v | 1048576] = LOOKUP_INV;
+            b->readlookup[c]            = 0xffffffff;
         }
-        if ((c < 256) && (writelookup[c] != (int) 0xffffffff)) {
-            page_lookup[writelookup[c]]  = NULL;
-            writelookup2[writelookup[c]] = LOOKUP_INV;
-            writelookup[c]               = 0xffffffff;
+        if (c < 256) {
+            const int w = b->writelookup[c];
+
+            if ((w != (int) 0xffffffff) && (((uint32_t) w >> 10) == region)) {
+                b->page_lookup[w]  = NULL;
+                b->writelookup2[w] = LOOKUP_INV;
+                b->writelookup[c]  = 0xffffffff;
+            }
         }
     }
 }
 
+/* INVLPG: the TLB entry that translates addr goes -- the one 4K page's,
+   or, where a large page mapped it, the whole region's (Pentium Vol. 3,
+   11.3.5; INVLPG) -- in both banks. */
 static void
-mem_tlb_empty_write(void)
+mem_tlb_invlpg(uint32_t addr)
 {
-    for (uint16_t c = 0; c < 256; c++) {
-        if (writelookup[c] != (int) 0xffffffff) {
-            page_lookup[writelookup[c]]  = NULL;
-            writelookup2[writelookup[c]] = LOOKUP_INV;
-            writelookup[c]               = 0xffffffff;
-        }
+    const uint32_t region = addr >> 22;
+    uint64_t      *word   = &mem_tlb_cur->large_regions[region >> 6];
+    const uint64_t bit    = 1ULL << (region & 63);
+
+    mem_get_phys_forget();
+    mem_mmio_tlb_forget();
+    if (*word & bit) {
+        mem_tlb_bank_drop_region(mem_tlb_cur, region);
+        mem_tlb_bank_drop_region(mem_tlb_cur->ubank, region);
+        *word &= ~bit;
+    } else {
+        mem_tlb_bank_drop_linear(mem_tlb_cur, addr >> 12);
+        mem_tlb_bank_drop_linear(mem_tlb_cur->ubank, addr >> 12);
     }
+}
+
+static mem_tlb_t *
+mem_tlb_bank_create(void)
+{
+    mem_tlb_t *b = calloc(1, sizeof(mem_tlb_t));
+
+    if (b == NULL)
+        fatal("mem_tlb_bank_create: out of memory\n");
+    b->page_lookup  = malloc((1 << 20) * sizeof(page_t *));
+    b->readlookup2  = malloc((2 << 20) * sizeof(uintptr_t));
+    b->writelookup2 = malloc((1 << 20) * sizeof(uintptr_t));
+    if ((b->page_lookup == NULL) || (b->readlookup2 == NULL) || (b->writelookup2 == NULL))
+        fatal("mem_tlb_bank_create: out of memory\n");
+    mem_tlb_clear(b);
+    return b;
+}
+
+void
+mem_tlb_bank_destroy(mem_tlb_t *b)
+{
+    if (b == NULL)
+        return;
+    free(b->page_lookup);
+    free(b->readlookup2);
+    free(b->writelookup2);
+    free(b);
+}
+
+/* The processor's privilege is now CPL 3 (user) or not: its other bank. No
+   translation changed and nothing is emptied. */
+void
+mem_tlb_user(int user)
+{
+    mem_tlb_t *t = mem_tlb_cur;
+
+    user = !!user;
+    if (t->in_user == user)
+        return;
+    if (user && (t->ubank == NULL))
+        t->ubank = mem_tlb_bank_create();
+    mem_tlb_keep(mem_tlb_active(t));
+    t->in_user = user;
+    mem_tlb_point(mem_tlb_active(t));
+    mem_get_phys_forget();
 }
 
 /* The set every machine starts with, and the one processor 0 keeps. */
@@ -208,10 +389,7 @@ mem_tlb_current(void)
 void
 mem_tlb_flush_local(int read_too)
 {
-    if (read_too)
-        mem_tlb_empty();
-    else
-        mem_tlb_empty_write();
+    mem_tlb_flush_banks(read_too);
 }
 
 /* Put a set in place: from here every lookup, fill and flush is its. A set
@@ -225,25 +403,12 @@ mem_tlb_select(mem_tlb_t *t)
     /* Another processor's translations: no link holds. */
     LINKS_DROP_OWNED();
 
-    mem_tlb_cur->readlnext[0] = readlnext[0];
-    mem_tlb_cur->readlnext[1] = readlnext[1];
-    mem_tlb_cur->writelnext   = writelnext;
+    mem_tlb_keep(mem_tlb_active(mem_tlb_cur));
 
-    mem_tlb_cur  = t;
-    page_lookup  = t->page_lookup;
-    readlookup2  = t->readlookup2;
-    writelookup2 = t->writelookup2;
-    readlookup   = t->readlookup;
-    writelookup  = t->writelookup;
-    readlnext[0] = t->readlnext[0];
-    readlnext[1] = t->readlnext[1];
-    writelnext   = t->writelnext;
-#ifdef USE_DYNAREC
-    /* Where the ARM64 recompiler's memory routines find the tables. */
-    cpu_state.lookup2_r = readlookup2;
-    cpu_state.lookup2_w = writelookup2;
-#endif
+    mem_tlb_cur = t;
     mem_get_phys_forget();
+    mem_mmio_tlb_forget();
+    mem_tlb_point(mem_tlb_active(t));
 
     pccache  = 0xffffffff;
     pccache2 = (uint8_t *) 0xffffffff;
@@ -302,7 +467,7 @@ flushmmucache_write(void)
 void
 flushmmucache_write_cpu(void)
 {
-    mem_tlb_empty_write();
+    mem_tlb_flush_banks(0);
     mmuflush++;
 }
 
@@ -336,12 +501,14 @@ flushmmucache_nopc_cpu(void)
     mmuflush++;
 }
 
-/* A change of privilege: the lookups made at the old one go. The links
-   hold, as their key carries the CPL (codegen.h CODEGEN_CHAIN_KEY). */
+/* A change of privilege: the lookup tables hold access checks made at the
+   old one, so the other bank is put in place (mem_tlb_user), and no
+   translation changed. The links hold, as their key carries the CPL
+   (codegen.h CODEGEN_CHAIN_KEY). */
 void
 flushmmucache_cpl(void)
 {
-    mem_tlb_empty();
+    mem_tlb_user(CPL == 3);
 }
 
 #if defined(USE_DYNAREC) && defined(CODEGEN_CHAIN)
@@ -367,13 +534,14 @@ mem_link_large_forget(void)
 #endif
 }
 
-/* INVLPG: only the links into blocks on that linear page (or one running
-   onto it) are checked against the page tables -- every link, when one
-   went through a large page in that region. */
+/* INVLPG: that page's entries go (mem_tlb_invlpg), and only the links
+   into blocks on that linear page (or one running onto it) are checked
+   against the page tables -- every link, when one went through a large
+   page in that region. */
 void
 flushmmucache_invlpg(uint32_t addr)
 {
-    mem_tlb_empty();
+    mem_tlb_invlpg(addr);
     mmuflush++;
 #if defined(USE_DYNAREC) && defined(CODEGEN_CHAIN)
     {
@@ -396,6 +564,8 @@ flushmmucache_invlpg(uint32_t addr)
 static void
 mem_tlb_drop_page(mem_tlb_t *t, const page_t *page_target, uint32_t addr)
 {
+    if (t == NULL)
+        return;
     for (uint16_t c = 0; c < 256; c++) {
         const int v = t->writelookup[c];
 
@@ -420,8 +590,10 @@ mem_flush_write_page(uint32_t addr, UNUSED(uint32_t virt))
 {
     const page_t *page_target = &pages[addr >> 12];
 
-    for (int i = 0; i < mem_tlb_count; i++)
+    for (int i = 0; i < mem_tlb_count; i++) {
         mem_tlb_drop_page(mem_tlbs[i], page_target, addr);
+        mem_tlb_drop_page(mem_tlbs[i]->ubank, page_target, addr);
+    }
 }
 
 #define mmutranslate_read(addr)  mmutranslatereal(addr, 0)
@@ -516,6 +688,7 @@ mmutranslatereal_normal(uint32_t addr, int rw)
         }
 
         rammap(addr2) |= (rw ? 0x60 : 0x20);
+        mem_tlb_large(addr);
 
         uint64_t page = temp & ~0x3fffff;
         if (cpu_features & CPU_FEATURE_PSE36)
@@ -599,6 +772,7 @@ mmutranslatereal_pae(uint32_t addr, int rw)
             return 0xffffffffffffffffULL;
         }
         rammap64(addr3) |= (rw ? 0x60 : 0x20);
+        mem_tlb_large(addr);
 
         return ((temp & ~0x1fffffULL) + (addr & 0x1fffffULL)) & 0x000000ffffffffffULL;
     }
@@ -627,14 +801,47 @@ mmutranslatereal_pae(uint32_t addr, int rw)
 uint64_t
 mmutranslatereal(uint32_t addr, int rw)
 {
+    const uint32_t vpage = addr >> 12;
+    const uint8_t  user  = (CPL == 3) && !cpl_override;
+    const int      e     = vpage & (MEM_MMIO_TLB - 1);
+    uint64_t       r;
+
     /* Fast path to return invalid without any call if an exception has occurred beforehand. */
     if (cpu_state.abrt)
         return 0xffffffffffffffffULL;
 
+    /* A supervisor access at CPL 3 (cpl_override) that the CPL 0-2 bank
+       holds: that entry was made by a supervisor walk that set the
+       accessed and dirty bits already, so a walk would find what it did. */
+    if (cpl_override && mem_tlb_cur->in_user) {
+        const mem_tlb_t *s = mem_tlb_cur;
+
+        if (rw) {
+            if (s->page_lookup[vpage] != NULL)
+                return ((uint64_t) (s->page_lookup[vpage] - pages) << 12) | (addr & 0xfff);
+            if (s->writelookup2[vpage] != (uintptr_t) LOOKUP_INV)
+                return (uint64_t) (s->writelookup2[vpage] + addr - (uintptr_t) ram);
+        } else if (s->readlookup2[vpage] != (uintptr_t) LOOKUP_INV)
+            return (uint64_t) (s->readlookup2[vpage] + addr - (uintptr_t) ram);
+    }
+
+    if ((mem_mmio_tlb[e].gen == mem_mmio_tlb_gen) && (mem_mmio_tlb[e].vpage == vpage) &&
+        (mem_mmio_tlb[e].user == user) && (mem_mmio_tlb[e].write || !rw))
+        return mem_mmio_tlb[e].phys | (addr & 0xfff);
+
     if (cr4 & CR4_PAE)
-        return mmutranslatereal_pae(addr, rw);
+        r = mmutranslatereal_pae(addr, rw);
     else
-        return mmutranslatereal_normal(addr, rw);
+        r = mmutranslatereal_normal(addr, rw);
+
+    if ((r != 0xffffffffffffffffULL) && ((size_t) (r & ~0xfffULL) >= mem_ram_size())) {
+        mem_mmio_tlb[e].gen   = mem_mmio_tlb_gen;
+        mem_mmio_tlb[e].vpage = vpage;
+        mem_mmio_tlb[e].phys  = r & ~0xfffULL;
+        mem_mmio_tlb[e].user  = user;
+        mem_mmio_tlb[e].write = !!rw;
+    }
+    return r;
 }
 
 /* This is needed because the old recompiler calls this to check for page fault. */
@@ -673,6 +880,7 @@ mmutranslate_noabrt_normal(uint32_t addr, int rw)
         uint64_t page = temp & ~0x3fffff;
         if (cpu_features & CPU_FEATURE_PSE36)
             page |= (uint64_t) (temp & 0x1e000) << 19;
+        mem_tlb_large(addr); /* a fill may follow (get_phys_noabrt) */
         return page + (addr & 0x3fffff);
     }
 
@@ -715,6 +923,7 @@ mmutranslate_noabrt_pae(uint32_t addr, int rw)
         if (((CPL == 3) && !(temp & 4) && !cpl_override) || (rw && !(temp & 2) && (((CPL == 3) && !cpl_override) || ((is486 || isibm486) && (cr0 & WP_FLAG)))))
             return 0xffffffffffffffffULL;
 
+        mem_tlb_large(addr); /* a fill may follow (get_phys_noabrt) */
         return ((temp & ~0x1fffffULL) + (addr & 0x1fffff)) & 0x000000ffffffffffULL;
     }
 
@@ -808,8 +1017,45 @@ mmu_link_translate(uint32_t addr)
 }
 #endif
 
-void
-addreadlookup(uint32_t virt, uint32_t phys)
+/* Whether code at CPL 3 may make this access (a write when rw) to the
+   linear page: user on every level, and writable on every level for a
+   write. Present pages only; it sets nothing and raises nothing. */
+static int
+mem_tlb_user_may(uint32_t addr, int rw)
+{
+    const uint32_t need = rw ? 6 : 4;
+
+    if (!(cr0 >> 31))
+        return 1;
+    if (cr4 & CR4_PAE) {
+        const uint64_t pdpte = pae_pdpte[(addr >> 30) & 3];
+        uint64_t       pde;
+        uint64_t       pte;
+
+        if (!(pdpte & 1))
+            return 0;
+        pde = rammap64((pdpte & 0x000000fffffff000ULL) + ((addr >> 18) & 0xff8));
+        if (!(pde & 1))
+            return 0;
+        if (pde & 0x80)
+            return (pde & need) == need;
+        pte = rammap64((pde & 0x000000fffffff000ULL) + ((addr >> 9) & 0xff8));
+        return (pte & 1) && ((pde & pte & need) == need);
+    } else {
+        const uint32_t pde = rammap((cr3 & ~0xfff) + ((addr >> 20) & 0xffc));
+        uint32_t       pte;
+
+        if (!(pde & 1))
+            return 0;
+        if ((pde & 0x80) && (cr4 & CR4_PSE))
+            return (pde & need) == need;
+        pte = rammap((pde & ~0xfff) + ((addr >> 10) & 0xffc));
+        return (pte & 1) && ((pde & pte & need) == need);
+    }
+}
+
+static void
+addreadlookup_bank(uint32_t virt, uint32_t phys)
 {
     uint32_t large_offset = is_compare ? 1048576 : 0;
     uint32_t small_offset = is_compare ? 256 : 0;
@@ -842,8 +1088,28 @@ addreadlookup(uint32_t virt, uint32_t phys)
     cycles -= 9;
 }
 
+/* A fill goes into the bank of the privilege its walk was made at. A
+   supervisor access at CPL 3 (a descriptor table, the TSS: cpl_override)
+   walks as CPL 0: to a page CPL 3 code may itself reach that way, its
+   entry is as good for CPL 3 and goes into that bank; to any other, into
+   the CPL 0-2 bank, where CPL 3 code never looks, and the next such access
+   finds it there (mmutranslatereal) instead of walking again. */
 void
-addwritelookup(uint32_t virt, uint32_t phys)
+addreadlookup(uint32_t virt, uint32_t phys)
+{
+    if (cpl_override && (CPL == 3) && !mem_tlb_user_may(virt, 0)) {
+        mem_tlb_user(0);
+        addreadlookup_bank(virt, phys);
+        mem_tlb_user(1);
+        return;
+    }
+    if (mem_tlb_cur->in_user != (CPL == 3))
+        mem_tlb_user(CPL == 3);
+    addreadlookup_bank(virt, phys);
+}
+
+static void
+addwritelookup_bank(uint32_t virt, uint32_t phys)
 {
     if (virt == 0xffffffff)
         return;
@@ -854,7 +1120,9 @@ addwritelookup(uint32_t virt, uint32_t phys)
     if (x86_idle_watch)
         return;
 
-    if (page_lookup[virt >> 12])
+    /* Already there, either way a page is entered: a second fill would
+       evict another page's entry and leave the ring two slots for one. */
+    if (page_lookup[virt >> 12] || (writelookup2[virt >> 12] != LOOKUP_INV))
         return;
 
     if (writelookup[writelnext] != -1) {
@@ -879,6 +1147,21 @@ addwritelookup(uint32_t virt, uint32_t phys)
     writelnext &= (cachesize - 1);
 
     cycles -= 9;
+}
+
+/* As addreadlookup. */
+void
+addwritelookup(uint32_t virt, uint32_t phys)
+{
+    if (cpl_override && (CPL == 3) && !mem_tlb_user_may(virt, 1)) {
+        mem_tlb_user(0);
+        addwritelookup_bank(virt, phys);
+        mem_tlb_user(1);
+        return;
+    }
+    if (mem_tlb_cur->in_user != (CPL == 3))
+        mem_tlb_user(CPL == 3);
+    addwritelookup_bank(virt, phys);
 }
 
 uint8_t *

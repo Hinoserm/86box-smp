@@ -178,6 +178,9 @@ mem_tlb_clear(mem_tlb_t *t)
     t->readlnext[1] = 0;
     t->writelnext   = 0;
     t->stale        = 0;
+    memset(t->large_regions, 0, sizeof(t->large_regions));
+    if (t->ubank != NULL)
+        mem_tlb_clear(t->ubank);
 }
 
 /* A set joins the ones every flush reaches. */
@@ -230,6 +233,7 @@ mem_tlb_destroy(mem_tlb_t *t)
         }
     }
 
+    mem_tlb_bank_destroy(t->ubank);
     free(t->page_lookup);
     free(t->readlookup2);
     free(t->writelookup2);
