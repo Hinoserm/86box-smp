@@ -590,24 +590,6 @@ update_tsc(void)
 #    endif
 }
 
-/* The instruction about to be recorded starts on a byte the guest keeps
-   rewriting (codegen_hot_byte): the block ends before it. */
-static __inline int
-exec386_next_is_hot(uint32_t start_pc, uint32_t start_phys)
-{
-    const uint32_t next = cs + cpu_state.pc;
-    uint32_t       phys;
-
-    if (!((next ^ start_pc) & ~0xfff))
-        phys = start_phys + (next - start_pc);
-    else {
-        phys = get_phys_noabrt(next);
-        if (phys == 0xffffffff)
-            return 0;
-    }
-    return codegen_hot_byte(phys);
-}
-
 static __inline void
 exec386_dynarec_int(void)
 {
@@ -1200,13 +1182,6 @@ exec386_dynarec_dyn(void)
                 CHAIN_EVEN_END();
             }
 
-            /* The next instruction starts on a byte the guest keeps
-               rewriting: the block ends before it, which is interpreted. */
-            if (!cpu_block_end && exec386_next_is_hot(start_pc, phys_addr)) {
-                CPU_BLOCK_END();
-                CHAIN_EVEN_END();
-            }
-
             /* INIT, SMI, NMI and an interrupt end the block where the loop
                takes them, and say nothing about the next time it runs: each
                breaks a chain when it comes (the signal word), which a link
@@ -1382,8 +1357,6 @@ exec386_dynarec_dyn(void)
                    2 pages. In practice this limit will never be
                    hit, as host block size is only 2kB */
             if (((cs + cpu_state.pc) - start_pc) >= max_block_size)
-                CPU_BLOCK_END();
-            if (!cpu_block_end && exec386_next_is_hot(start_pc, phys_addr))
                 CPU_BLOCK_END();
 
             if (cpu_init)

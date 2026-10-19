@@ -683,6 +683,7 @@ codegen_generate_call(uint8_t opcode, OpFn op, uint32_t fetchdat, uint32_t new_p
     uint32_t     next_pc            = 0;
     uint16_t     op87               = 0x0000;
     uint32_t     fetchdat_pc;
+    int          hot;
 #ifdef CODEGEN_CHAIN
     int is_pause = 0;
 #endif
@@ -917,6 +918,32 @@ generate_call:
     codegen_instructions[block->ins].TOP       = cpu_state.TOP;
     codegen_instructions[block->ins].first_uop = ir->wr_pos;
 
+    /*An instruction starting on a byte the guest keeps rewriting
+      (codegen_hot_byte), read from guest memory as the block runs: the
+      block leaves before it when that byte is no longer the one compiled,
+      as at a taken branch, with the cycles so far counted, and the
+      dispatcher interprets what is there. The byte is not marked as code,
+      so the writes leave the block be. On the block's first page only,
+      where the byte can be read through a pointer bound now, and not as
+      the block's first instruction (marked as this block was found, the
+      dispatcher not yet interpreting it), which is all it may hold.*/
+    hot = 0;
+    if (((cs + old_pc) != block->pc) && !(((cs + old_pc) ^ block->pc) & ~0xfff)) {
+        if (codegen_hot_byte(block->phys + ((cs + old_pc) - block->pc))) {
+            int jump_uop;
+
+            hot = 1;
+            codegen_accumulate(ir, ACCREG_cycles, -codegen_block_cycles);
+            codegen_block_cycles = 0;
+            codegen_accumulate_flush(ir);
+            uop_MOVZX_REG_PTR_8(ir, IREG_temp3, get_ram_ptr(cs + old_pc));
+            jump_uop = uop_CMP_IMM_JZ_DEST(ir, IREG_temp3, fastreadb(cs + old_pc));
+            uop_MOV_IMM(ir, IREG_pc, old_pc);
+            uop_JMP(ir, codegen_exit_rout);
+            uop_set_jump_dest(ir, jump_uop);
+        }
+    }
+
     codegen_timing_opcode(opcode, fetchdat, op_32, op_pc);
 
 #ifdef CODEGEN_CHAIN
@@ -1012,7 +1039,10 @@ generate_call:
     /*The prefixes and the opcode; an x87 escape's ModR/M too, as op_pc is
       already past it (pc_off is -1 for those only while op_pc is moved back
       to the ModR/M for the EA below)*/
-    codegen_mark_code_present(block, cs + old_pc, op_pc - old_pc);
+    if (hot) /*all but the rewritten byte*/
+        codegen_mark_code_present(block, cs + old_pc + 1, op_pc - old_pc - 1);
+    else
+        codegen_mark_code_present(block, cs + old_pc, op_pc - old_pc);
     /* Every escape stores its opcode, D8 00 (FADD m32 by [BX+SI] or [EAX])
        included: the handlers and the FERR# checks read it */
     if (is_fpu) {
