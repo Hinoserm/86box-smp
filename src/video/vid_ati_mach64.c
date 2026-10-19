@@ -3669,7 +3669,10 @@ mach64vt2_init(const device_t *info)
     mach64_vt_pll_reset(mach64);
 
     ati_eeprom_load(&mach64->eeprom, "mach64vt.nvr", 1);
-    rom_init(&mach64->bios_rom, BIOS_ROMVT2_PATH, 0xc0000, 0x8000, 0x7fff, 0, MEM_MAPPING_EXTERNAL);
+    /* On a motherboard the video BIOS is in the system BIOS's flash, and
+       the system BIOS puts it in place itself. */
+    if (!(info->local & MACH64_FLAG_ONBOARD))
+        rom_init(&mach64->bios_rom, BIOS_ROMVT2_PATH, 0xc0000, 0x8000, 0x7fff, 0, MEM_MAPPING_EXTERNAL);
     mem_mapping_disable(&mach64->bios_rom.mapping);
 
     svga->vblank_start = mach64_vblank_start;
@@ -4185,6 +4188,29 @@ static const device_config_t mach64vt2_config[] = {
     { .name = "", .description = "", .type = CONFIG_END }
 };
 
+/* On a motherboard: the Acer X3 has 1 MB fitted and room for 2 (X3
+   System Service Guide, 1-23). */
+static const device_config_t mach64vt2_onboard_config[] = {
+    // clang-format off
+    {
+        .name           = "memory",
+        .description    = "Memory size",
+        .type           = CONFIG_SELECTION,
+        .default_string = NULL,
+        .default_int    = 1,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = {
+            { .description = "1 MB", .value = 1 },
+            { .description = "2 MB", .value = 2 },
+            { .description = ""                 }
+        },
+        .bios           = { { 0 } }
+    },
+    { .name = "", .description = "", .type = CONFIG_END }
+    // clang-format on
+};
+
 static const device_config_t mach64gtb_config[] = {
     {
         .name           = "memory",
@@ -4406,6 +4432,23 @@ const device_t mach64vt2_device = {
     .speed_changed = mach64_speed_changed,
     .force_redraw  = mach64_force_redraw,
     .config        = mach64vt2_config,
+    .debug_dump    = mach64_debug_dump
+};
+
+const device_t mach64vt2_onboard_device = {
+    .name          = "ATI Mach64VT2 (On-Board)",
+    .internal_name = "mach64vt2_onboard",
+    .flags         = DEVICE_PCI,
+    /* The Acer X3's: no IRQ connected (service guide), and its BIOS's
+       routing table gives device 0Ch no INT line, so the strap is off. */
+    .local         = MACH64_VT2 | MACH64_FLAG_ONBOARD | MACH64_FLAG_NO_INT,
+    .init          = mach64vt2_init,
+    .close         = mach64_close,
+    .reset         = mach64_reset,
+    .available     = NULL,
+    .speed_changed = mach64_speed_changed,
+    .force_redraw  = mach64_force_redraw,
+    .config        = mach64vt2_onboard_config,
     .debug_dump    = mach64_debug_dump
 };
 
