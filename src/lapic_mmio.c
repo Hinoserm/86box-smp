@@ -240,16 +240,23 @@ lapic_mmio_current_target(lapic_mmio_device_t *dev, uint32_t addr, uint32_t *reg
     if ((dev == NULL) || (dev->lapics == NULL))
         return NULL;
 
+    /* The window is the processor's own: on a P6 "the APIC handles all
+       memory accesses to addresses within the 4-KByte APIC register space
+       and no external bus cycles are produced" (Intel Architecture Vol. 3,
+       243192, 7.5.7). A bus master's access at that address reaches no
+       APIC. */
+    if (mem_bus_master_access())
+        return NULL;
+
     lapic = lapic_current(dev->lapics, dev->active_count,
                           dev->current_index, dev->current_index_priv);
     if (lapic == NULL)
         return NULL;
 
     /* "For each processor they have an identical address space of 4 KBytes
-       starting at address FEE00000H" (Intel Architecture Vol. 3, 243192,
-       7.5.7): a processor reaches only its own APIC, at its own APIC_BASE,
-       while that is enabled; another processor's window moved elsewhere is
-       not an APIC to it. */
+       starting at address FEE00000H" (7.5.7): a processor reaches only its
+       own APIC, at its own APIC_BASE, while that is enabled; another
+       processor's window moved elsewhere is not an APIC to it. */
     if (((addr - lapic_mmio_base(lapic)) >= LAPIC_MMIO_SIZE) ||
         !cpu_lapic_mmio_mapping_enabled_index(lapic->index))
         return NULL;
