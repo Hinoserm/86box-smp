@@ -43,6 +43,7 @@ extern void cpu_thread_split_begin(void);
 extern void cpu_thread_split_end(void);
 extern void cpu_thread_tick(void);
 extern void cpu_thread_main_poll(void);
+extern void cpu_thread_drain_all(void);
 extern void cpu_thread_machine_attn(void);
 
 /* The processors' side of it (cpu_mp.c). */

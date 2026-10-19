@@ -71,6 +71,18 @@ extern int  cpu_mp_next_slice_us(void);
    the bus (mem_split_lock_take). */
 extern void cpu_mp_hold_others(void);
 extern void cpu_mp_release_others(void);
+
+/* Before the first processor's own access to a device: the others' posted
+   writes reach the devices first. With no other processor on a thread of
+   its own, nothing: no call on every device access of one processor. */
+extern int  cpu_mp_ap_threads;
+extern void cpu_mp_drain_posted_all(void);
+static inline void
+cpu_mp_drain_posted(void)
+{
+    if (cpu_mp_ap_threads)
+        cpu_mp_drain_posted_all();
+}
 extern void cpu_mp_split_begin(void);
 extern void cpu_mp_split_end(void);
 

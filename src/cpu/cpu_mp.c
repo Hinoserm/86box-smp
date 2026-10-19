@@ -463,6 +463,19 @@ cpu_mp_state_image(int index, uint8_t *img)
         memcpy(img, cpu_mp_ctx[index].blob, cpu_mp_blob_size);
 }
 
+/* Other processors running on threads of their own (cpu_thread.c). */
+int cpu_mp_ap_threads = 0;
+
+/* Before the first processor's own access to a device: the others'
+   posted writes land first (cpu_thread_drain_all). */
+void
+cpu_mp_drain_posted_all(void)
+{
+#ifdef CPU_MP_SECOND_CORE
+    cpu_thread_drain_all();
+#endif
+}
+
 /* The machine's thread rebuilds tables the others read: those on threads
    of their own stay out until it is done. */
 void

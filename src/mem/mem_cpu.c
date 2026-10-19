@@ -40,6 +40,7 @@
 #include <86box/io.h>
 #include <86box/mem.h>
 #include <86box/thread.h> /* thread_spin_pause */
+#include <86box/cpu_mp.h>
 #include <86box/plat.h>
 #include <86box/rom.h>
 #include <86box/gdbstub.h>
@@ -129,12 +130,22 @@ mem_cpu_ram_wl(uint32_t a, uint32_t v)
 #    define MAP_WRITE_W(m, a, v) (((m)->write_w == mem_write_ramw) ? mem_cpu_ram_ww((a), (v)) : cpu_ap_map_write_w((m), (a), (v)))
 #    define MAP_WRITE_L(m, a, v) (((m)->write_l == mem_write_raml) ? mem_cpu_ram_wl((a), (v)) : cpu_ap_map_write_l((m), (a), (v)))
 #else
-#    define MAP_READ_B(m, a)     (m)->read_b((a), (m)->priv)
-#    define MAP_READ_W(m, a)     (m)->read_w((a), (m)->priv)
-#    define MAP_READ_L(m, a)     (m)->read_l((a), (m)->priv)
-#    define MAP_WRITE_B(m, a, v) (m)->write_b((a), (v), (m)->priv)
-#    define MAP_WRITE_W(m, a, v) (m)->write_w((a), (v), (m)->priv)
-#    define MAP_WRITE_L(m, a, v) (m)->write_l((a), (v), (m)->priv)
+/* The first processor's own access to anything but RAM: the other
+   processors' posted writes reach the devices first (cpu_mp_drain_posted).
+   A function, so two accesses in one expression (a word read as two
+   bytes) are sequenced. */
+static inline void
+mem_cpu_device_access(void)
+{
+    cpu_mp_drain_posted();
+}
+#    define MAP_DEVICE(h, r)     (((h) != (r)) ? mem_cpu_device_access() : (void) 0)
+#    define MAP_READ_B(m, a)     (MAP_DEVICE((m)->read_b, mem_read_ram), (m)->read_b((a), (m)->priv))
+#    define MAP_READ_W(m, a)     (MAP_DEVICE((m)->read_w, mem_read_ramw), (m)->read_w((a), (m)->priv))
+#    define MAP_READ_L(m, a)     (MAP_DEVICE((m)->read_l, mem_read_raml), (m)->read_l((a), (m)->priv))
+#    define MAP_WRITE_B(m, a, v) (MAP_DEVICE((m)->write_b, mem_write_ram), (m)->write_b((a), (v), (m)->priv))
+#    define MAP_WRITE_W(m, a, v) (MAP_DEVICE((m)->write_w, mem_write_ramw), (m)->write_w((a), (v), (m)->priv))
+#    define MAP_WRITE_L(m, a, v) (MAP_DEVICE((m)->write_l, mem_write_raml), (m)->write_l((a), (v), (m)->priv))
 #endif
 
 /* IN530 INIT reset path. */

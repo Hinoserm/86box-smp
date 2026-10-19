@@ -550,6 +550,34 @@ cpu_thread_drain(int index)
     return 1;
 }
 
+/* The machine's thread, before the first processor's own access to a
+   device (memory that is not RAM, mem_cpu.c; a port, io.c): what the
+   others posted reaches the devices first, as a PCI bridge's posted writes
+   go ahead of a later access through it. Two processors' driver sharing a
+   device under a lock -- a command FIFO fed from both -- would otherwise
+   find the first's packets landing before the second's earlier ones. */
+void
+cpu_thread_drain_all(void)
+{
+    int i;
+
+    /* Nothing posted, nothing to do: looked at before the thread-local
+       variables below, which cost a call each on some hosts. */
+    for (i = 1; i < CPU_MP_MAX; i++)
+        if (cpu_aps[i].core && (__atomic_load_n(&cpu_aps[i].posted_head, __ATOMIC_RELAXED) !=
+                                __atomic_load_n(&cpu_aps[i].posted_tail, __ATOMIC_RELAXED)))
+            break;
+    if (i == CPU_MP_MAX)
+        return;
+    /* The machine's thread only: a device's own thread (a video card's
+       FIFO) reaching memory leaves the rings to it. */
+    if (cpu_thread_self_index || !is_cpu_thread)
+        return;
+    for (i = 1; i < CPU_MP_MAX; i++)
+        if (cpu_aps[i].core)
+            (void) cpu_thread_drain(i);
+}
+
 /* Serve whatever the others have asked for, their posted writes first;
    answers whether anything was. */
 static int
@@ -1656,6 +1684,7 @@ cpu_thread_start(int index, const cpu_core_ops_t *core)
         return 0;
     }
     cpu_ap_started++;
+    cpu_mp_ap_threads = cpu_ap_started;
     pclog("CPU MP: processor %i runs on a thread of its own, beside the first\n", index);
     return 1;
 }
@@ -1682,6 +1711,7 @@ cpu_thread_stop(void)
 #endif
         ap->handle = NULL;
         cpu_ap_started--;
+        cpu_mp_ap_threads = cpu_ap_started;
         pclog("CPU MP: processor %i's thread has stopped\n", i);
     }
     for (int i = 1; i < CPU_MP_MAX; i++) {
