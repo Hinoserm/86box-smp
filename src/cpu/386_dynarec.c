@@ -880,7 +880,10 @@ exec386_dynarec_dyn(void)
             if (!held && link_stub && (block->pc == link_pc) && (block->_cs == link_cs) && (codegen_chain_gen == link_gen) &&
                 block->head_mem_block && !(block->flags & CODEBLOCK_IN_DIRTY_LIST) && exec386_chain_still_clean(block)) {
                 /* Into its group first, which may move its generation. */
-                (void) codegen_chain_patch(link_stub, block, codegen_links_note(block, target_gen));
+                const uint64_t gen = codegen_links_note(block, target_gen);
+
+                if (gen != codegen_link_unlinked)
+                    (void) codegen_chain_patch(link_stub, block, gen);
             }
             if (!held && ind_fill && (block->pc == link_pc) && (block->_cs == link_cs) && (codegen_chain_gen == link_gen) &&
                 block->head_mem_block && !(block->flags & CODEBLOCK_IN_DIRTY_LIST) && exec386_chain_still_clean(block))

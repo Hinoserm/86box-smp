@@ -153,7 +153,8 @@ extern int codegen_chain_patch(uint8_t *stub, codeblock_t *target, uint64_t gen)
 /*Links into a block, kept exact (codegen_block.c):
   - note: a link or indirect entry to `block` is about to be made, under
     the generation `gen` read before its code was found clean; answers
-    the generation to make it under;
+    the generation to make it under, or codegen_link_unlinked when none
+    may be made;
   - drop: every link into `block` goes (from anywhere);
   - drop_all: every link goes (`owner`: from the dispatcher's side, which
     also empties the link lists; else from anywhere, generations only);

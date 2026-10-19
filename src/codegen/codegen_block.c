@@ -508,17 +508,28 @@ codegen_links_note(codeblock_t *block, uint64_t gen)
     const uint32_t pg     = block->pc & ~0xfff;
     const int32_t  g      = block->link_group;
     const int      linked = !!(__atomic_load_n(&codegen_link_targets[nr >> 6], __ATOMIC_SEQ_CST) & (1ULL << (nr & 63)));
+    const int      cpl3   = (cpu_state.seg_cs.access & 0x60) == 0x60;
     uint64_t       pte;
     uint64_t       pte2;
+
+    pte  = mmu_link_translate(pg);
+    pte2 = codegen_link_spans(block) ? mmu_link_translate(pg + 0x1000) : 0;
+
+    /* At CPL 3, only to pages the walk gives user code. Another processor
+       may have taken the user bit away, its INVLPG for this one still to
+       come: this one runs on from its TLB until then, as a board's would,
+       but a link made now would outlive the INVLPG, as a revalidation
+       checks that the bit is as the link was made under, not that it is
+       set. */
+    if (cpl3 && (!(pte & 2) || (codegen_link_spans(block) && !(pte2 & 2))))
+        return codegen_link_unlinked;
 
     /* A page's user bit matters only to links made at CPL 3 (the key keeps
        them apart); once one is, it matters until the block's links all go.
        Paging turned on and off -- a boot loader's BIOS calls -- makes it
        flip for supervisor code, which otherwise loses every link. */
-    if ((cpu_state.seg_cs.access & 0x60) == 0x60)
+    if (cpl3)
         block->link_cpl3 = 1;
-    pte  = mmu_link_translate(pg);
-    pte2 = codegen_link_spans(block) ? mmu_link_translate(pg + 0x1000) : 0;
     if (!block->link_cpl3) {
         pte &= ~2ULL;
         pte2 &= ~2ULL;
@@ -775,7 +786,9 @@ codegen_ind_fill(codeblock_t *block, uint64_t gen)
 {
     codegen_ind_t *e = &codegen_ind_cache[codegen_ind_hash(block->pc)];
 
-    gen           = codegen_links_note(block, gen);
+    gen = codegen_links_note(block, gen);
+    if (gen == codegen_link_unlinked)
+        return; /* no link may be made to it now */
     e->pc         = block->pc;
     e->cs_base    = block->_cs;
     e->status     = CODEGEN_CHAIN_KEY();
