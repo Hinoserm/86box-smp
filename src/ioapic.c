@@ -58,6 +58,12 @@ typedef struct ioapic_t {
     uint8_t  pins;
     uint8_t  smi_pin; /* 0xff: none */
     uint8_t  is_esc;
+    /* A second I/O APIC on the board (an SIO.A on a peer PCI bus): it
+       shares the first's local APICs, takes the EOIs they broadcast, and
+       has only the inputs its board wires to it (ioapic_secondary_line);
+       nothing of the 8259, the MP table or the processors is its. */
+    uint8_t  secondary;
+    uint8_t  mapped;
     /* The host bridge in front of it forwards only a range of the APIC
        space to its bus (the 450GX's APICR): outside it, or with it
        disabled, the processors do not reach the window. No gate: always. */
@@ -143,6 +149,10 @@ typedef struct ioapic_t {
 #define IOAPIC_DELIVERY_EXTINT IOAPIC_82093AA_DELIVERY_EXTINT
 
 static ioapic_t *ioapic_global;
+
+/* The board's other I/O APICs (ioapic_secondary_device). */
+#define IOAPIC_SECONDARY_MAX 4
+static ioapic_t *ioapic_secondaries[IOAPIC_SECONDARY_MAX];
 
 static void ioapic_lapic_reset(ioapic_t *dev);
 static int  ioapic_chip_state_save(ioapic_t *dev, ioapic_state_t *state);
@@ -584,7 +594,7 @@ ioapic_retry_pending_transaction(ioapic_t *dev)
 }
 
 /* A local APIC became able to take what it refused (enabled, addressed
-   anew): the I/O APIC's refused messages go again. */
+   anew): the I/O APICs' refused messages go again. */
 static void
 ioapic_retry_deliveries_locked(void)
 {
@@ -592,6 +602,9 @@ ioapic_retry_deliveries_locked(void)
 
     if ((dev != NULL) && dev->uniprocessor_apic && dev->ioapic_send_pending)
         ioapic_retry_pending_transaction(dev);
+    for (int i = 0; i < IOAPIC_SECONDARY_MAX; i++)
+        if ((ioapic_secondaries[i] != NULL) && ioapic_secondaries[i]->ioapic_send_pending)
+            ioapic_retry_pending_transaction(ioapic_secondaries[i]);
 }
 
 void
@@ -1283,10 +1296,15 @@ ioapic_eoi(ioapic_t *dev, uint8_t vector)
     }
 }
 
+/* An EOI message goes out on the APIC bus to every I/O APIC (82093AA
+   3.2.4 bit 14 matches it by vector): the board's others hear it too. */
 static void
 ioapic_lapic_eoi_adapter(void *priv, uint8_t vector)
 {
     ioapic_eoi((ioapic_t *) priv, vector);
+    for (int i = 0; i < IOAPIC_SECONDARY_MAX; i++)
+        if (ioapic_secondaries[i] != NULL)
+            ioapic_eoi(ioapic_secondaries[i], vector);
 }
 
 static void
@@ -1299,6 +1317,9 @@ ioapic_lapic_icr_write_adapter(void *priv, uint32_t val)
 
     apic_platform_lapic_icr_write(dev->apic, val);
     ioapic_retry_pending_transaction(dev);
+    for (int i = 0; i < IOAPIC_SECONDARY_MAX; i++)
+        if (ioapic_secondaries[i] != NULL)
+            ioapic_retry_pending_transaction(ioapic_secondaries[i]);
 }
 
 static void
@@ -1665,7 +1686,7 @@ ioapic_apply_mapping(ioapic_t *dev)
 {
     int decoded;
 
-    if (!dev->uniprocessor_apic)
+    if (!dev->uniprocessor_apic || dev->secondary)
         return;
     decoded = !dev->gate_on ||
               (dev->gate_open && (dev->mmio_base >= dev->gate_lo) &&
@@ -1705,7 +1726,7 @@ ioapic_set_host_decode_locked(void *ioapic, uint32_t lo, uint32_t hi, int open)
 {
     ioapic_t *dev = (ioapic_t *) ioapic;
 
-    if (dev == NULL)
+    if ((dev == NULL) || dev->secondary)
         return;
     dev->gate_on   = 1;
     dev->gate_open = !!open;
@@ -1934,6 +1955,164 @@ ioapic_init(const device_t *info)
     apic_unlock();
     return ret_;
 }
+
+/* ---- a second I/O APIC --------------------------------------------------- */
+
+static void
+ioapic_secondary_reset_locked(void *priv)
+{
+    ioapic_t *dev = (ioapic_t *) priv;
+
+    dev->ioapic_id            = IOAPIC_ID_RESET;
+    dev->ioapic_index         = 0;
+    dev->ioapic_arb_id        = 0;
+    dev->ioapic_pin_lines     = 0;
+    dev->ioapic_pin_raw_lines = 0;
+    dev->ioapic_pin_level     = 0;
+    dev->wire_legacy = dev->wire_pci = dev->wire_intr = 0;
+    dev->lowest_priority_next = 0;
+    ioapic_reset_redir(dev);
+}
+
+static void
+ioapic_secondary_reset(void *priv)
+{
+    apic_lock();
+    ioapic_secondary_reset_locked(priv);
+    apic_unlock();
+}
+
+static void
+ioapic_secondary_close_locked(void *priv)
+{
+    ioapic_t *dev = (ioapic_t *) priv;
+
+    for (int i = 0; i < IOAPIC_SECONDARY_MAX; i++)
+        if (ioapic_secondaries[i] == dev)
+            ioapic_secondaries[i] = NULL;
+    free(dev);
+}
+
+static void
+ioapic_secondary_close(void *priv)
+{
+    apic_lock();
+    ioapic_secondary_close_locked(priv);
+    apic_unlock();
+}
+
+/* Added after the board's first I/O APIC, whose local APICs it uses. Its
+   window starts unmapped: the board places it (ioapic_secondary_map). Its
+   register file is the ESC's and the SIO.A's: sixteen pins, version
+   000F0011h, no SMI# input, a 1 Kbyte window. */
+static void *
+ioapic_secondary_init_locked(UNUSED(const device_t *info))
+{
+    ioapic_t *dev = (ioapic_t *) calloc(1, sizeof(ioapic_t));
+    int       i;
+
+    if ((dev == NULL) || (ioapic_global == NULL)) {
+        free(dev);
+        return NULL;
+    }
+    for (i = 0; (i < IOAPIC_SECONDARY_MAX) && (ioapic_secondaries[i] != NULL); i++)
+        ;
+    if (i == IOAPIC_SECONDARY_MAX) {
+        free(dev);
+        return NULL;
+    }
+
+    dev->secondary   = 1;
+    dev->apic        = ioapic_global->apic;
+    dev->pins        = 16;
+    dev->smi_pin     = 0xff;
+    dev->version_reg = 0x000f0011;
+    dev->mmio_size   = 0x400;
+    dev->mmio_base   = IOAPIC_MMIO_BASE;
+    for (uint8_t irq = 0; irq < IOAPIC_LEGACY_IRQ_COUNT; irq++)
+        dev->legacy_irq_to_pin[irq] = dev->legacy_irq_default_to_pin[irq] = IOAPIC_LEGACY_IRQ_NC;
+
+    mem_mapping_add(&dev->ioapic_mapping, dev->mmio_base, dev->mmio_size,
+                    ioapic_mmio_readb, ioapic_mmio_readw, ioapic_mmio_readl,
+                    ioapic_mmio_writeb, ioapic_mmio_writew, ioapic_mmio_writel,
+                    NULL, MEM_MAPPING_EXTERNAL, dev);
+    mem_mapping_disable(&dev->ioapic_mapping);
+
+    ioapic_secondary_reset_locked(dev);
+    ioapic_secondaries[i] = dev;
+
+    return dev;
+}
+
+static void *
+ioapic_secondary_init(const device_t *info)
+{
+    void *ret_;
+
+    apic_lock();
+    ret_ = ioapic_secondary_init_locked(info);
+    apic_unlock();
+    return ret_;
+}
+
+/* Where its window is, and whether the host bus reaches it there. */
+static void
+ioapic_secondary_map_locked(void *ioapic, uint32_t base, int enable)
+{
+    ioapic_t *dev = (ioapic_t *) ioapic;
+
+    if ((dev == NULL) || !dev->secondary)
+        return;
+    if (enable && (!dev->mapped || (base != dev->mmio_base))) {
+        mem_mapping_set_addr(&dev->ioapic_mapping, base, dev->mmio_size);
+        dev->mapped = 1;
+    } else if (!enable && dev->mapped) {
+        mem_mapping_disable(&dev->ioapic_mapping);
+        dev->mapped = 0;
+    }
+    dev->mmio_base = base;
+}
+
+void
+ioapic_secondary_map(void *ioapic, uint32_t base, int enable)
+{
+    apic_lock();
+    ioapic_secondary_map_locked(ioapic, base, enable);
+    apic_unlock();
+}
+
+/* One of its inputs, a level wire, as the board drives it. */
+static void
+ioapic_secondary_line_locked(void *ioapic, uint8_t pin, int set)
+{
+    ioapic_t *dev = (ioapic_t *) ioapic;
+
+    if ((dev == NULL) || !dev->secondary || (pin >= dev->pins))
+        return;
+    ioapic_wire_set(dev, &dev->wire_pci, pin, 1, set);
+}
+
+void
+ioapic_secondary_line(void *ioapic, uint8_t pin, int set)
+{
+    apic_lock();
+    ioapic_secondary_line_locked(ioapic, pin, set);
+    apic_unlock();
+}
+
+const device_t ioapic_secondary_device = {
+    .name          = "I/O Advanced Programmable Interrupt Controller (second)",
+    .internal_name = "ioapic_secondary",
+    .flags         = 0,
+    .local         = 0,
+    .init          = ioapic_secondary_init,
+    .close         = ioapic_secondary_close,
+    .reset         = ioapic_secondary_reset,
+    .available     = NULL,
+    .speed_changed = NULL,
+    .force_redraw  = NULL,
+    .config        = NULL
+};
 
 static const device_config_t ioapic_config[] = {
   // clang-format off
