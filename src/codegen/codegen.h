@@ -66,6 +66,11 @@ typedef struct codeblock_t {
     /*Times put back from a kept version since compiled
       (codegen_block_restore_version): code patched back and forth.*/
     uint8_t flips;
+    /*It starts on a byte the guest keeps rewriting (codegen_hot_byte), and
+      its code holds the instruction there only while that byte is
+      entry_byte, the block leaving at once otherwise.*/
+    uint8_t entry_hot;
+    uint8_t entry_byte;
 
 #ifdef CODEGEN_CHAIN
     /*Where a linked block enters it (data[chain_entry]): past the part of
@@ -495,12 +500,14 @@ extern int codegen_fpu_entered;
 
 /*Bytes of guest code the guest keeps rewriting between two or more values
   -- a RET written over an unrolled loop to cut it at a span's length, then
-  the old byte put back (Daggerfall) -- found where a block is put back from
-  a kept version. No block is compiled over one: a block ends before it, and
-  the instruction there is interpreted, reading what is there each time, so
-  the writes reach no compiled code and nothing is invalidated or put back.
-  By physical 64-byte chunk, a few at a time; only a hint, since every
-  compiled block is tracked for writes all the same.*/
+  the old byte put back (Daggerfall, Heretic, Hexen) -- found where a block
+  is put back from a kept version. Such a byte is not marked as code: an
+  instruction starting on one is compiled with a guard that reads it as the
+  block runs and leaves when it is not the byte compiled, and the dispatcher
+  then interprets the instruction, as it is, so the writes reach no compiled
+  code and nothing is invalidated or put back. By physical 64-byte chunk, a
+  few at a time; only a hint, since every compiled block is tracked for
+  writes all the same.*/
 #define CODEGEN_HOT_NR 256
 typedef struct codegen_hot_t {
     uint32_t chunk; /*physical address >> 6, plus 1; 0: empty*/

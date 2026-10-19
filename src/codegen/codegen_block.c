@@ -1901,6 +1901,7 @@ codegen_block_init(uint32_t phys_addr)
     block->flags                         = CODEBLOCK_STATIC_TOP;
     block->status                        = cpu_cur_status;
     block->flips                         = 0;
+    block->entry_hot                     = 0;
 
     recomp_page = block->phys & ~0xfff;
     codeblock_tree_add(block);
@@ -1968,6 +1969,7 @@ codegen_block_start_recompile(codeblock_t *block)
 
     block->page_mask = block->page_mask2 = 0;
     block->ins                           = 0;
+    block->entry_hot                     = 0;
 
     cpu_block_end = 0;
 
@@ -2291,7 +2293,11 @@ codegen_block_restore_version(codeblock_t *block)
             }
         }
 
-        /*Match: it becomes the block's current code, as a compile would*/
+        /*Match: it becomes the block's current code, as a compile would.
+          Whether it guards a rewritten first byte, and which, is not kept
+          with it: as not, so that one starting on such a byte is compiled
+          again rather than left to its guard (the dispatcher).*/
+        block->entry_hot            = 0;
         *link                       = v->next;
         v->next                     = 0;
         v->state                    = BLOCK_VERSION_CURRENT;

@@ -911,14 +911,10 @@ exec386_dynarec_dyn(void)
         exec386_dynarec_int();
         return;
     }
-    /* A byte the guest keeps rewriting (codegen_hot_byte): the instruction
-       there is interpreted, one, as it is now, and no block holds it. */
-    if (!cpu_state.abrt && codegen_hot_byte(phys_addr)) {
-        if (!cpu_end_block_after_ins)
-            cpu_end_block_after_ins = 1;
-        exec386_dynarec_int();
-        return;
-    }
+    /* A byte the guest keeps rewriting (codegen_hot_byte): a block starting
+       there runs while the byte is the one it was compiled with, and is
+       looked at below. */
+    const int hot = !cpu_state.abrt && codegen_hot_byte(phys_addr);
     cpu_fetch_device = 0;
 
     /* Refresh before the lookup AND before a fresh compile: the old
@@ -1021,6 +1017,22 @@ exec386_dynarec_dyn(void)
            them again. */
         if (valid_block && (block->flags & CODEBLOCK_IN_DIRTY_LIST) && (block->flags & CODEBLOCK_NO_IMMEDIATES))
             codegen_block_restore_version(block);
+
+        /* Starting on a byte the guest keeps rewriting: compiled without
+           the guard for it (before the byte was found to be one), compiled
+           again; compiled with it, run only while the byte is the one
+           compiled, its guard leaving at once otherwise -- the instruction
+           there interpreted then, one, as it is now. */
+        if (hot && valid_block && (block->flags & CODEBLOCK_WAS_RECOMPILED)) {
+            if (!block->entry_hot)
+                block->flags &= ~CODEBLOCK_WAS_RECOMPILED;
+            else if (block->entry_byte != _mem_exec[phys_addr >> MEM_GRANULARITY_BITS][phys_addr & MEM_GRANULARITY_MASK]) {
+                if (!cpu_end_block_after_ins)
+                    cpu_end_block_after_ins = 1;
+                exec386_dynarec_int();
+                return;
+            }
+        }
     }
 
     if (valid_block && (block->flags & CODEBLOCK_WAS_RECOMPILED))

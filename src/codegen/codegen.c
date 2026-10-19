@@ -924,15 +924,21 @@ generate_call:
       as at a taken branch, with the cycles so far counted, and the
       dispatcher interprets what is there. The byte is not marked as code,
       so the writes leave the block be. On the block's first page only,
-      where the byte can be read through a pointer bound now, and not as
-      the block's first instruction (marked as this block was found, the
-      dispatcher not yet interpreting it), which is all it may hold.*/
+      where the byte can be read through a pointer bound now. As the
+      block's first instruction too: the dispatcher runs the block only
+      while the byte is the one compiled (entry_byte), and interprets the
+      instruction otherwise, so the block leaving there is not entered
+      again at once.*/
     hot = 0;
-    if (((cs + old_pc) != block->pc) && !(((cs + old_pc) ^ block->pc) & ~0xfff)) {
+    if (!(((cs + old_pc) ^ block->pc) & ~0xfff)) {
         if (codegen_hot_byte(block->phys + ((cs + old_pc) - block->pc))) {
             int jump_uop;
 
             hot = 1;
+            if ((cs + old_pc) == block->pc) {
+                block->entry_hot  = 1;
+                block->entry_byte = fastreadb(cs + old_pc);
+            }
             codegen_accumulate(ir, ACCREG_cycles, -codegen_block_cycles);
             codegen_block_cycles = 0;
             codegen_accumulate_flush(ir);
