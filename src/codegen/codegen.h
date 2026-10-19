@@ -125,7 +125,7 @@ extern uint64_t codegen_link_unlinked;
   reached, looked up by linear PC in the exit stub, each valid for the CS
   base and key it was filled under and while its block's link generation
   is the one it was filled under.*/
-#    define CODEGEN_IND_SIZE 32768
+#    define CODEGEN_IND_SIZE 4096
 typedef struct codegen_ind_t {
     uint32_t  pc;
     uint32_t  cs_base;
