@@ -1154,7 +1154,8 @@ lapic_sync_int_regs(lapic_state_t *lapic)
     isr = cpu_lapic_isr_words_index(lapic->index);
     tmr = cpu_lapic_tmr_words_index(lapic->index);
 
-    /* Interrupt state is CPU-owned; regs[] mirrors it for LAPIC MMIO reads/save. */
+    /* Interrupt state is CPU-owned, and register reads are served from it
+       (cpu_lapic_mmio_read_index); regs[] mirrors it for save states. */
     for (uint8_t i = 0; i < 8; i++) {
         lapic_mirror_write_reg(lapic, LAPIC_REG_ISR_BASE + (((uint32_t) i) << 4), isr[i]);
         lapic_mirror_write_reg(lapic, LAPIC_REG_TMR_BASE + (((uint32_t) i) << 4), tmr[i]);
@@ -1600,7 +1601,6 @@ lapic_timer_callback_locked(void *priv)
     /* Host callback can arrive before modeled count reaches zero; do not inject. */
     if (current) {
         lapic_timer_schedule(lapic, current, 1);
-        lapic_sync_int_regs(lapic);
         return;
     }
 
@@ -1622,8 +1622,6 @@ lapic_timer_callback_locked(void *priv)
     } else {
         cpu_lapic_timer_oneshot_complete_index(lapic->index);
     }
-
-    lapic_sync_int_regs(lapic);
 }
 
 void
