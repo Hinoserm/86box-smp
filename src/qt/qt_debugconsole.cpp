@@ -146,18 +146,66 @@ DebugConsole::~DebugConsole()
 }
 
 /* A command's output, wherever it was typed: the window and every network
-   client share the one console. */
+   client share the one console. The next line can go now. */
 void
 DebugConsole::deliver(int source, const QString &text)
 {
     (void) source;
     append(text);
+    inFlight = false;
+    pump();
 }
 
-/* Commands the console answers itself, on this thread: running the machine
-   is the window's business, not the paused loop's, and a command that reads
-   nothing of the machine's needs it neither paused nor stopped. Answers
-   whether it was one. */
+/* At most this many lines wait, from all the consoles together. */
+static constexpr int debugcon_pending_max = 256;
+
+void
+DebugConsole::enqueue(int source, const QString &line)
+{
+    if (pending.size() >= debugcon_pending_max) {
+        append(tr("Too many commands waiting; dropped: %1").arg(line));
+        return;
+    }
+    pending.append({ source, line });
+
+    /* Something unpaused the machine while a command waited for the
+       paused loop: stop it again, or nothing would ever run. */
+    if (inFlight && !dopause) {
+        plat_pause(1);
+        append(tr("Paused the machine to run this; continue (c) resumes it."));
+    }
+    pump();
+}
+
+/* Hand the next line on: the console's own words are acted on here, the
+   rest go to the emulation thread, which runs them from its paused loop. */
+void
+DebugConsole::pump()
+{
+    while (!inFlight && !pending.isEmpty()) {
+        const Line l = pending.takeFirst();
+
+        if (control(l.source, l.text))
+            continue;
+
+        /* A command stops the machine where it is; it stays stopped until
+           continue. The emulation thread echoes it just before its output. */
+        if (!dopause) {
+            plat_pause(1);
+            append(tr("Paused the machine to run this; continue (c) resumes it."));
+        }
+        if (!debugcon_submit(l.source, l.text.toUtf8().constData())) {
+            append(tr("Too many commands waiting; dropped: %1").arg(l.text));
+            continue;
+        }
+        inFlight = true;
+    }
+}
+
+/* Commands the console answers itself, on this thread, when their turn
+   comes: running the machine is the window's business, not the paused
+   loop's, and a command that reads nothing of the machine's needs it
+   neither paused nor stopped. Answers whether it was one. */
 bool
 DebugConsole::control(int source, const QString &line)
 {
@@ -285,15 +333,7 @@ DebugConsole::clientData(QTcpSocket *sock)
             sock->disconnectFromHost();
             return;
         }
-        if (control(id, line))
-            continue;
-
-        if (!dopause) {
-            plat_pause(1);
-            append(tr("Paused the machine to run this; continue (c) resumes it."));
-        }
-        if (!debugcon_submit(id, line.toUtf8().constData()))
-            append(tr("Too many commands waiting; try again."));
+        enqueue(id, line);
     }
 }
 
@@ -340,25 +380,8 @@ DebugConsole::run(const QString &text)
         return;
     }
 
-    /* pause and continue are the window's own; the rest go on. */
-    QStringList rest;
     for (const QString &l : lines)
-        if (!control(0, l))
-            rest.append(l);
-    lines = rest;
-    if (lines.isEmpty())
-        return;
-
-    /* A command stops the machine where it is; it stays stopped until
-       continue. Each command is echoed by the emulation thread just before
-       its own output, so a block of them reads in order. */
-    if (!dopause) {
-        plat_pause(1);
-        append(tr("Paused the machine to run this; continue (c) resumes it."));
-    }
-
-    if (!debugcon_submit(0, lines.join(QLatin1Char('\n')).toUtf8().constData()))
-        append(tr("Too many commands waiting; try again.\n"));
+        enqueue(0, l);
 }
 
 void

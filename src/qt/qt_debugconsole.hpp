@@ -3,6 +3,7 @@
 
 #include <QDialog>
 #include <QHash>
+#include <QList>
 #include <QStringList>
 
 class QPlainTextEdit;
@@ -30,6 +31,8 @@ protected:
 
 private:
     void run(const QString &text);
+    void enqueue(int source, const QString &line);
+    void pump();
     bool control(int source, const QString &line);
     void toggleServer();
     void newClient();
@@ -44,6 +47,16 @@ private:
     int             historyPos = 0;
     QString         lastDumpPath;
     QString         lastRegsPath;
+
+    /* Every console's lines, in the order they came, one at a time: a
+       command goes to the emulation thread only when the one before it has
+       answered, so pause, continue and hardreset act in their place. */
+    struct Line {
+        int     source;
+        QString text;
+    };
+    QList<Line> pending;
+    bool        inFlight = false;
 
     /* The same console, shared over TCP, on the loopback interface only. */
     QLineEdit               *portEdit;
