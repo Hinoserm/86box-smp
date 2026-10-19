@@ -618,7 +618,7 @@ a64_icache_sync(void *start, size_t len)
 
 /* A link stub's literal pool: 8-byte aligned after its instructions. */
 typedef struct a64_link_lits_t {
-    uint64_t genptr;    /* &target->link_gen, or &codegen_link_unlinked */
+    uint64_t genptr;    /* &CODEBLOCK_LINK_GEN(target), or &codegen_link_unlinked */
     uint64_t gen;       /* its value when linked */
     uint64_t gword;     /* the target's group word (codegen_link_group_word) */
     uint64_t gval;      /* its value when linked */
@@ -870,7 +870,7 @@ codegen_chain_patch(uint8_t *stub, codeblock_t *target, uint64_t gen)
     gword = codegen_link_group_word(target, &gval);
 
     a64_jit_write_begin();
-    __atomic_store_n(&lit->genptr, (uint64_t) (uintptr_t) &target->link_gen, __ATOMIC_RELAXED);
+    __atomic_store_n(&lit->genptr, (uint64_t) (uintptr_t) &CODEBLOCK_LINK_GEN(target), __ATOMIC_RELAXED);
     __atomic_store_n(&lit->gen, gen, __ATOMIC_RELAXED);
     __atomic_store_n(&lit->gword, (uint64_t) (uintptr_t) gword, __ATOMIC_RELAXED);
     __atomic_store_n(&lit->gval, gval, __ATOMIC_RELAXED);

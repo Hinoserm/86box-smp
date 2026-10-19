@@ -72,12 +72,8 @@ typedef struct codeblock_t {
       the prologue every block shares, so a chain keeps one frame.*/
     uint16_t chain_entry;
 
-    /*Links into this block hold while this is the value they were made
-      under: anything that changes what they reach (its code written, the
-      block deleted, its page's translation changed) adds one. Never reset
-      while the block's number is in use again, so a stale link cannot
-      match a new block.*/
-    uint64_t link_gen;
+    /*Its link generation is codegen_link_gens[] by its number
+      (CODEBLOCK_LINK_GEN).*/
     /*The block's pages as translated when a link to it was last made
       (mmu_link_translate): a translation flush compares them again.*/
     uint64_t link_pte, link_pte2;
@@ -207,6 +203,17 @@ get_block_nr(codeblock_t *block)
 {
     return ((uintptr_t) block - (uintptr_t) codeblock) / sizeof(codeblock_t);
 }
+
+#ifdef CODEGEN_CHAIN
+/*Links into a block hold while its entry here is the value they were made
+  under: anything that changes what they reach (its code written, the block
+  deleted, its page's translation changed) adds one. Never reset while the
+  block's number is in use again, so a stale link cannot match a new block.
+  By block number and apart from the blocks, eight to a cache line: a link
+  or indirect exit reads its target's at every pass.*/
+extern uint64_t codegen_link_gens[];
+#    define CODEBLOCK_LINK_GEN(b) (codegen_link_gens[get_block_nr(b)])
+#endif
 
 static inline codeblock_t *
 codeblock_tree_find(uint32_t phys, uint32_t _cs)

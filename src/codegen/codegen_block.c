@@ -103,6 +103,7 @@ uint64_t codegen_link_unlinked = UINT64_MAX;
 
 /* The indirect link table (codegen.h). */
 codegen_ind_t codegen_ind_cache[CODEGEN_IND_SIZE];
+uint64_t      codegen_link_gens[BLOCK_SIZE];
 _Static_assert(sizeof(codegen_ind_t) == 64, "the indirect stub indexes 64-byte entries");
 _Static_assert((offsetof(codegen_ind_t, gen) == 16) && (offsetof(codegen_ind_t, target) == 24) && (offsetof(codegen_ind_t, link_gen) == 32) && (offsetof(codegen_ind_t, group_word) == 40) && (offsetof(codegen_ind_t, group_value) == 48),
                "the indirect stub reads these fields at fixed offsets");
@@ -252,7 +253,7 @@ codegen_lg_reclaim(void)
     for (int32_t nr = codegen_lg[g].head; nr >= 0;) {
         const int32_t next = codeblock[nr].link_gnext;
 
-        __atomic_fetch_add(&codeblock[nr].link_gen, 1, __ATOMIC_SEQ_CST);
+        __atomic_fetch_add(&codegen_link_gens[nr], 1, __ATOMIC_SEQ_CST);
         codegen_link_bit_clear(nr);
         codeblock[nr].link_cpl3 = 0; /* no link left */
         nr                      = next;
@@ -583,7 +584,7 @@ codegen_links_note(codeblock_t *block, uint64_t gen)
        group. They go, with a new generation, and this link is made under
        that one -- unless something else moved it meanwhile, when it is
        made under the old one and misses. */
-    if (linked && (g == CODEGEN_LG_SOLO) && (block->link_group >= 0) && (__atomic_fetch_add(&block->link_gen, 1, __ATOMIC_SEQ_CST) == gen))
+    if (linked && (g == CODEGEN_LG_SOLO) && (block->link_group >= 0) && (__atomic_fetch_add(&CODEBLOCK_LINK_GEN(block), 1, __ATOMIC_SEQ_CST) == gen))
         gen++;
     return gen;
 }
@@ -594,7 +595,7 @@ codegen_links_note(codeblock_t *block, uint64_t gen)
 void
 codegen_links_drop(codeblock_t *block)
 {
-    __atomic_fetch_add(&block->link_gen, 1, __ATOMIC_SEQ_CST);
+    __atomic_fetch_add(&CODEBLOCK_LINK_GEN(block), 1, __ATOMIC_SEQ_CST);
 }
 
 /* The side of the processor running the blocks, as a block goes, is
@@ -622,7 +623,7 @@ codegen_links_drop_all(int owner)
             const int b = __builtin_ctzll(bits);
 
             bits &= bits - 1;
-            __atomic_fetch_add(&codeblock[(w << 6) | b].link_gen, 1, __ATOMIC_SEQ_CST);
+            __atomic_fetch_add(&codegen_link_gens[(w << 6) | b], 1, __ATOMIC_SEQ_CST);
             if (owner) {
                 codegen_link_bit_clear((w << 6) | b);
                 codeblock[(w << 6) | b].link_cpl3 = 0; /* no link left */
@@ -812,7 +813,7 @@ codegen_ind_fill(codeblock_t *block, uint64_t gen)
     e->status     = CODEGEN_CHAIN_KEY();
     e->gen        = gen;
     e->target     = &block->data[block->chain_entry];
-    e->link_gen   = &block->link_gen;
+    e->link_gen   = &CODEBLOCK_LINK_GEN(block);
     e->group_word = codegen_link_group_word(block, &e->group_value);
 }
 
@@ -1495,21 +1496,10 @@ codegen_reset(void)
     }
 
 #ifdef CODEGEN_CHAIN
-    {
-        /* The link generations outlive the blocks (codegen.h): a stub a
-           block still running from before the reset jumps through must not
-           match its target's number again. drop_all has moved every one. */
-        uint64_t *gens = malloc(BLOCK_SIZE * sizeof(uint64_t));
-
-        if (gens == NULL)
-            fatal("codegen_reset: out of memory\n");
-        for (c = 0; c < BLOCK_SIZE; c++)
-            gens[c] = codeblock[c].link_gen;
-        memset(codeblock, 0, BLOCK_SIZE * sizeof(codeblock_t));
-        for (c = 0; c < BLOCK_SIZE; c++)
-            codeblock[c].link_gen = gens[c];
-        free(gens);
-    }
+    /* The link generations outlive the blocks (codegen_link_gens): a stub
+       a block still running from before the reset jumps through must not
+       match its target's number again. drop_all has moved every one. */
+    memset(codeblock, 0, BLOCK_SIZE * sizeof(codeblock_t));
 #else
     memset(codeblock, 0, BLOCK_SIZE * sizeof(codeblock_t));
 #endif

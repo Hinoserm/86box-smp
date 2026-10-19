@@ -1032,7 +1032,7 @@ exec386_dynarec_dyn(void)
         {
             /* Read before the code is found clean: a write after it moves
                the generation, and the link misses. */
-            const uint64_t target_gen = __atomic_load_n(&block->link_gen, __ATOMIC_SEQ_CST);
+            const uint64_t target_gen = __atomic_load_n(&CODEBLOCK_LINK_GEN(block), __ATOMIC_SEQ_CST);
             /* Put back from a version a moment ago: not linked to yet. */
             const int held = block->link_hold != 0;
 

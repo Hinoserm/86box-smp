@@ -910,7 +910,7 @@ codegen_chain_patch(uint8_t *stub, codeblock_t *target, uint64_t gen)
     uint64_t  gval;
     uint64_t *gword = codegen_link_group_word(target, &gval);
 
-    *(uint64_t *) (stub + LINK_GENPTR) = (uint64_t) (uintptr_t) &target->link_gen;
+    *(uint64_t *) (stub + LINK_GENPTR) = (uint64_t) (uintptr_t) &CODEBLOCK_LINK_GEN(target);
     *(uint64_t *) (stub + LINK_GEN)    = gen;
     *(uint64_t *) (stub + LINK_GWORD)  = (uint64_t) (uintptr_t) gword;
     *(uint64_t *) (stub + LINK_GVAL)   = gval;
