@@ -24,6 +24,9 @@ extern void x86_idle_tick(void);
 
 /* A compiled PAUSE (codegen.c). */
 extern void x86_pause(uint32_t eip);
+/* An IN AL,DX at eip just read a port whose reads only repeat
+   (io_poll_pure). */
+extern void x86_idle_in(uint32_t eip);
 
 /* The processor's clock now, inside a compiled block (386_dynarec.c). */
 extern uint64_t exec386_now_tsc(void);

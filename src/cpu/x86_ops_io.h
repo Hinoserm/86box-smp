@@ -84,6 +84,10 @@ opIN_AL_DX(UNUSED(uint32_t fetchdat))
     AL = inb(DX);
     CLOCK_CYCLES(12 + io_waitstates);
     PREFETCH_RUN(12, 1, -1, 1, 0, 0, 0, 0);
+    /* A poll of a port whose reads only repeat: perhaps a loop waiting for
+       the next display event, skipped as an idle loop is (x86_idle.c). */
+    if (io_poll_pure && !cpu_state.abrt)
+        x86_idle_in(cpu_state.oldpc);
     if (smi_line || NMI_TAKEABLE())
         return 1;
     return 0;

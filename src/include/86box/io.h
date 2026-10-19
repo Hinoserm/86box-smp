@@ -101,8 +101,9 @@ extern void io_handler_interleaved(uint8_t set, uint16_t base, uint16_t size,
                                    void (*outl)(uint16_t port, uint32_t val, void *priv),
                                    void *priv);
 
-/* Port accesses made (io.c). */
+/* Port accesses made, and whether the last byte read only repeats (io.c). */
 extern uint64_t io_port_count;
+extern int      io_poll_pure;
 
 extern uint8_t  inb(uint16_t port);
 extern void     outb(uint16_t port, uint8_t val);

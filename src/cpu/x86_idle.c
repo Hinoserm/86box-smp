@@ -30,6 +30,16 @@
  *          loop is proven again after a few such visits in a row, or after a
  *          TLB flush.
  *
+ *          A loop polling a port whose reads only repeat (the device says so
+ *          for the read, io_poll_pure: the VGA's status register 3DAh, a
+ *          DOS game's wait for the vertical retrace) is proven and skipped
+ *          the same way from its IN AL,DX (x86_idle_in), over two passes:
+ *          the register may alternate between two values from one read to
+ *          the next, so the state after two passes is the one it started
+ *          from, and the two reads are the only port I/O allowed. Whole
+ *          pairs of passes are charged, which leave the device as they found
+ *          it.
+ *
  *          A maskable interrupt waiting does not stop the skip when the
  *          loop was proven with one waiting and IF clear at the site (a
  *          spinlock taken with interrupts off): a pass that set IF anywhere
@@ -151,6 +161,8 @@ static uint64_t      idle_io;
 static uint64_t      idle_retry_tsc;
 static int           idle_fails;
 static int           idle_misses;
+static int           idle_period;      /* passes a proof spans: 1 at a PAUSE, 2 at a polling IN */
+static int           idle_visits;      /* visits at the site since the proof began */
 static int           idle_masked;      /* proven with an interrupt waiting, IF clear */
 static int           idle_masked_from; /* one was waiting, IF clear, as the proof began */
 /* The site's proofs: a waiting loop may find one of a few values between
@@ -368,8 +380,9 @@ idle_pending(int masked)
     /* The signal word as a link stub reads it: code written, a relink or a
        translation change is the loop's work, and the break is answered by
        the chain's service, which also brings the chain's floor forward to
-       a timer armed sooner. When the service says the chain must leave, the
-       break is raised again for the chain's next link to see. */
+       a timer armed sooner. A polling IN raises the break with its own
+       read. When the service says the chain must leave, the break is raised
+       again for the chain's next link to see. */
     if (__atomic_load_n(&mem_chain_signal.pending, __ATOMIC_SEQ_CST) & 0xffffff00)
         return IDLE_PEND_OTHER;
     if (__atomic_load_n(&mem_chain_signal.brk, __ATOMIC_SEQ_CST) && codegen_chain_service()) {
@@ -388,7 +401,7 @@ idle_pending(int masked)
 /* A proof begun at eip; keep, the site's proofs made so far stay (another
    state of the same loop). */
 static void
-idle_prove(uint32_t eip, int keep)
+idle_prove(uint32_t eip, int period, int keep)
 {
     if (!keep) {
         idle_nproofs    = 0;
@@ -398,6 +411,8 @@ idle_prove(uint32_t eip, int keep)
        and kept empty while the watch is on (mem.c). */
     mem_tlb_empty();
     idle_site        = eip;
+    idle_period      = period;
+    idle_visits      = 0;
     idle_mode        = IDLE_PROVING;
     idle_state_take(&idle_snap);
     idle_n           = 0;
@@ -427,18 +442,24 @@ idle_skip(int pass)
     cycles -= (int) ((avail / pass) * pass);
 }
 
-/* A visit at an idle loop's site, eip: a compiled PAUSE, the block's
-   registers in cpu_state. */
+/* A visit at an idle loop's site, eip: a compiled PAUSE (period 1) or a
+   polling IN (period 2), the block's registers in cpu_state. */
 static void
-idle_visit(uint32_t eip)
+idle_visit(uint32_t eip, int period)
 {
     if (!inrecomp)
         return;
 
     switch (idle_mode) {
         case IDLE_PROVING:
+            /* A proof over two passes goes on, watching, past the first. */
+            if ((eip == idle_site) && (period == idle_period) && !idle_bad && (++idle_visits < idle_period))
+                return;
             idle_stop();
-            if ((eip != idle_site) || idle_bad || (mmuflush != idle_mmuflush) || (io_port_count != idle_io) ||
+            /* The port I/O of the passes: none at a PAUSE; at a polling IN
+               its own reads, one a pass. */
+            if ((eip != idle_site) || (period != idle_period) || idle_bad || (mmuflush != idle_mmuflush) ||
+                ((io_port_count - idle_io) != (uint64_t) ((period > 1) ? period : 0)) ||
                 !idle_state_same(&idle_snap) || ((idle_pass - cycles) <= 0)) {
                 idle_fail();
                 return;
@@ -472,7 +493,7 @@ idle_visit(uint32_t eip)
                proven again when many in a row do not match (it has settled
                elsewhere) or a translation may have changed. */
             if (mmuflush == idle_mmuflush) {
-                if (eip == idle_site) {
+                if ((eip == idle_site) && (period == idle_period)) {
                     /* No room for a pass before the next event (as after a
                        skip): nothing to look at. */
                     int shortest = idle_proofs[0].pass;
@@ -494,7 +515,7 @@ idle_visit(uint32_t eip)
                                 idle_skip(pr->pass);
                                 break;
                             case IDLE_PEND_MASKED:
-                                idle_prove(eip, 1); /* again, with it waiting */
+                                idle_prove(eip, period, 1); /* again, with it waiting */
                                 break;
                             default:
                                 break;
@@ -508,7 +529,7 @@ idle_visit(uint32_t eip)
                         return;
                     idle_misses = 0;
                     if ((int64_t) (exec386_now_tsc() - idle_retry_tsc) >= 0)
-                        idle_prove(eip, 1);
+                        idle_prove(eip, period, 1);
                     return;
                 }
                 if (++idle_misses < IDLE_MISSES)
@@ -522,7 +543,7 @@ idle_visit(uint32_t eip)
         default:
             if ((int64_t) (exec386_now_tsc() - idle_retry_tsc) < 0)
                 return;
-            idle_prove(eip, 0);
+            idle_prove(eip, period, 0);
             return;
     }
 }
@@ -531,13 +552,26 @@ idle_visit(uint32_t eip)
 void
 x86_pause(uint32_t eip)
 {
-    idle_visit(eip);
+    idle_visit(eip, 1);
+}
+
+/* An IN AL,DX at eip has read a port whose reads only repeat
+   (io_poll_pure). */
+void
+x86_idle_in(uint32_t eip)
+{
+    idle_visit(eip, 2);
 }
 #else
-/* Without chains nothing is ever proven: the slow paths in mem.c find the
-   watch off. */
+/* Without chains nothing is ever proven: the hooks in mem.c and the IN
+   handler find the watch off and nothing to visit. */
 void
 x86_idle_note(UNUSED(uint32_t addr), UNUSED(int size), UNUSED(int write), UNUSED(uint64_t val))
+{
+}
+
+void
+x86_idle_in(UNUSED(uint32_t eip))
 {
 }
 #endif

@@ -716,6 +716,10 @@ svga_in(uint16_t addr, void *priv)
 
             if ((svga->fcr & 0x08) && svga->dispon)
                 ret |= 0x08;
+            /* Read again before the display moves on it gives the same, the
+               diagnostic bits alternating: a retrace wait may be skipped
+               (x86_idle_in). */
+            io_poll_pure = 1;
             break;
 
         default:

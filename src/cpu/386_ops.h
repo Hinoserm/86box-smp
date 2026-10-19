@@ -242,6 +242,7 @@ checkio(uint32_t port, int mask)
 #endif
 #include "x86_ops_inc_dec.h"
 #include "x86_ops_int.h"
+#include "x86_idle.h"
 #include "x86_ops_io.h"
 #include "x86_ops_jump.h"
 #include "x86_ops_misc.h"

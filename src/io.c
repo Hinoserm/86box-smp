@@ -336,6 +336,13 @@ io_debug_check_addr(uint16_t port)
    this stays as it was. */
 uint64_t io_port_count;
 
+/* Set by a device during a byte read whose only effects repeat: read again
+   before the next timer event it gives the same value, or alternates
+   between two (a status register such as the VGA's 3DAh). Cleared before
+   each byte read, and after one that more than one device answered; read
+   straight after the read by an idle loop's proof (x86_idle_in). */
+int io_poll_pure;
+
 uint8_t
 inb(uint16_t port)
 {
@@ -343,13 +350,15 @@ inb(uint16_t port)
     io_t   *p;
     io_t   *q;
     uint8_t found  = 0;
+    int     answered = 0;
 #ifdef ENABLE_IO_LOG
     uint8_t qfound = 0;
 #endif
 
     io_port_count++;
     mem_chain_break(); /* a chain leaves: the access may change what the loop looks at */
-    io_port = port;
+    io_port      = port;
+    io_poll_pure = 0;
 
 #ifdef USE_DEBUG_REGS_486
     io_debug_check_addr(port);
@@ -374,6 +383,7 @@ inb(uint16_t port)
             if (p->inb) {
                 ret &= p->inb(port, p->priv);
                 found |= 1;
+                answered++;
 #ifdef ENABLE_IO_LOG
                 qfound++;
 #endif
@@ -381,6 +391,9 @@ inb(uint16_t port)
             p = q;
         }
     }
+
+    if (answered != 1)
+        io_poll_pure = 0;
 
     if (amstrad_latch & 0x80000000) {
         if (port & 0x80)
