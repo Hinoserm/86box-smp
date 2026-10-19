@@ -306,6 +306,20 @@ cpu_core_charge(int32_t cycs)
     cycles -= cycs;
 }
 
+static void
+cpu_core_trim(void)
+{
+    if (cycles > 0)
+        cycles = 0;
+}
+
+static void
+cpu_core_discard(void)
+{
+    cpu_state.abrt = ABRT_DISCARD;
+    cycles         = 0;
+}
+
 /* A STARTUP: real mode at VV00:0000, from the state RESET left. */
 static void
 cpu_core_startup(uint8_t vector)
@@ -314,6 +328,12 @@ cpu_core_startup(uint8_t vector)
     cpu_state.pc     = 0;
     cycles           = 0;
     cpu_core_waiting = 0;
+}
+
+static uint64_t
+cpu_core_tsc_get(void)
+{
+    return tsc;
 }
 
 static void
@@ -337,12 +357,16 @@ cpu_core_ops(void)
         .run            = cpu_core_run,
         .stop           = cpu_core_stop,
         .charge         = cpu_core_charge,
+        .trim           = cpu_core_trim,
+        .discard        = cpu_core_discard,
         .nmi_raise      = cpu_nmi_raise_core,
         .smi_raise      = cpu_smi_raise_direct,
         .startup        = cpu_core_startup,
+        .tsc_get        = cpu_core_tsc_get,
         .tsc_set        = cpu_core_tsc_set,
         .tlb_flush_now  = mem_tlb_flush_now,
         .tlb_catch_up   = mem_tlb_catch_up,
+        .tlb_outside    = mem_tlb_outside,
         .tlb_set        = mem_tlb_current,
         .fill_read      = mem_cpu_fill_read,
         .fill_write     = mem_cpu_fill_write,

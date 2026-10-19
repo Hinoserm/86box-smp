@@ -24,6 +24,41 @@ extern int      cpu_lapic_highest_deliverable_irr_index(uint8_t lapic_index, int
 extern uint8_t  cpu_lapic_extint_live[];
 extern uint8_t  cpu_apic_int_fast_ok;
 
+#ifdef CPU_AP_CORE
+extern int ioapic_external_interrupt_pending_at(int index);
+extern int cpu_ap_interrupt_vector(void);
+
+/* Another processor, in a core of its own and perhaps on a thread of its
+   own: whether it has an interrupt to take it reads from its local APIC's
+   state (a stale answer only means asking again at the next block);
+   taking one -- IRR into ISR, or an 8259 acknowledge through LINT0 --
+   happens on the machine's thread, where that state is kept
+   (cpu_thread.c). The 8259 straight to a processor is only the boot
+   processor's path. */
+static inline int
+x86_external_interrupt_pending(void)
+{
+    const int self = cpu_core_self;
+
+    if (!ioapic_irq_path_active)
+        return 0;
+
+    if (!pic.int_pending && !cpu_lapic_extint_live[self]) {
+        if (!(__atomic_load_n(&cpu_lapic_irr_live, __ATOMIC_ACQUIRE) & (1u << self)))
+            return 0;
+        if (cpu_lapic_highest_deliverable_irr_index((uint8_t) self, 1) < 0)
+            return 0;
+    }
+
+    return ioapic_external_interrupt_pending_at(self);
+}
+
+static inline int
+x86_external_interrupt_vector(void)
+{
+    return cpu_ap_interrupt_vector();
+}
+#else
 /* IOAPIC arbitrates first; PIC remains only while platform allows fallback. */
 static inline int
 x86_external_interrupt_pending(void)
@@ -74,5 +109,6 @@ x86_external_interrupt_vector(void)
 
     return picinterrupt();
 }
+#endif
 
 #endif /*EMU_X86_INTERRUPT_H*/

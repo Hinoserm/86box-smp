@@ -302,6 +302,7 @@ if(DYNAREC AND (ARCH STREQUAL "x86_64") AND CPU_AP_TOOLS)
     add_dependencies(86Box cpu_ap1_renamed)
     target_link_libraries(86Box ${CPU_AP_RENAMED})
     target_compile_definitions(cpu PRIVATE CPU_MP_SECOND_CORE)
+    target_sources(cpu PRIVATE cpu/cpu_thread.c)
 elseif(DYNAREC AND (ARCH STREQUAL "x86_64"))
     message(WARNING "No objcopy (on macOS: brew install llvm): the processors of a "
                     "multiprocessor machine take turns in one core")

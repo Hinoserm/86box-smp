@@ -46,6 +46,7 @@
 #define HAVE_STDARG_H
 #include <86box/86box.h>
 #include <86box/config.h>
+#include <86box/cpu_mp.h>
 #include <86box/mem.h>
 #include "cpu.h"
 #ifdef USE_DYNAREC
@@ -1881,6 +1882,11 @@ pc_reset_hard_close(void)
 {
     ui_sb_set_ready(0);
 
+    /* The other processors' threads first: one may be waiting on an
+       access the machine's thread serves, or be in a block whose mappings
+       point into the devices closed below. */
+    cpu_mp_close();
+
     /* Close all the memory mappings. */
     mem_close();
 
@@ -2149,6 +2155,9 @@ pc_close(UNUSED(thread_t *ptr))
     nvr_save();
 
     plat_mouse_capture(0);
+
+    /* The other processors' threads, before what they use. */
+    cpu_mp_close();
 
     /* Close all the memory mappings. */
     mem_close();

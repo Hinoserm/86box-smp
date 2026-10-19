@@ -400,6 +400,20 @@ extern int  cpu_fetch_ahead_after(void);
 extern int  cpu_fetch_ahead_take_op(uint32_t fetchdat);
 extern int  cpu_fetch_ahead_after_op(uint32_t fetchdat);
 
+/* A locked instruction of another processor's core, which may run on a
+   thread of its own: its accesses to device memory are one bus operation,
+   the other processors kept off the bus from the first to the end of the
+   instruction (cpu_thread.c). */
+#ifdef CPU_AP_CORE
+extern void cpu_thread_locked_begin(void);
+extern void cpu_thread_locked_end(void);
+#    define CPU_LOCKED_BEGIN() cpu_thread_locked_begin()
+#    define CPU_LOCKED_END()   cpu_thread_locked_end()
+#else
+#    define CPU_LOCKED_BEGIN()
+#    define CPU_LOCKED_END()
+#endif
+
 static __inline const uint8_t *
 cpu_fa_held(uint32_t a, uint32_t n)
 {

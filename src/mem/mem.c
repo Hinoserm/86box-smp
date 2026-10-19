@@ -35,6 +35,8 @@
 #include <86box/config.h>
 #include <86box/io.h>
 #include <86box/mem.h>
+#include <86box/cpu_mp.h>
+#include <86box/thread.h> /* thread_spin_pause */
 #include <86box/plat.h>
 #include <86box/rom.h>
 #include <86box/gdbstub.h>
@@ -347,8 +349,20 @@ uint8_t       *mem_exec_view[2][MEM_MAPPINGS_NO];
 static uint32_t mem_smm_cpus;
 
 /* Moves on whenever the map is rebuilt: a pointer mem_phys_ptr gave holds
-   while it is unchanged. */
+   while it is unchanged, and so does an access another processor's thread
+   looked up before handing it to the machine's (cpu_thread.c). */
 uint32_t mem_mapping_gen;
+
+/* What processor `index` reaches at addr now, through its own view of
+   SMRAM. */
+mem_mapping_t *
+mem_mapping_at(int index, int write, uint32_t addr)
+{
+    const int smm = !!(__atomic_load_n(&mem_smm_cpus, __ATOMIC_SEQ_CST) & (1u << index));
+
+    return write ? mem_write_mapping_view[smm][addr >> MEM_GRANULARITY_BITS] :
+                   mem_read_mapping_view[smm][addr >> MEM_GRANULARITY_BITS];
+}
 
 static mem_mapping_t *base_mapping;
 static mem_mapping_t *last_mapping;
@@ -1283,22 +1297,27 @@ mem_smm_enter(int cpu)
 }
 
 /* A locked operation on an operand split across pages or lines
-   (386_common.h): the bus is held for the read and the write together, so
-   one such operation runs at a time. */
+   (386_common.h): the bus is held for the read and the write together.
+   The other processors are kept off it first (cpu_mp_split_begin), as
+   LOCK# keeps them, so their plain stores cannot land between the read
+   and the write either; that alone keeps two such operations apart, and
+   the lock behind it is never found taken. */
 static int mem_split_lock;
 
 void
 mem_split_lock_take(void)
 {
+    cpu_mp_split_begin();
     while (__atomic_exchange_n(&mem_split_lock, 1, __ATOMIC_ACQUIRE))
         while (__atomic_load_n(&mem_split_lock, __ATOMIC_RELAXED))
-            ;
+            thread_spin_pause();
 }
 
 void
 mem_split_lock_give(void)
 {
     __atomic_store_n(&mem_split_lock, 0, __ATOMIC_RELEASE);
+    cpu_mp_split_end();
 }
 
 int
@@ -1358,7 +1377,12 @@ mem_mapping_recalc(uint64_t base, uint64_t size, uint32_t base_ignore)
     if ((base + size + (base_ignore & mask)) > MEM_ADDR_SPACE_END)
         mem_mapping_past_4g(base, size, base_ignore & (uint32_t) mask);
 
-    mem_mapping_gen++;
+    /* The tables are cleared and filled again below; another processor
+       reading them meanwhile would find nothing mapped. An access it has
+       already handed to the machine's thread is looked up again when
+       served (mem_mapping_gen). */
+    cpu_mp_hold_others();
+    __atomic_fetch_add(&mem_mapping_gen, 1, __ATOMIC_SEQ_CST);
 
     map = base_mapping;
 
@@ -1430,6 +1454,7 @@ mem_mapping_recalc(uint64_t base, uint64_t size, uint32_t base_ignore)
     }
 
     flushmmucache_nopc();
+    cpu_mp_release_others();
 
 #ifdef ENABLE_MEM_LOG
     pclog("\nMemory map:\n");
@@ -2005,6 +2030,10 @@ mem_remap_top_ex_common(int kb, uint32_t start, int mid)
     if ((kb != 0) && (mem_size >= (16384 - kb)))
         return;
 
+    /* The pages and the map change under the other processors: they are
+       kept out meanwhile. */
+    cpu_mp_hold_others();
+
     if (kb == 0) {
         kb  = old_kb;
         set = 0;
@@ -2096,6 +2125,7 @@ mem_remap_top_ex_common(int kb, uint32_t start, int mid)
     mem_pages_mirror(0, pages_sz, 0);
 
     flushmmucache();
+    cpu_mp_release_others();
 }
 
 void

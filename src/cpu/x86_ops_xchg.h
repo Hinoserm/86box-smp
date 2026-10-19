@@ -1,9 +1,10 @@
 /* XCHG with memory is locked whether or not LOCK is written (Pentium
-   Vol. 3, 19.1.2). Like any locked instruction, the code after it is what
-   was fetched when it began (cpu_fetch_ahead_take, 386_common.c); another
-   processor rewriting that code after the exchange ends compiled code's
-   block here, so the next instruction is decoded from what was fetched.
-   With a register operand (mod 3) nothing is locked. */
+   Vol. 3, 19.1.2): its read and write of device memory are one bus
+   operation (CPU_LOCKED_BEGIN). Like any locked instruction, the code
+   after it is what was fetched when it began (cpu_fetch_ahead_take,
+   386_common.c); another processor rewriting that code after the exchange
+   ends compiled code's block here, so the next instruction is decoded from
+   what was fetched. With a register operand (mod 3) nothing is locked. */
 #define XCHG_MEM_OP(name)                      \
     static int name##_body(uint32_t fetchdat); \
     static int name(uint32_t fetchdat)         \
@@ -12,7 +13,9 @@
         if ((fetchdat & 0xc0) == 0xc0)         \
             return name##_body(fetchdat);      \
         cpu_fetch_ahead_take();                \
+        CPU_LOCKED_BEGIN();                    \
         r_ = name##_body(fetchdat);            \
+        CPU_LOCKED_END();                      \
         return cpu_fetch_ahead_after() | r_;   \
     }                                          \
     static int name##_body(uint32_t fetchdat)

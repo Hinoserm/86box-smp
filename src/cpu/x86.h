@@ -32,6 +32,11 @@
   that we don't end up with an unnecessarily short block*/
 #define ABRT_EXPECTED 0x80
 
+/*A device access dropped because a RESET is on its way to this processor
+  (cpu_thread.c): the instruction ends there and nothing is raised; the
+  reset takes the processor next.*/
+#define ABRT_DISCARD 0x3e
+
 extern uint8_t opcode;
 
 extern uint8_t flags_p;

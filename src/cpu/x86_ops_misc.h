@@ -805,7 +805,9 @@ opLOCK(uint32_t fetchdat)
         int r;
 
         cpu_fetch_ahead_take();
+        CPU_LOCKED_BEGIN();
         r = x86_opcodes[(fetchdat & 0xff) | cpu_state.op32](fetchdat >> 8);
+        CPU_LOCKED_END();
         return cpu_fetch_ahead_after() | r;
     }
 }

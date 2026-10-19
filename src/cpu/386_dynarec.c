@@ -1257,6 +1257,10 @@ exec386_dynarec_dyn(void)
 
 }
 
+#    ifdef CPU_MP_SECOND_CORE
+#        include "cpu_thread.h"
+#    endif
+
 /* Blocks until this processor's cycles for the slice are spent. Answers
    non-zero when the debugger wants control back. */
 static int
@@ -1272,9 +1276,25 @@ exec386_dynarec_blocks(void)
 
     while (cycles > 0) {
         /* Another core may be running: the boundary is counted, and a flush
-           it left in this core's set is taken (mem_cpu.c). */
-        if (mem_page_copy_count > 1)
-            (void) mem_tlb_boundary_fast();
+           it left in this core's set is taken (mem_cpu.c). Another
+           processor's core leaves its blocks when something was posted to
+           it; the first does the others' device work between two of its
+           own (cpu_thread.c). */
+        if ((mem_page_copy_count > 1) && mem_tlb_boundary_fast()) {
+#    ifdef CPU_MP_SECOND_CORE
+#        ifdef CPU_AP_CORE
+            break; /* its mailbox */
+#        else
+            __atomic_store_n(&mem_tlb_cur->attn, 0, __ATOMIC_SEQ_CST);
+            cpu_thread_main_poll();
+#        endif
+#    endif
+        }
+
+        /* One left over from outside an instruction (an interrupt vector
+           asked for with a RESET on its way): nothing to raise. */
+        if (__builtin_expect(cpu_state.abrt == ABRT_DISCARD, 0))
+            cpu_state.abrt = 0;
 
         /* The code held after a locked instruction is for the one right
            after it, and only while nothing else has run: a block that went
@@ -1329,6 +1349,10 @@ exec386_dynarec_blocks(void)
             cpu_init = 0;
             resetx86();
         }
+
+        /* A dropped device access: the instruction ended, nothing raised. */
+        if (cpu_state.abrt == ABRT_DISCARD)
+            cpu_state.abrt = 0;
 
         if (cpu_state.abrt) {
             flags_rebuild();
@@ -1459,8 +1483,29 @@ exec386_dynarec_chunk(void)
     return ret;
 }
 
+static void exec386_dynarec_run(int32_t cycs, int parallel);
+
 void
 exec386_dynarec(int32_t cycs)
+{
+#    if defined(CPU_MP_SECOND_CORE) && !defined(CPU_AP_CORE)
+    /* The other processors on threads of their own (cpu_thread.c): they run
+       while this thread is in here, within the bound of the machine's
+       clock. */
+    if ((cpu_mp_count > 1) && cpu_mp_copy_mode_active() && cpu_thread_active()) {
+        const int32_t cyc_per_us = cycs / (force_10ms ? 10000 : 1000);
+
+        cpu_thread_enter((int64_t) cyc_per_us * cpu_smp_drift_us);
+        exec386_dynarec_run(cycs, 1);
+        cpu_thread_leave();
+        return;
+    }
+#    endif
+    exec386_dynarec_run(cycs, 0);
+}
+
+static void
+exec386_dynarec_run(int32_t cycs, int parallel)
 {
     int32_t cyc_period = cycs / (force_10ms ? 2000 : 200); /*5us*/
     int32_t cyc_per_us = cycs / (force_10ms ? 10000 : 1000);
@@ -1471,12 +1516,15 @@ exec386_dynarec(int32_t cycs)
         int32_t  ran;
         uint64_t tsc_start = tsc;
 
-        /* With more than one processor the slice adapts (cpu_mp.c). */
-        if (cpu_mp_count > 1) {
+        /* With more than one processor the slice adapts (cpu_mp.c); with
+           the others on threads of their own it is half the bound, so the
+           machine's clock moves on at least twice within it. */
+        if (parallel)
+            cyc_period = (cyc_per_us * cpu_smp_drift_us) / 2;
+        else if (cpu_mp_count > 1)
             cyc_period = cyc_per_us * cpu_mp_next_slice_us();
-            if (cyc_period < 1)
-                cyc_period = 1;
-        }
+        if ((cpu_mp_count > 1) && (cyc_period < 1))
+            cyc_period = 1;
 
         cycles += cyc_period;
         cycles_start = cycles;
@@ -1490,6 +1538,14 @@ exec386_dynarec(int32_t cycs)
 
         /* An INIT the first processor's APIC took during its slice. */
         cpu_mp_after_chunk();
+
+#    if defined(CPU_MP_SECOND_CORE) && !defined(CPU_AP_CORE)
+        /* The others' wakes, resets and time (cpu_thread.c). */
+        if (parallel) {
+            cpu_thread_tick();
+            continue;
+        }
+#    endif
 
         /* The other processors take the same stretch of time in turn
            (cpu_mp.c), the first back in place afterwards: exactly as many

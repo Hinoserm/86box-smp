@@ -6,8 +6,8 @@
  *
  *          This file is part of the 86Box distribution.
  *
- *          More than one processor on one board, taking turns on the
- *          emulation thread (cpu_mp.c).
+ *          More than one processor on one board: in turn on the emulation
+ *          thread, or the others on threads of their own (cpu_mp.c).
  *
  * Authors: Michael Pratte, <mpratte@makefox.group>
  *
@@ -48,10 +48,12 @@ extern int cpu_mp_timers_frozen;
 
 /* The Processor settings of a board with more than one socket
    (MACHINE_DUAL_CPU): how many are fitted, and the SMP drift -- how far
-   apart, in microseconds of guest time, the processors' clocks may be.
-   Taking turns on one thread, it is the longest turn: turns start at 5 us
-   and grow towards it while the processors do not interact. Tighter keeps
-   the processors closer in step; wider costs the host less switching. */
+   apart, in microseconds of guest time, the processors' clocks may be. On
+   threads of their own none runs more than the drift ahead of the first,
+   nor the first ahead of any; taking turns on one thread, it is the
+   longest turn (turns start at 5 us and grow towards it while the
+   processors do not interact). Tighter keeps the processors closer in
+   step; wider costs the host less waiting and switching. */
 #define CPU_SMP_DRIFT_DEFAULT 20
 extern int cpu_count;
 extern int cpu_smp_drift_us;
@@ -63,6 +65,16 @@ extern void cpu_mp_note_interaction(void);
 extern void cpu_mp_chain_signal(int index);
 extern int  cpu_mp_next_slice_us(void);
 
+/* The machine's thread rebuilds tables the other processors read (the
+   memory map, a board reset): those on threads of their own are kept out
+   meanwhile. And a locked operation across a page or a line keeps them off
+   the bus (mem_split_lock_take). */
+extern void cpu_mp_hold_others(void);
+extern void cpu_mp_release_others(void);
+extern void cpu_mp_split_begin(void);
+extern void cpu_mp_split_end(void);
+
+extern void cpu_mp_close(void);
 extern void cpu_mp_configure(int count);
 extern void cpu_mp_register(void *addr, uint32_t size);
 extern void cpu_mp_register_keep(void *addr, uint32_t size); /* one INIT leaves as it is */

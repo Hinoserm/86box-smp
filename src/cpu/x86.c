@@ -280,9 +280,12 @@ reset_common(int hard)
        other sockets now; this processor's INIT is posted and taken after
        its RSM (cpu_mp_after_chunk posts it again while it is in SMM). */
     if (!hard && !reset_apic_init && in_smm && cpu_is_p5() && (cpu_mp_self == 0)) {
+        int none = 0;
+
+        cpu_mp_hold_others();
         cpu_mp_after_reset(0, 0);
-        if (cpu_mp_reset_pending == 0)
-            cpu_mp_reset_pending = 3;
+        cpu_mp_release_others();
+        (void) __atomic_compare_exchange_n(&cpu_mp_reset_pending, &none, 3, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
         return;
     }
 
@@ -298,6 +301,12 @@ reset_common(int hard)
         else
             return;
     }
+
+    /* The board resets under the other processors: those on threads of
+       their own stay out of it until their own reset reaches them
+       (cpu_mp_after_reset). */
+    if ((cpu_mp_self == 0) && !reset_apic_init)
+        cpu_mp_hold_others();
 
     /* Make sure to gracefully leave SMM. */
     if (in_smm)
@@ -530,8 +539,11 @@ reset_common(int hard)
 
     /* The INIT and RESET lines reach every socket; an INIT message from
        the APIC reaches only its own processor. */
-    if (!reset_apic_init)
+    if (!reset_apic_init) {
         cpu_mp_after_reset(cpu_mp_self, hard);
+        if (cpu_mp_self == 0)
+            cpu_mp_release_others();
+    }
 }
 
 /* Hard reset. */

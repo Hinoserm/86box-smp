@@ -82,16 +82,25 @@ typedef struct cpu_core_ops_t {
     void (*stop)(void);
     /* Cycles something outside the core spent on its behalf. */
     void (*charge)(int32_t cycs);
+    /* A run left early (its mailbox, cpu_thread.c): what it did not run
+       is not owed. */
+    void (*trim)(void);
+    /* A device access it made was dropped (a RESET is coming): the
+       instruction ends without effect, and so does the run. */
+    void (*discard)(void);
 
-    void (*nmi_raise)(int apic); /* apic: from the local APIC, not gated by port 70h */
-    void (*smi_raise)(void);
-    void (*startup)(uint8_t vector);
-    void (*tsc_set)(uint64_t tsc);
+    void     (*nmi_raise)(int apic); /* apic: from the local APIC, not gated by port 70h */
+    void     (*smi_raise)(void);
+    void     (*startup)(uint8_t vector);
+    uint64_t (*tsc_get)(void);
+    void     (*tsc_set)(uint64_t tsc);
 
     /* A flush of every set reaching this core's while it runs, and what
        reached it while it did not (mem_cpu.c). */
     void (*tlb_flush_now)(void);
     void (*tlb_catch_up)(void);
+    /* Leaving its blocks (1) or going back into them (0). */
+    void (*tlb_outside)(int outside);
     /* Its TLB set: where its chains' signal word is. */
     struct mem_tlb_t *(*tlb_set)(void);
 

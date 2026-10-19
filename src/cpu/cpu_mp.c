@@ -6,11 +6,12 @@
  *
  *          This file is part of the 86Box distribution.
  *
- *          More than one processor on one board, taking turns on the one
- *          emulation thread: with one core, the state copied in and out,
- *          or with a core of their own each (copy mode, cpu_core.h). The
- *          first way is described here; the second keeps its rules for the
- *          state.
+ *          More than one processor on one board, run three ways: in turn
+ *          on the one emulation thread with one core (the state copied in
+ *          and out), in turn with a core of their own each (copy mode,
+ *          cpu_core.h), or the others each on a thread of its own beside the
+ *          machine's (parallel mode, cpu_thread.c). The first way is
+ *          described here; the others keep its rules for the state.
  *
  *          HOW. Every piece of processor state lives in globals the
  *          interpreter and the recompiler address directly -- the
@@ -35,7 +36,8 @@
  *          switch puts the arriving one's set in place by pointer
  *          (mem_tlb_select), copying nothing. A flush in one set reaches the
  *          others when they are next in place; a page that gains code loses
- *          its direct write entries in every set at once (mem_cpu.c).
+ *          its direct write entries in every set before its code is read
+ *          (mem_cpu.c).
  *
  * Authors: Michael Pratte, <mpratte@makefox.group>
  *
@@ -57,7 +59,9 @@
 #include <86box/smram.h>
 #include <86box/nmi.h>
 #include <86box/cpu_mp.h>
+#include <86box/thread.h> /* thread_spin_pause */
 #include "cpu_core.h"
+#include "cpu_thread.h"
 
 #ifdef ENABLE_CPU_MP_LOG
 int cpu_mp_do_log = ENABLE_CPU_MP_LOG;
@@ -111,11 +115,27 @@ typedef struct cpu_mp_ctx_t {
     uint8_t    nmi_pending;  /* an NMI arrived while it was not in place: 1 the pin's, 2 the APIC's */
     uint8_t    smi_pending;  /* and an SMI */
     uint8_t    init_pending; /* an INIT to it while it ran, or in SMM: taken at a slice's end */
+
+    /* On a thread of its own (cpu_thread.c): resets and INITs asked for
+       and taken are counted, and reset_last is the number of the last
+       RESET asked for (the rest were INITs) -- requests up to it not taken
+       yet end in RESET, whatever INIT came between. */
+    uint32_t reset_req;
+    uint32_t reset_taken;
+    uint32_t reset_last;
+    /* Its own thread only: it asked for a board reset and waits for it;
+       and it was idle, so its clock follows the machine's. */
+    int reset_wait;
+    int was_idle;
+    /* The machine's thread: the reset it asked for came to nothing (a soft
+       reset masked), so it goes on. */
+    int reset_void;
 } cpu_mp_ctx_t;
 
 /* Memory read-modify-writes are compare-and-swaps, and serializing
    instructions full fences (386_common.h), while another processor could
-   be running beside this one: never while they take turns. */
+   be running beside this one: with the others on threads of their own,
+   never while they take turns. */
 int cpu_mp_atomic = 0;
 
 int cpu_mp_count         = 1;
@@ -147,11 +167,12 @@ static int          cpu_mp_in_smm(int index);
 static int          cpu_mp_smm_wait_over(int index);
 static uint8_t     *cpu_mp_reset_blob; /* a processor straight out of RESET */
 /* Room to build what INIT leaves: the processor's state before it, and the
-   image made from it. */
-static uint8_t     *cpu_mp_init_cur;
-static uint8_t     *cpu_mp_init_img;
+   image made from it -- a pair for each thread that builds one (the
+   machine's is 0). */
+static uint8_t     *cpu_mp_init_cur[CPU_MP_MAX];
+static uint8_t     *cpu_mp_init_img[CPU_MP_MAX];
 /* A reset asked for by a processor other than the first, for the first to
-   do (cpu_mp_run_pending_reset). */
+   do (cpu_mp_run_pending_reset); set and taken atomically. */
 int                 cpu_mp_reset_pending;
 static uint64_t     cpu_mp_slice_tsc;
 
@@ -254,6 +275,46 @@ static int                   cpu_mp_copy_mode;
 static int cpu_mp_core_inited[CPU_MP_MAX];
 #endif
 static int32_t cpu_mp_c0_cycles; /* the first core's, while another runs */
+
+/* ---- all processors at once (cpu_thread.c) --------------------------------
+
+   With a thread of its own each other processor runs beside the first.
+   What the machine's thread does to one -- NMI, SMI, INIT, STARTUP, a
+   board reset -- is posted here and taken by its own thread at its next
+   block boundary (cpu_mp_ap_prepare); nothing on the machine's thread
+   touches its core while it runs.
+
+   Resets and INITs asked for and taken are counted in its context; the
+   RESET image they load is written under a sequence count, odd while it is
+   written. The lock orders a reset against a STARTUP after it, so each
+   processor takes them in the order they came; it is held for a few
+   stores, never across anything else. */
+static int      cpu_mp_ap_smram_recalc; /* one left SMM by INIT or RESET on its own thread */
+static uint32_t cpu_mp_reset_blob_seq;
+static int      cpu_mp_ap_lock;
+
+static int
+cpu_mp_parallel(void)
+{
+#ifdef CPU_MP_SECOND_CORE
+    return cpu_mp_copy_mode && cpu_thread_active();
+#else
+    return 0;
+#endif
+}
+
+static void
+cpu_mp_ap_lock_take(void)
+{
+    while (__atomic_exchange_n(&cpu_mp_ap_lock, 1, __ATOMIC_ACQUIRE))
+        thread_spin_pause();
+}
+
+static void
+cpu_mp_ap_lock_give(void)
+{
+    __atomic_store_n(&cpu_mp_ap_lock, 0, __ATOMIC_RELEASE);
+}
 
 int
 cpu_mp_copy_mode_active(void)
@@ -375,10 +436,54 @@ cpu_mp_state_image(int index, uint8_t *img)
         memcpy(img, cpu_mp_ctx[index].blob, cpu_mp_blob_size);
 }
 
-/* End the slice of the processor in place now. */
+/* The machine's thread rebuilds tables the others read: those on threads
+   of their own stay out until it is done. */
+void
+cpu_mp_hold_others(void)
+{
+#ifdef CPU_MP_SECOND_CORE
+    if (cpu_mp_parallel())
+        cpu_thread_hold();
+#endif
+}
+
+void
+cpu_mp_release_others(void)
+{
+#ifdef CPU_MP_SECOND_CORE
+    if (cpu_mp_parallel())
+        cpu_thread_release();
+#endif
+}
+
+/* A locked operation across a page or a 64-byte line
+   (mem_split_lock_take): the others kept off the bus. */
+void
+cpu_mp_split_begin(void)
+{
+#ifdef CPU_MP_SECOND_CORE
+    if (cpu_mp_parallel())
+        cpu_thread_split_begin();
+#endif
+}
+
+void
+cpu_mp_split_end(void)
+{
+#ifdef CPU_MP_SECOND_CORE
+    if (cpu_mp_parallel())
+        cpu_thread_split_end();
+#endif
+}
+
+/* End the slice of the processor in place now. Another processor running
+   on its own thread is not stopped from this one: what ends its run comes
+   to it by its mailbox. */
 static void
 cpu_mp_stop_current(void)
 {
+    if (cpu_mp_parallel() && (cpu_mp_cur != 0))
+        return;
     cpu_mp_cur_core()->stop();
 }
 
@@ -418,14 +523,14 @@ cpu_mp_switch(int index)
 /* Whether a halted processor's maskable interrupts could end its HLT:
    "An enabled interrupt, NMI, or a reset will resume execution" (Pentium
    Vol. 3, HLT). Its IF, from its own core or its saved state (cpu_state is
-   the first thing saved). */
+   the first thing saved); read from another thread, a hint. */
 static int
 cpu_mp_interrupts_enabled(int index)
 {
     const cpu_state_t *st = cpu_mp_copy_mode ? (const cpu_state_t *) cpu_mp_vars[index][0].addr :
                                                (const cpu_state_t *) cpu_mp_ctx[index].blob;
 
-    return (st == NULL) || !!(st->flags & I_FLAG);
+    return (st == NULL) || !!(__atomic_load_n(&st->flags, __ATOMIC_RELAXED) & I_FLAG);
 }
 
 static int
@@ -504,7 +609,8 @@ cpu_mp_next_slice_us(void)
 }
 
 /* An NMI for one processor: taken now if it is the one in place, else
-   when it next is. */
+   when it next is, or, on a thread of its own, at its next block boundary
+   (cpu_mp_ap_prepare). */
 static void
 cpu_mp_nmi_ex(int index, int apic)
 {
@@ -516,9 +622,17 @@ cpu_mp_nmi_ex(int index, int apic)
     /* 1 the NMI pin's, 2 the APIC's (not gated by port 70h), kept at the
        higher if both come. */
     if (apic)
-        cpu_mp_ctx[index].nmi_pending = 2;
-    else if (!cpu_mp_ctx[index].nmi_pending)
-        cpu_mp_ctx[index].nmi_pending = 1;
+        __atomic_store_n(&cpu_mp_ctx[index].nmi_pending, 2, __ATOMIC_SEQ_CST);
+    else {
+        uint8_t none = 0;
+
+        (void) __atomic_compare_exchange_n(&cpu_mp_ctx[index].nmi_pending, &none, 1, 0, __ATOMIC_SEQ_CST,
+                                           __ATOMIC_SEQ_CST);
+    }
+#ifdef CPU_MP_SECOND_CORE
+    if ((index != 0) && cpu_mp_parallel())
+        cpu_thread_wake(index);
+#endif
 }
 
 /* An NMI for one processor from its NMI pin (nmi_raise), or from its
@@ -544,7 +658,11 @@ cpu_mp_smi(int index)
         return;
     }
 
-    cpu_mp_ctx[index].smi_pending = 1;
+    __atomic_store_n(&cpu_mp_ctx[index].smi_pending, 1, __ATOMIC_SEQ_CST);
+#ifdef CPU_MP_SECOND_CORE
+    if ((index != 0) && cpu_mp_parallel())
+        cpu_thread_wake(index);
+#endif
 }
 
 /* A processor other than the first takes its turn: in place, the clock
@@ -663,16 +781,18 @@ cpu_mp_run_pending_reset(void)
 
     if (cpu_mp_cur != 0)
         return;
-    p = cpu_mp_reset_pending;
-    cpu_mp_reset_pending = 0;
+    p             = __atomic_exchange_n(&cpu_mp_reset_pending, 0, __ATOMIC_SEQ_CST);
     was_reset     = x86_was_reset;
     x86_was_reset = 0;
     if (p == 2)
         resetx86();
     else if ((p == 3) && in_smm) {
         /* Held in SMM until RSM (Pentium Vol. 1, spec update 49), looked at
-           when taken: an SMI taken at the same boundary comes first. */
-        cpu_mp_reset_pending = 3;
+           when taken: an SMI taken at the same boundary comes first. A
+           board reset asked for meanwhile covers it. */
+        int none = 0;
+
+        (void) __atomic_compare_exchange_n(&cpu_mp_reset_pending, &none, 3, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
     } else if (p == 3) {
         /* INIT, like RESET, leaves the signature in EDX; the FPU it leaves
            alone (Pentium Vol. 3, Table 16-1), so not cpu_set_edx, which
@@ -684,6 +804,15 @@ cpu_mp_run_pending_reset(void)
            the processor actually reset (a hard reset sets EDX itself). */
         softresetx86();
         cpu_set_edx();
+    }
+    /* A soft reset that came to nothing (masked): a processor on a thread
+       of its own waiting for it goes on (cpu_mp_ap_prepare). */
+    if ((p == 1) && !x86_was_reset) {
+        for (int i = 1; i < cpu_mp_count; i++)
+            __atomic_store_n(&cpu_mp_ctx[i].reset_void, 1, __ATOMIC_SEQ_CST);
+#ifdef CPU_MP_SECOND_CORE
+        cpu_thread_poke_all();
+#endif
     }
     x86_was_reset |= was_reset;
 }
@@ -738,6 +867,200 @@ cpu_mp_end_slice(void)
     cpu_mp_run_pending_reset();
 }
 
+/* ---- the other processors on their own threads -------------------------- */
+
+/* On processor index's thread, before each run: what was posted to it, and
+   whether it has anything to run (AP_RUNNING) or sleeps (AP_IDLE_*). */
+int
+cpu_mp_ap_prepare(int index)
+{
+    const cpu_core_ops_t *core   = cpu_mp_core[index];
+    cpu_mp_ctx_t         *c      = &cpu_mp_ctx[index];
+    const cpu_state_t    *st     = (const cpu_state_t *) cpu_mp_vars[index][0].addr;
+    uint32_t              req;
+    int                   reset  = 0;
+    int                   start  = 0;
+    int                   woke   = 0;
+    int                   held   = 0;
+    uint8_t               vector = 0;
+    uint8_t               p_nmi;
+
+    cpu_mp_ap_lock_take();
+    /* Out of the SMM it entered from waiting for a STARTUP: waiting again.
+       Not before: an SMI raised in its core and not yet taken is still to
+       run, and the processor with it. */
+    if ((c->state == CPU_MP_SMM_WAIT) && cpu_mp_smm_wait_over(index)) {
+        __atomic_store_n(&c->state, CPU_MP_WAIT_SIPI, __ATOMIC_SEQ_CST);
+        core->halted_set(0);
+    }
+    /* An SMI reaches it waiting: it enters SMM from there. */
+    if ((c->state == CPU_MP_WAIT_SIPI) && (c->reset_req == c->reset_taken) &&
+        __atomic_load_n(&c->smi_pending, __ATOMIC_SEQ_CST))
+        __atomic_store_n(&c->state, CPU_MP_SMM_WAIT, __ATOMIC_SEQ_CST);
+    req = __atomic_load_n(&c->reset_req, __ATOMIC_SEQ_CST);
+    if (req != c->reset_taken)
+        reset = ((int32_t) (c->reset_last - c->reset_taken) > 0) ? 2 : 1;
+    /* An INIT waits while the processor is in SMM, taken after its RSM
+       (Pentium Vol. 1, spec update 49); a STARTUP after it waits with it.
+       An SMI pending with it goes first -- SMI# ranks above INIT (Vol. 1,
+       Table 2-7) -- raised in its core or still posted, and the INIT then
+       waits in its SMM the same way. */
+    if ((reset == 1) && (st->_in_smm || st->_smi_line || __atomic_load_n(&c->smi_pending, __ATOMIC_SEQ_CST))) {
+        reset = 0;
+        held  = 1;
+    }
+    if (!held && (c->state == CPU_MP_STARTING)) {
+        vector = c->sipi_vector;
+        __atomic_store_n(&c->state, CPU_MP_RUNNING, __ATOMIC_SEQ_CST);
+        start = 1;
+    }
+    cpu_mp_ap_lock_give();
+
+    /* RESET or INIT: the state RESET leaves, its TLB empty, or what INIT
+       keeps of the state it finds. Any STARTUP came after it. */
+    if (reset) {
+        const int is_init = (reset == 1);
+        uint32_t  seq;
+
+        if (is_init)
+            cpu_mp_save_blob_of(index, cpu_mp_init_cur[index]);
+        do {
+            while ((seq = __atomic_load_n(&cpu_mp_reset_blob_seq, __ATOMIC_SEQ_CST)) & 1)
+                thread_spin_pause();
+            if (is_init) {
+                cpu_mp_init_image(cpu_mp_init_img[index], cpu_mp_init_cur[index], cpu_mp_reset_blob);
+                cpu_mp_load_blob_into(index, cpu_mp_init_img[index]);
+            } else
+                cpu_mp_load_blob_into(index, cpu_mp_reset_blob);
+        } while (__atomic_load_n(&cpu_mp_reset_blob_seq, __ATOMIC_SEQ_CST) != seq);
+        core->after_load();
+        core->halted_set(0);
+        /* RESET: its clock is the machine's again. Its own only ever moves
+           forward to meet the machine's, so after a hard reset of the
+           emulator, which starts the machine's clock again from nothing, it
+           would be far ahead, held at the bound, and take no STARTUP and no
+           SMI until the machine caught up. An INIT keeps the clock. */
+        if (!is_init)
+            core->tsc_set(__atomic_load_n(&tsc, __ATOMIC_SEQ_CST));
+        /* Out of SMM without an RSM, now and not before: it ran up to here,
+           and may have entered SMM after the INIT was posted. */
+        if (mem_smm_leave(index))
+            __atomic_store_n(&cpu_mp_ap_smram_recalc, 1, __ATOMIC_SEQ_CST);
+        c->reset_wait = 0;
+        c->was_idle   = 1;
+        /* Taken: what was pending goes with the state it was for. */
+        if (is_init)
+            __atomic_store_n(&c->nmi_pending, 0, __ATOMIC_SEQ_CST);
+        __atomic_store_n(&c->reset_taken, req, __ATOMIC_SEQ_CST);
+    }
+
+    if (start) {
+        core->startup(vector);
+        core->halted_set(0);
+        c->was_idle = 1;
+        cpu_mp_log("CPU MP: processor %i starts at %04X:0000\n", index, vector << 8);
+    }
+
+    if (c->reset_wait && __atomic_exchange_n(&c->reset_void, 0, __ATOMIC_SEQ_CST))
+        c->reset_wait = 0;
+    if (c->reset_wait) {
+        c->was_idle = 1; /* its clock follows the machine's meanwhile */
+        return AP_IDLE_OTHER;
+    }
+    if (!held && (__atomic_load_n(&c->state, __ATOMIC_SEQ_CST) == CPU_MP_WAIT_SIPI)) {
+        c->was_idle = 1;
+        return AP_IDLE_OTHER;
+    }
+
+    if ((p_nmi = __atomic_exchange_n(&c->nmi_pending, 0, __ATOMIC_SEQ_CST))) {
+        core->nmi_raise(p_nmi == 2);
+        woke = 1;
+    }
+    if (__atomic_exchange_n(&c->smi_pending, 0, __ATOMIC_SEQ_CST)) {
+        core->smi_raise();
+        woke = 1;
+    }
+
+    /* Halted with nothing to end the HLT: a run would only run HLT. */
+    if (core->halted_get() && !woke && !start && !cpu_mp_external_wakes(index)) {
+        c->was_idle = 1;
+        return AP_IDLE_HALTED;
+    }
+
+    /* Back from sleeping: its clock went on with the machine's. */
+    if (c->was_idle) {
+        const uint64_t now = __atomic_load_n(&tsc, __ATOMIC_SEQ_CST);
+
+        if ((int64_t) (now - core->tsc_get()) > 0)
+            core->tsc_set(now);
+        c->was_idle = 0;
+    }
+
+    return AP_RUNNING;
+}
+
+/* On its thread, after each run. */
+void
+cpu_mp_ap_after_run(int index)
+{
+    cpu_mp_ctx[index].halted = cpu_mp_core[index]->halted_get();
+}
+
+/* On the machine's thread: whether halted processor index now has
+   something to end its HLT. */
+int
+cpu_mp_ap_wakes(int index)
+{
+    return cpu_mp_external_wakes(index) || __atomic_load_n(&cpu_mp_ctx[index].nmi_pending, __ATOMIC_SEQ_CST) ||
+           __atomic_load_n(&cpu_mp_ctx[index].smi_pending, __ATOMIC_SEQ_CST);
+}
+
+/* A reset or INIT posted to it and not yet taken. */
+int
+cpu_mp_ap_reset_outstanding(int index)
+{
+    return __atomic_load_n(&cpu_mp_ctx[index].reset_req, __ATOMIC_SEQ_CST) !=
+           __atomic_load_n(&cpu_mp_ctx[index].reset_taken, __ATOMIC_SEQ_CST);
+}
+
+/* A RESET, not an INIT, posted to it and not yet taken: RESET "forces the
+   Pentium processor to terminate all execution and bus cycle activity",
+   where INIT "will be recognized when an instruction boundary is reached"
+   (Pentium Vol. 1, 3.3). */
+int
+cpu_mp_ap_hard_reset_outstanding(int index)
+{
+    return (int32_t) (__atomic_load_n(&cpu_mp_ctx[index].reset_last, __ATOMIC_SEQ_CST) -
+                      __atomic_load_n(&cpu_mp_ctx[index].reset_taken, __ATOMIC_SEQ_CST)) > 0;
+}
+
+/* On the machine's thread, after device work done for another processor
+   and after each of the first's slices: an NMI or SMI for the first that
+   came meanwhile, and a reset either asked for. */
+void
+cpu_mp_after_serve(void)
+{
+    if (cpu_mp_cur != 0)
+        return;
+
+    if (__atomic_load_n(&cpu_mp_ap_smram_recalc, __ATOMIC_RELAXED) &&
+        __atomic_exchange_n(&cpu_mp_ap_smram_recalc, 0, __ATOMIC_SEQ_CST))
+        smram_recalc_all(1);
+
+    if (__atomic_load_n(&cpu_mp_ctx[0].nmi_pending, __ATOMIC_RELAXED)) {
+        const uint8_t p_nmi = __atomic_exchange_n(&cpu_mp_ctx[0].nmi_pending, 0, __ATOMIC_SEQ_CST);
+
+        if (p_nmi)
+            cpu_core_ops()->nmi_raise(p_nmi == 2);
+    }
+    if (__atomic_load_n(&cpu_mp_ctx[0].smi_pending, __ATOMIC_RELAXED) &&
+        __atomic_exchange_n(&cpu_mp_ctx[0].smi_pending, 0, __ATOMIC_SEQ_CST))
+        cpu_core_ops()->smi_raise();
+
+    if (__atomic_load_n(&cpu_mp_reset_pending, __ATOMIC_SEQ_CST))
+        cpu_mp_run_pending_reset();
+}
+
 /* ---- RESET, INIT and STARTUP -------------------------------------------- */
 
 /* A reset is the machine's and the first processor's business. Asked for
@@ -749,18 +1072,34 @@ cpu_mp_defer_reset(int self, int hard)
         return 0;
 
     if (hard)
-        cpu_mp_reset_pending = 2;
-    else if ((cpu_mp_reset_pending == 0) || (cpu_mp_reset_pending == 3)) {
+        __atomic_store_n(&cpu_mp_reset_pending, 2, __ATOMIC_SEQ_CST);
+    else {
         /* A soft reset is INIT to every socket: it takes the place of an
            INIT of the first processor alone still waiting (3), and yields
            to a hard one (2). */
-        cpu_mp_reset_pending = 1;
+        int p = __atomic_load_n(&cpu_mp_reset_pending, __ATOMIC_SEQ_CST);
+
+        while (((p == 0) || (p == 3)) &&
+               !__atomic_compare_exchange_n(&cpu_mp_reset_pending, &p, 1, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+            ;
     }
 
     /* The reset happens at the end of this processor's slice, so end it
        now: left as it is, a processor that shut down on a triple fault
-       faults again at once, costing no cycles, and the slice never ends. */
-    if (cpu_mp_copy_mode)
+       faults again at once, costing no cycles, and the slice never ends.
+       On a thread of its own it ends its run and waits for the reset to
+       reach it; asked for through the machine's thread (a device it
+       wrote), the reset reaches it by its mailbox. */
+    if (cpu_mp_parallel()) {
+#ifdef CPU_MP_SECOND_CORE
+        if (cpu_thread_self() == self) {
+            __atomic_store_n(&cpu_mp_ctx[self].reset_void, 0, __ATOMIC_SEQ_CST);
+            cpu_mp_ctx[self].reset_wait = 1;
+            cpu_mp_core[self]->stop();
+            cpu_thread_poke(self); /* its mailbox has changed */
+        }
+#endif
+    } else if (cpu_mp_copy_mode)
         cpu_mp_core[self]->stop();
     else
         cpu_mp_stop_current();
@@ -777,6 +1116,31 @@ cpu_mp_smm_forget(int index)
         smram_recalc_all(1);
 }
 
+/* Processor index on its own thread back to what RESET or INIT leaves:
+   posted, and waiting for a STARTUP from now on. */
+static void
+cpu_mp_ap_post_reset(int index, int hard)
+{
+    cpu_mp_ctx_t *c = &cpu_mp_ctx[index];
+
+    cpu_mp_ap_lock_take();
+    __atomic_fetch_add(&c->reset_req, 1, __ATOMIC_SEQ_CST);
+    if (hard)
+        __atomic_store_n(&c->reset_last, c->reset_req, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&c->state, CPU_MP_WAIT_SIPI, __ATOMIC_SEQ_CST);
+    cpu_mp_ap_lock_give();
+    /* RESET ends everything pending now. An INIT only when it is taken
+       (cpu_mp_ap_prepare): one held in SMM leaves an NMI latched for after
+       the RSM, and an SMI pending goes first. */
+    if (hard) {
+        __atomic_store_n(&c->nmi_pending, 0, __ATOMIC_SEQ_CST);
+        __atomic_store_n(&c->smi_pending, 0, __ATOMIC_SEQ_CST);
+    }
+#ifdef CPU_MP_SECOND_CORE
+    cpu_thread_poke(index);
+#endif
+}
+
 /* The board's RESET (hard) or INIT pin (soft: port 92, the keyboard
    controller, a shutdown cycle -- 82434NX PCMC, INIT) reaches every socket:
    the others go through it and wait for a STARTUP. INIT keeps what INIT
@@ -785,6 +1149,17 @@ static void
 cpu_mp_park_others(int hard)
 {
     for (int i = 1; (i < cpu_mp_count) && (i < CPU_MP_MAX); i++) {
+        if (cpu_mp_parallel()) {
+            cpu_mp_ap_post_reset(i, hard);
+            /* An INIT it may hold in SMM until its RSM: it leaves SMM when
+               it takes it (cpu_mp_ap_prepare). RESET is now. */
+            if (hard)
+                cpu_mp_smm_forget(i);
+            lapic_index_board_reset((uint8_t) i);
+            cpu_mp_ctx[i].sipi_vector  = 0;
+            cpu_mp_ctx[i].init_pending = 0;
+            continue;
+        }
         /* The INIT pin to a processor in SMM waits for its RSM (Pentium
            Vol. 1, spec update 49), as an APIC INIT does: held, and taken
            at a slice's end after it (cpu_mp_init_signal). */
@@ -796,9 +1171,9 @@ cpu_mp_park_others(int hard)
         if (hard)
             cpu_mp_load_state(i, cpu_mp_reset_blob); /* RESET empties the TLB too */
         else {
-            cpu_mp_state_image(i, cpu_mp_init_cur);
-            cpu_mp_init_image(cpu_mp_init_img, cpu_mp_init_cur, cpu_mp_reset_blob);
-            cpu_mp_load_state(i, cpu_mp_init_img);
+            cpu_mp_state_image(i, cpu_mp_init_cur[0]);
+            cpu_mp_init_image(cpu_mp_init_img[0], cpu_mp_init_cur[0], cpu_mp_reset_blob);
+            cpu_mp_load_state(i, cpu_mp_init_img[0]);
         }
         cpu_mp_smm_forget(i);
         lapic_index_board_reset((uint8_t) i); /* and its APIC waits for STARTUP */
@@ -822,7 +1197,7 @@ cpu_mp_after_reset(int self, int hard)
     /* A hard reset ends whatever reset or INIT was still waiting, with one
        processor too (an INIT to itself posted in the same chunk). */
     if (hard && (self == 0))
-        cpu_mp_reset_pending = 0;
+        __atomic_store_n(&cpu_mp_reset_pending, 0, __ATOMIC_SEQ_CST);
 
     if ((cpu_mp_count < 2) || (self != 0))
         return;
@@ -861,7 +1236,11 @@ cpu_mp_after_reset(int self, int hard)
            is. */
         cpu_core_waiting = 1;
         cpu_fa_state     = 0; /* nothing fetched ahead of anything */
+        /* Read by the others' threads as they take a reset: odd while it is
+           written. */
+        __atomic_fetch_add(&cpu_mp_reset_blob_seq, 1, __ATOMIC_SEQ_CST);
         cpu_mp_save_blob(cpu_mp_reset_blob);
+        __atomic_fetch_add(&cpu_mp_reset_blob_seq, 1, __ATOMIC_SEQ_CST);
         cpu_core_waiting = 0;
         CPUID            = saved;
         cr0              = saved_cr0;
@@ -880,7 +1259,11 @@ cpu_mp_startup(uint8_t index, uint8_t vector)
     if ((cpu_mp_count < 2) || (index == 0) || (index >= cpu_mp_count))
         return 0;
 
+    /* After a reset posted to a processor on its own thread, in the order
+       they came (cpu_mp_ap_prepare). */
+    cpu_mp_ap_lock_take();
     if (cpu_mp_ctx[index].state != CPU_MP_WAIT_SIPI) {
+        cpu_mp_ap_lock_give();
         cpu_mp_log("CPU MP: STARTUP to processor %i ignored: it is %s, not waiting for one\n", index,
                    (cpu_mp_ctx[index].state == CPU_MP_RUNNING)  ? "running" :
                    (cpu_mp_ctx[index].state == CPU_MP_SMM_WAIT) ? "in SMM from wait-for-STARTUP" :
@@ -889,9 +1272,15 @@ cpu_mp_startup(uint8_t index, uint8_t vector)
     }
 
     cpu_mp_ctx[index].sipi_vector = vector;
-    cpu_mp_ctx[index].state       = CPU_MP_STARTING;
-    cpu_mp_ctx[index].halted      = 0;
-    cpu_mp_interacted             = 1;
+    __atomic_store_n(&cpu_mp_ctx[index].state, CPU_MP_STARTING, __ATOMIC_SEQ_CST);
+    cpu_mp_ap_lock_give();
+    cpu_mp_interacted = 1;
+    if (!cpu_mp_parallel())
+        cpu_mp_ctx[index].halted = 0;
+#ifdef CPU_MP_SECOND_CORE
+    else
+        cpu_thread_wake(index);
+#endif
     cpu_mp_log("CPU MP: STARTUP to processor %i, vector %02X\n", index, vector);
     return 1;
 }
@@ -933,14 +1322,22 @@ cpu_mp_smm_wait_over(int index)
 
 /* Processor index's RSM (leave_smm, not waiting for a STARTUP): an INIT it
    held in SMM is taken now, before anything after the RSM runs. Answers
-   whether one waits; its slice then ends there, and its slice's end takes
-   it (cpu_mp_end_slice). */
+   whether one waits; its run then ends there, and its mailbox looks again
+   (cpu_mp_ap_prepare) or its slice's end takes it (cpu_mp_end_slice). */
 int
 cpu_mp_rsm_init_waits(int index)
 {
     if ((cpu_mp_count < 2) || (index <= 0) || (index >= cpu_mp_count))
         return 0;
-    return cpu_mp_ctx[index].init_pending;
+    if (__atomic_load_n(&cpu_mp_ctx[index].init_pending, __ATOMIC_SEQ_CST))
+        return 1;
+#ifdef CPU_MP_SECOND_CORE
+    if (cpu_mp_parallel() && cpu_mp_ap_reset_outstanding(index)) {
+        cpu_thread_poke(index);
+        return 1;
+    }
+#endif
+    return 0;
 }
 
 extern int cpu_exec386_active; /* 386_dynarec.c */
@@ -950,9 +1347,10 @@ extern int cpu_exec386_active; /* 386_dynarec.c */
 static void
 cpu_mp_init_first(void)
 {
+    int none = 0;
+
     /* A board reset already asked for covers it. */
-    if (cpu_mp_reset_pending == 0)
-        cpu_mp_reset_pending = 3;
+    (void) __atomic_compare_exchange_n(&cpu_mp_reset_pending, &none, 3, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
     /* The interpreter takes it at the next instruction boundary ("recognized
        at instruction boundaries", Pentium Vol. 1, 2.7) by itself; stopping
        it mid-instruction charged the rest of its budget to the clock at
@@ -967,7 +1365,7 @@ cpu_mp_init_first(void)
 void
 cpu_mp_after_chunk(void)
 {
-    if ((cpu_mp_cur == 0) && cpu_mp_reset_pending)
+    if ((cpu_mp_cur == 0) && __atomic_load_n(&cpu_mp_reset_pending, __ATOMIC_RELAXED))
         cpu_mp_run_pending_reset();
 }
 
@@ -983,6 +1381,16 @@ cpu_mp_init_signal(uint8_t index)
     }
     if ((cpu_mp_count < 2) || (index >= cpu_mp_count))
         return;
+
+    /* On its own thread it takes the INIT itself, at its next block
+       boundary; a RESET it has not taken yet still ends in RESET, and in
+       SMM the INIT waits for its RSM there (cpu_mp_ap_prepare). */
+    if (cpu_mp_parallel()) {
+        cpu_mp_ctx[index].init_pending = 0;
+        cpu_mp_ap_post_reset(index, 0);
+        cpu_mp_log("CPU MP: INIT to processor %i\n", index);
+        return;
+    }
 
     /* In SMM an INIT waits: "the processor exits SMM and services the
        pending NMI or INIT" (Pentium Vol. 1, spec update 49). Held, it is
@@ -1003,9 +1411,9 @@ cpu_mp_init_signal(uint8_t index)
     }
 
     cpu_mp_ctx[index].init_pending = 0;
-    cpu_mp_state_image(index, cpu_mp_init_cur);
-    cpu_mp_init_image(cpu_mp_init_img, cpu_mp_init_cur, cpu_mp_reset_blob);
-    cpu_mp_load_state(index, cpu_mp_init_img); /* INIT empties the TLB too */
+    cpu_mp_state_image(index, cpu_mp_init_cur[0]);
+    cpu_mp_init_image(cpu_mp_init_img[0], cpu_mp_init_cur[0], cpu_mp_reset_blob);
+    cpu_mp_load_state(index, cpu_mp_init_img[0]); /* INIT empties the TLB too */
     cpu_mp_smm_forget(index);
     cpu_mp_ctx[index].state       = CPU_MP_WAIT_SIPI;
     cpu_mp_ctx[index].halted      = 0;
@@ -1015,6 +1423,17 @@ cpu_mp_init_signal(uint8_t index)
 }
 
 /* ---- configuration ------------------------------------------------------ */
+
+/* The emulator closes: the other processors' threads stop first, before
+   the memory and devices they use go. */
+void
+cpu_mp_close(void)
+{
+#ifdef CPU_MP_SECOND_CORE
+    if (cpu_mp_copy_mode)
+        cpu_thread_stop();
+#endif
+}
 
 void
 cpu_mp_configure(int count)
@@ -1034,13 +1453,21 @@ cpu_mp_configure(int count)
 #endif
 
 #ifdef CPU_MP_SECOND_CORE
-    /* The other cores leave the machine's memory. */
+    /* The other cores' threads stop, and the cores leave the machine's
+       memory. Nothing is posted to the first core any more, and a flush
+       the others left in its set is taken now: its signal word is clear. */
     if (cpu_mp_copy_mode) {
+        cpu_thread_stop();
         for (int i = 1; i < cpu_mp_count; i++)
             cpu_mp_core[i]->detach();
+
+        __atomic_store_n(&mem_tlb_default()->attn, 0, __ATOMIC_SEQ_CST);
+        __atomic_store_n(&mem_tlb_default()->brk, 0, __ATOMIC_SEQ_CST);
+        mem_tlb_catch_up();
     }
 #endif
     cpu_mp_copy_mode       = 0;
+    cpu_mp_atomic          = 0;
     mem_tlb_flush_running  = NULL;
     mem_fill_read_running  = NULL;
     mem_fill_write_running = NULL;
@@ -1056,11 +1483,13 @@ cpu_mp_configure(int count)
         cpu_mp_core[i]    = NULL;
     }
     free(cpu_mp_reset_blob);
-    free(cpu_mp_init_cur);
-    free(cpu_mp_init_img);
     cpu_mp_reset_blob = NULL;
-    cpu_mp_init_cur   = NULL;
-    cpu_mp_init_img   = NULL;
+    for (int i = 0; i < CPU_MP_MAX; i++) {
+        free(cpu_mp_init_cur[i]);
+        free(cpu_mp_init_img[i]);
+        cpu_mp_init_cur[i] = NULL;
+        cpu_mp_init_img[i] = NULL;
+    }
 
     cpu_mp_count         = count;
     cpu_mp_cur           = 0;
@@ -1068,6 +1497,20 @@ cpu_mp_configure(int count)
     cpu_mp_interacted    = 0;
     cpu_mp_timers_frozen = 0;
     cpu_mp_reset_pending = 0;
+
+    /* The other processors' threads are stopped: their mailboxes start
+       empty. */
+    for (int i = 0; i < CPU_MP_MAX; i++) {
+        cpu_mp_ctx[i].reset_req   = 0;
+        cpu_mp_ctx[i].reset_taken = 0;
+        cpu_mp_ctx[i].reset_last  = 0;
+        cpu_mp_ctx[i].reset_void  = 0;
+        cpu_mp_ctx[i].reset_wait  = 0;
+        cpu_mp_ctx[i].was_idle    = 1;
+    }
+    cpu_mp_ap_smram_recalc = 0;
+    cpu_mp_reset_blob_seq  = 0;
+    cpu_mp_ap_lock         = 0;
 
     if (count < 2)
         return;
@@ -1081,6 +1524,7 @@ cpu_mp_configure(int count)
        table copy in the machine's memory. */
     {
         cpu_core_config_t cfg;
+        int               threads = 1;
 
         cpu_core_ops()->config_get(&cfg);
         cpu_mp_core[0] = cpu_core_ops();
@@ -1098,14 +1542,31 @@ cpu_mp_configure(int count)
             core->config_set(&cfg);
             core->attach();
             cpu_mp_core[i] = core;
+            cpu_thread_attach(i, core);
         }
         cpu_mp_copy_mode = 1;
+
+        /* Each other processor on a thread of its own, or none: if one
+           would not start they all take turns on this one, where no
+           read-modify-write needs to be atomic. */
+        mem_tlb_fence_setup();
+        for (int i = 1; (i < count) && threads; i++)
+            threads = cpu_thread_start(i, cpu_mp_core[i]);
+        if (!threads) {
+            cpu_thread_stop();
+            for (int i = 1; i < count; i++)
+                cpu_thread_attach(i, cpu_mp_core[i]);
+            pclog("CPU MP: the other processors take turns on the machine's thread\n");
+        }
+        cpu_mp_atomic = cpu_thread_active();
     }
 #endif
 
     cpu_mp_reset_blob = calloc(1, cpu_mp_blob_size);
-    cpu_mp_init_cur   = calloc(1, cpu_mp_blob_size);
-    cpu_mp_init_img   = calloc(1, cpu_mp_blob_size);
+    for (int i = 0; i < CPU_MP_MAX; i++) {
+        cpu_mp_init_cur[i] = calloc(1, cpu_mp_blob_size);
+        cpu_mp_init_img[i] = calloc(1, cpu_mp_blob_size);
+    }
     for (int i = 0; i < count; i++) {
         cpu_mp_ctx[i].blob = calloc(1, cpu_mp_blob_size);
         /* A processor taking its turns in the first core has a TLB set of
@@ -1119,5 +1580,6 @@ cpu_mp_configure(int count)
         cpu_mp_ctx[i].state        = (i == 0) ? CPU_MP_RUNNING : CPU_MP_WAIT_SIPI;
     }
     cpu_mp_log("CPU MP: %i processors, %u bytes of state each, %s\n", count, cpu_mp_blob_size,
-               cpu_mp_copy_mode ? "each in a core of its own" : "sharing one core");
+               cpu_mp_parallel() ? "each on a thread of its own" :
+               (cpu_mp_copy_mode ? "each in a core of its own" : "sharing one core"));
 }

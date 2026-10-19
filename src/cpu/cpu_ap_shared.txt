@@ -152,6 +152,8 @@ mem_page_copy_unregister
 mem_ram_size
 mem_read_mapping_view
 mem_read_ram
+mem_read_raml
+mem_read_ramw
 mem_smm_enter
 mem_smm_leave
 mem_split_lock_give
@@ -168,10 +170,10 @@ mem_tlbs
 mem_write_mapping_view
 mem_write_ram
 mem_write_ramb_page
+mem_write_raml
 mem_write_raml_page
+mem_write_ramw
 mem_write_ramw_page
-mem_writeb_phys
-mem_writel_phys
 page_ff
 pages_sz
 ram
@@ -182,33 +184,24 @@ ram_mid_mapping2
 ram_remapped_mapping
 shadowbios
 shadowbios_write
-smram_backup_all
-smram_recalc_all
 
-# Devices and buses: port I/O, the 8259, the NMI mask, the board resets,
-# the bus timings, the timers (run by the first processor alone).
+# Devices and buses: what the last port access left, the 8259's state,
+# the NMI mask, the board resets, the bus timings, the timers (run by the
+# first processor alone).
 agp_burst_time
 agp_nonburst_time
 device_reset_all
 dma_reset
 dma_set_at
-inb
-inl
-inw
 io_poll_pure
 io_port
 io_port_count
 io_val
 nmi_mask
-outb
-outl
-outw
 pci_burst_time
 pci_nonburst_time
 pci_reset
 pic
-picint_common
-picinterrupt
 ppi_reset
 timer_disable
 timer_on_auto
@@ -216,20 +209,42 @@ timer_process
 timer_target
 
 # The APICs, kept for every processor by the machine.
-cpu_apic_base_msr_read_current
-cpu_apic_base_msr_write_current
 cpu_apic_feature_enabled
-cpu_apic_int_fast_ok
-cpu_cpuid_apic_id_ebx
 cpu_lapic_extint_live
 cpu_lapic_highest_deliverable_irr_index
 cpu_lapic_irr_live
-ioapic_external_interrupt_pending
-ioapic_external_interrupt_vector
+ioapic_external_interrupt_pending_at
 ioapic_irq_path_active
 ioapic_lint1_raise
-ioapic_pic_fallback_allowed
 lapic_index_board_reset
+
+# What another processor asks of the machine's thread when it runs on a
+# thread of its own (cpu_thread.c): device memory, its port I/O and the
+# machine work it reaches by name (cpu_ap_rename.cmake redirects those),
+# taking an interrupt, and its locked instructions' bus hold.
+cpu_ap_cpu_apic_base_msr_read_current
+cpu_ap_cpu_apic_base_msr_write_current
+cpu_ap_cpu_cpuid_apic_id_ebx
+cpu_ap_inb
+cpu_ap_inl
+cpu_ap_interrupt_vector
+cpu_ap_inw
+cpu_ap_map_read_b
+cpu_ap_map_read_l
+cpu_ap_map_read_w
+cpu_ap_map_write_b
+cpu_ap_map_write_l
+cpu_ap_map_write_w
+cpu_ap_mem_writeb_phys
+cpu_ap_mem_writel_phys
+cpu_ap_outb
+cpu_ap_outl
+cpu_ap_outw
+cpu_ap_picint_common
+cpu_ap_smram_backup_all
+cpu_ap_smram_recalc_all
+cpu_thread_locked_begin
+cpu_thread_locked_end
 
 # The processors together (cpu_mp.c).
 cpu_mp_after_chunk
@@ -240,10 +255,12 @@ cpu_mp_copy_mode_active
 cpu_mp_count
 cpu_mp_defer_reset
 cpu_mp_end_slice
+cpu_mp_hold_others
 cpu_mp_next_slice_us
 cpu_mp_nmi
 cpu_mp_register
 cpu_mp_register_keep
+cpu_mp_release_others
 cpu_mp_reset_pending
 cpu_mp_rsm_init_waits
 cpu_mp_run_slice

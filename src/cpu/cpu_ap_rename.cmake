@@ -10,7 +10,9 @@
 #          core defines gets the prefix PREFIX (s1_), in its definitions
 #          and in the references to it, so the copy's state and code sit
 #          at addresses of their own. What it uses without defining -- the
-#          machine, RAM, the devices -- it keeps sharing.
+#          machine, RAM, the devices -- it keeps sharing; its port I/O and
+#          the machine work it asks for by name it reaches through
+#          cpu_thread.c (cpu_ap_inb and the rest).
 #
 #          Run as: cmake -DNM= -DOBJCOPY= -DRANLIB= -DOBJDUMP= -DIN= -DOUT=
 #                        -DPREFIX= -DLIST= -DUNDEF= -DSHARED= [-DSYMPREFIX=_]
@@ -66,6 +68,15 @@ list(SORT names)
 set(out "")
 foreach(n IN LISTS names)
     string(APPEND out "${SYMPREFIX}${n} ${SYMPREFIX}${PREFIX}${n}\n")
+endforeach()
+# Its port I/O, and the machine work it asks for by name, go to the
+# machine's thread when it runs on a thread of its own (cpu_thread.c): one
+# set of functions for every copy, which finds the processor asking by its
+# thread.
+foreach(n inb inw inl outb outw outl picint_common smram_backup_all smram_recalc_all
+          cpu_apic_base_msr_read_current cpu_apic_base_msr_write_current cpu_cpuid_apic_id_ebx
+          mem_writeb_phys mem_writel_phys)
+    string(APPEND out "${SYMPREFIX}${n} ${SYMPREFIX}cpu_ap_${n}\n")
 endforeach()
 file(WRITE ${LIST} "${out}")
 

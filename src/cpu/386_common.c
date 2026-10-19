@@ -160,18 +160,21 @@ cpu_fetch_ahead_after(void)
 }
 
 /* The same two, called from compiled code around a locked instruction
-   (codegen.c): as instruction handlers, so the processor's state is in
-   memory, and a non-zero answer ends the block. */
+   (codegen.c), with the bus held as the LOCK prefix's handler holds it:
+   as instruction handlers, so the processor's state is in memory, and a
+   non-zero answer ends the block. */
 int
 cpu_fetch_ahead_take_op(UNUSED(uint32_t fetchdat))
 {
     cpu_fetch_ahead_take();
+    CPU_LOCKED_BEGIN();
     return 0;
 }
 
 int
 cpu_fetch_ahead_after_op(UNUSED(uint32_t fetchdat))
 {
+    CPU_LOCKED_END();
     return cpu_fetch_ahead_after();
 }
 int cpu_halted  = 0;

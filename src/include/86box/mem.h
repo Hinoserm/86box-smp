@@ -515,6 +515,7 @@ extern void mem_set_access(uint8_t bitmap, int mode, uint32_t base, uint32_t siz
 
 extern const uint8_t *mem_phys_ptr(uint32_t addr, uint32_t len);
 extern uint32_t       mem_mapping_gen;
+extern mem_mapping_t *mem_mapping_at(int index, int write, uint32_t addr);
 extern size_t         mem_ram_size(void);
 
 extern uint8_t  mem_readb_phys(uint32_t addr);

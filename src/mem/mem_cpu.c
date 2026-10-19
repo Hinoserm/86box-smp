@@ -55,6 +55,88 @@
 #    define BLOCK_INVALID    0
 #endif
 
+/* A mapping's handler, called for this core's access. Another processor's
+   core (CPU_AP_CORE) may run on a thread of its own, and leaves device
+   handlers to the machine's thread (cpu_thread.c); plain RAM it handles
+   itself, filling its own TLB and marking writes in its own copy of the
+   page table, as mem.c's RAM handlers do for the first core. */
+#ifdef CPU_AP_CORE
+extern uint8_t  cpu_ap_map_read_b(mem_mapping_t *m, uint32_t a);
+extern uint16_t cpu_ap_map_read_w(mem_mapping_t *m, uint32_t a);
+extern uint32_t cpu_ap_map_read_l(mem_mapping_t *m, uint32_t a);
+extern void     cpu_ap_map_write_b(mem_mapping_t *m, uint32_t a, uint8_t v);
+extern void     cpu_ap_map_write_w(mem_mapping_t *m, uint32_t a, uint16_t v);
+extern void     cpu_ap_map_write_l(mem_mapping_t *m, uint32_t a, uint32_t v);
+
+static inline uint8_t
+mem_cpu_ram_rb(uint32_t a)
+{
+    if (cpu_use_exec)
+        addreadlookup(mem_logical_addr, a);
+    return ram[a];
+}
+
+static inline uint16_t
+mem_cpu_ram_rw(uint32_t a)
+{
+    if (cpu_use_exec)
+        addreadlookup(mem_logical_addr, a);
+    return *(uint16_t *) &ram[a];
+}
+
+static inline uint32_t
+mem_cpu_ram_rl(uint32_t a)
+{
+    if (cpu_use_exec)
+        addreadlookup(mem_logical_addr, a);
+    return *(uint32_t *) &ram[a];
+}
+
+static inline void
+mem_cpu_ram_wb(uint32_t a, uint8_t v)
+{
+    if (cpu_use_exec) {
+        addwritelookup(mem_logical_addr, a);
+        mem_write_ramb_page(a, v, &pages[a >> 12]);
+    } else
+        ram[a] = v;
+}
+
+static inline void
+mem_cpu_ram_ww(uint32_t a, uint16_t v)
+{
+    if (cpu_use_exec) {
+        addwritelookup(mem_logical_addr, a);
+        mem_write_ramw_page(a, v, &pages[a >> 12]);
+    } else
+        *(uint16_t *) &ram[a] = v;
+}
+
+static inline void
+mem_cpu_ram_wl(uint32_t a, uint32_t v)
+{
+    if (cpu_use_exec) {
+        addwritelookup(mem_logical_addr, a);
+        mem_write_raml_page(a, v, &pages[a >> 12]);
+    } else
+        *(uint32_t *) &ram[a] = v;
+}
+
+#    define MAP_READ_B(m, a)     (((m)->read_b == mem_read_ram) ? mem_cpu_ram_rb(a) : cpu_ap_map_read_b((m), (a)))
+#    define MAP_READ_W(m, a)     (((m)->read_w == mem_read_ramw) ? mem_cpu_ram_rw(a) : cpu_ap_map_read_w((m), (a)))
+#    define MAP_READ_L(m, a)     (((m)->read_l == mem_read_raml) ? mem_cpu_ram_rl(a) : cpu_ap_map_read_l((m), (a)))
+#    define MAP_WRITE_B(m, a, v) (((m)->write_b == mem_write_ram) ? mem_cpu_ram_wb((a), (v)) : cpu_ap_map_write_b((m), (a), (v)))
+#    define MAP_WRITE_W(m, a, v) (((m)->write_w == mem_write_ramw) ? mem_cpu_ram_ww((a), (v)) : cpu_ap_map_write_w((m), (a), (v)))
+#    define MAP_WRITE_L(m, a, v) (((m)->write_l == mem_write_raml) ? mem_cpu_ram_wl((a), (v)) : cpu_ap_map_write_l((m), (a), (v)))
+#else
+#    define MAP_READ_B(m, a)     (m)->read_b((a), (m)->priv)
+#    define MAP_READ_W(m, a)     (m)->read_w((a), (m)->priv)
+#    define MAP_READ_L(m, a)     (m)->read_l((a), (m)->priv)
+#    define MAP_WRITE_B(m, a, v) (m)->write_b((a), (v), (m)->priv)
+#    define MAP_WRITE_W(m, a, v) (m)->write_w((a), (v), (m)->priv)
+#    define MAP_WRITE_L(m, a, v) (m)->write_l((a), (v), (m)->priv)
+#endif
+
 /* IN530 INIT reset path. */
 static int mem_a20_reset_vector_bypass = 0;
 
@@ -1427,7 +1509,7 @@ read_mem_b(uint32_t addr)
 
     map = read_mapping[addr >> MEM_GRANULARITY_BITS];
     if (map && map->read_b)
-        ret = map->read_b(addr, map->priv);
+        ret = MAP_READ_B(map, addr);
 
     return ret;
 }
@@ -1447,9 +1529,9 @@ read_mem_w(uint32_t addr)
         map = read_mapping[addr >> MEM_GRANULARITY_BITS];
 
         if (map && map->read_w)
-            ret = map->read_w(addr, map->priv);
+            ret = MAP_READ_W(map, addr);
         else if (map && map->read_b)
-            ret = map->read_b(addr, map->priv) | (map->read_b(addr + 1, map->priv) << 8);
+            ret = MAP_READ_B(map, addr) | (MAP_READ_B(map, addr + 1) << 8);
     }
 
     return ret;
@@ -1465,7 +1547,7 @@ write_mem_b(uint32_t addr, uint8_t val)
 
     map = write_mapping[addr >> MEM_GRANULARITY_BITS];
     if (map && map->write_b)
-        map->write_b(addr, val, map->priv);
+        MAP_WRITE_B(map, addr, val);
 }
 
 void
@@ -1483,10 +1565,10 @@ write_mem_w(uint32_t addr, uint16_t val)
         map = write_mapping[addr >> MEM_GRANULARITY_BITS];
         if (map) {
             if (map->write_w)
-                map->write_w(addr, val, map->priv);
+                MAP_WRITE_W(map, addr, val);
             else if (map->write_b) {
-                map->write_b(addr, val, map->priv);
-                map->write_b(addr + 1, val >> 8, map->priv);
+                MAP_WRITE_B(map, addr, val);
+                MAP_WRITE_B(map, addr + 1, val >> 8);
             }
         }
     }
@@ -1528,7 +1610,7 @@ readmembl(uint32_t addr)
 
     map = read_mapping[addr >> MEM_GRANULARITY_BITS];
     if (map && map->read_b)
-        return map->read_b(addr, map->priv);
+        return MAP_READ_B(map, addr);
 
     return 0xff;
 }
@@ -1566,7 +1648,7 @@ writemembl(uint32_t addr, uint8_t val)
 
     map = write_mapping[addr >> MEM_GRANULARITY_BITS];
     if (map && map->write_b)
-        map->write_b(addr, val, map->priv);
+        MAP_WRITE_B(map, addr, val);
 }
 
 /* Read a byte from memory without MMU translation - result of previous MMU translation passed as value. */
@@ -1590,7 +1672,7 @@ readmembl_no_mmut(uint32_t addr, uint32_t a64)
 
     map = read_mapping[addr >> MEM_GRANULARITY_BITS];
     if (map && map->read_b)
-        return map->read_b(addr, map->priv);
+        return MAP_READ_B(map, addr);
 
     return 0xff;
 }
@@ -1621,7 +1703,7 @@ writemembl_no_mmut(uint32_t addr, uint32_t a64, uint8_t val)
 
     map = write_mapping[addr >> MEM_GRANULARITY_BITS];
     if (map && map->write_b)
-        map->write_b(addr, val, map->priv);
+        MAP_WRITE_B(map, addr, val);
 }
 
 uint16_t
@@ -1679,10 +1761,10 @@ readmemwl(uint32_t addr)
     map = read_mapping[addr >> MEM_GRANULARITY_BITS];
 
     if (map && map->read_w)
-        return map->read_w(addr, map->priv);
+        return MAP_READ_W(map, addr);
 
     if (map && map->read_b) {
-        return map->read_b(addr, map->priv) | ((uint16_t) (map->read_b(addr + 1, map->priv)) << 8);
+        return MAP_READ_B(map, addr) | ((uint16_t) (MAP_READ_B(map, addr + 1)) << 8);
     }
 
     return 0xffff;
@@ -1758,13 +1840,13 @@ writememwl(uint32_t addr, uint16_t val)
     map = write_mapping[addr >> MEM_GRANULARITY_BITS];
 
     if (map && map->write_w) {
-        map->write_w(addr, val, map->priv);
+        MAP_WRITE_W(map, addr, val);
         return;
     }
 
     if (map && map->write_b) {
-        map->write_b(addr, val, map->priv);
-        map->write_b(addr + 1, val >> 8, map->priv);
+        MAP_WRITE_B(map, addr, val);
+        MAP_WRITE_B(map, addr + 1, val >> 8);
         return;
     }
 }
@@ -1808,10 +1890,10 @@ readmemwl_no_mmut(uint32_t addr, uint32_t *a64)
     map = read_mapping[addr >> MEM_GRANULARITY_BITS];
 
     if (map && map->read_w)
-        return map->read_w(addr, map->priv);
+        return MAP_READ_W(map, addr);
 
     if (map && map->read_b) {
-        return map->read_b(addr, map->priv) | ((uint16_t) (map->read_b(addr + 1, map->priv)) << 8);
+        return MAP_READ_B(map, addr) | ((uint16_t) (MAP_READ_B(map, addr + 1)) << 8);
     }
 
     return 0xffff;
@@ -1862,13 +1944,13 @@ writememwl_no_mmut(uint32_t addr, uint32_t *a64, uint16_t val)
     map = write_mapping[addr >> MEM_GRANULARITY_BITS];
 
     if (map && map->write_w) {
-        map->write_w(addr, val, map->priv);
+        MAP_WRITE_W(map, addr, val);
         return;
     }
 
     if (map && map->write_b) {
-        map->write_b(addr, val, map->priv);
-        map->write_b(addr + 1, val >> 8, map->priv);
+        MAP_WRITE_B(map, addr, val);
+        MAP_WRITE_B(map, addr + 1, val >> 8);
         return;
     }
 }
@@ -1942,13 +2024,13 @@ readmemll(uint32_t addr)
     map = read_mapping[addr >> MEM_GRANULARITY_BITS];
 
     if (map && map->read_l)
-        return map->read_l(addr, map->priv);
+        return MAP_READ_L(map, addr);
 
     if (map && map->read_w)
-        return map->read_w(addr, map->priv) | ((uint32_t) (map->read_w(addr + 2, map->priv)) << 16);
+        return MAP_READ_W(map, addr) | ((uint32_t) (MAP_READ_W(map, addr + 2)) << 16);
 
     if (map && map->read_b)
-        return map->read_b(addr, map->priv) | ((uint32_t) (map->read_b(addr + 1, map->priv)) << 8) | ((uint32_t) (map->read_b(addr + 2, map->priv)) << 16) | ((uint32_t) (map->read_b(addr + 3, map->priv)) << 24);
+        return MAP_READ_B(map, addr) | ((uint32_t) (MAP_READ_B(map, addr + 1)) << 8) | ((uint32_t) (MAP_READ_B(map, addr + 2)) << 16) | ((uint32_t) (MAP_READ_B(map, addr + 3)) << 24);
 
     return 0xffffffff;
 }
@@ -2036,19 +2118,19 @@ writememll(uint32_t addr, uint32_t val)
     map = write_mapping[addr >> MEM_GRANULARITY_BITS];
 
     if (map && map->write_l) {
-        map->write_l(addr, val, map->priv);
+        MAP_WRITE_L(map, addr, val);
         return;
     }
     if (map && map->write_w) {
-        map->write_w(addr, val, map->priv);
-        map->write_w(addr + 2, val >> 16, map->priv);
+        MAP_WRITE_W(map, addr, val);
+        MAP_WRITE_W(map, addr + 2, val >> 16);
         return;
     }
     if (map && map->write_b) {
-        map->write_b(addr, val, map->priv);
-        map->write_b(addr + 1, val >> 8, map->priv);
-        map->write_b(addr + 2, val >> 16, map->priv);
-        map->write_b(addr + 3, val >> 24, map->priv);
+        MAP_WRITE_B(map, addr, val);
+        MAP_WRITE_B(map, addr + 1, val >> 8);
+        MAP_WRITE_B(map, addr + 2, val >> 16);
+        MAP_WRITE_B(map, addr + 3, val >> 24);
         return;
     }
 }
@@ -2092,13 +2174,13 @@ readmemll_no_mmut(uint32_t addr, uint32_t *a64)
     map = read_mapping[addr >> MEM_GRANULARITY_BITS];
 
     if (map && map->read_l)
-        return map->read_l(addr, map->priv);
+        return MAP_READ_L(map, addr);
 
     if (map && map->read_w)
-        return map->read_w(addr, map->priv) | ((uint32_t) (map->read_w(addr + 2, map->priv)) << 16);
+        return MAP_READ_W(map, addr) | ((uint32_t) (MAP_READ_W(map, addr + 2)) << 16);
 
     if (map && map->read_b)
-        return map->read_b(addr, map->priv) | ((uint32_t) (map->read_b(addr + 1, map->priv)) << 8) | ((uint32_t) (map->read_b(addr + 2, map->priv)) << 16) | ((uint32_t) (map->read_b(addr + 3, map->priv)) << 24);
+        return MAP_READ_B(map, addr) | ((uint32_t) (MAP_READ_B(map, addr + 1)) << 8) | ((uint32_t) (MAP_READ_B(map, addr + 2)) << 16) | ((uint32_t) (MAP_READ_B(map, addr + 3)) << 24);
 
     return 0xffffffff;
 }
@@ -2148,19 +2230,19 @@ writememll_no_mmut(uint32_t addr, uint32_t *a64, uint32_t val)
     map = write_mapping[addr >> MEM_GRANULARITY_BITS];
 
     if (map && map->write_l) {
-        map->write_l(addr, val, map->priv);
+        MAP_WRITE_L(map, addr, val);
         return;
     }
     if (map && map->write_w) {
-        map->write_w(addr, val, map->priv);
-        map->write_w(addr + 2, val >> 16, map->priv);
+        MAP_WRITE_W(map, addr, val);
+        MAP_WRITE_W(map, addr + 2, val >> 16);
         return;
     }
     if (map && map->write_b) {
-        map->write_b(addr, val, map->priv);
-        map->write_b(addr + 1, val >> 8, map->priv);
-        map->write_b(addr + 2, val >> 16, map->priv);
-        map->write_b(addr + 3, val >> 24, map->priv);
+        MAP_WRITE_B(map, addr, val);
+        MAP_WRITE_B(map, addr + 1, val >> 8);
+        MAP_WRITE_B(map, addr + 2, val >> 16);
+        MAP_WRITE_B(map, addr + 3, val >> 24);
         return;
     }
 }
@@ -2233,24 +2315,24 @@ readmemql(uint32_t addr)
     map = read_mapping[addr >> MEM_GRANULARITY_BITS];
 
     if (map && map->read_l)
-        return map->read_l(addr, map->priv) |
-               ((uint64_t) map->read_l(addr + 4, map->priv) << 32);
+        return MAP_READ_L(map, addr) |
+               ((uint64_t) MAP_READ_L(map, addr + 4) << 32);
 
     if (map && map->read_w)
-        return map->read_w(addr, map->priv) |
-               ((uint64_t) map->read_w(addr + 2, map->priv) << 16) |
-               ((uint64_t) map->read_w(addr + 4, map->priv) << 32) |
-               ((uint64_t) map->read_w(addr + 6, map->priv) << 48);
+        return MAP_READ_W(map, addr) |
+               ((uint64_t) MAP_READ_W(map, addr + 2) << 16) |
+               ((uint64_t) MAP_READ_W(map, addr + 4) << 32) |
+               ((uint64_t) MAP_READ_W(map, addr + 6) << 48);
 
     if (map && map->read_b)
-        return map->read_b(addr, map->priv) |
-               ((uint64_t) map->read_b(addr + 1, map->priv) << 8) |
-               ((uint64_t) map->read_b(addr + 2, map->priv) << 16) |
-               ((uint64_t) map->read_b(addr + 3, map->priv) << 24) |
-               ((uint64_t) map->read_b(addr + 4, map->priv) << 32) |
-               ((uint64_t) map->read_b(addr + 5, map->priv) << 40) |
-               ((uint64_t) map->read_b(addr + 6, map->priv) << 48) |
-               ((uint64_t) map->read_b(addr + 7, map->priv) << 56);
+        return MAP_READ_B(map, addr) |
+               ((uint64_t) MAP_READ_B(map, addr + 1) << 8) |
+               ((uint64_t) MAP_READ_B(map, addr + 2) << 16) |
+               ((uint64_t) MAP_READ_B(map, addr + 3) << 24) |
+               ((uint64_t) MAP_READ_B(map, addr + 4) << 32) |
+               ((uint64_t) MAP_READ_B(map, addr + 5) << 40) |
+               ((uint64_t) MAP_READ_B(map, addr + 6) << 48) |
+               ((uint64_t) MAP_READ_B(map, addr + 7) << 56);
 
     return 0xffffffffffffffffULL;
 }
@@ -2336,26 +2418,26 @@ writememql(uint32_t addr, uint64_t val)
     map = write_mapping[addr >> MEM_GRANULARITY_BITS];
 
     if (map && map->write_l) {
-        map->write_l(addr, val, map->priv);
-        map->write_l(addr + 4, val >> 32, map->priv);
+        MAP_WRITE_L(map, addr, val);
+        MAP_WRITE_L(map, addr + 4, val >> 32);
         return;
     }
     if (map && map->write_w) {
-        map->write_w(addr, val, map->priv);
-        map->write_w(addr + 2, val >> 16, map->priv);
-        map->write_w(addr + 4, val >> 32, map->priv);
-        map->write_w(addr + 6, val >> 48, map->priv);
+        MAP_WRITE_W(map, addr, val);
+        MAP_WRITE_W(map, addr + 2, val >> 16);
+        MAP_WRITE_W(map, addr + 4, val >> 32);
+        MAP_WRITE_W(map, addr + 6, val >> 48);
         return;
     }
     if (map && map->write_b) {
-        map->write_b(addr, val, map->priv);
-        map->write_b(addr + 1, val >> 8, map->priv);
-        map->write_b(addr + 2, val >> 16, map->priv);
-        map->write_b(addr + 3, val >> 24, map->priv);
-        map->write_b(addr + 4, val >> 32, map->priv);
-        map->write_b(addr + 5, val >> 40, map->priv);
-        map->write_b(addr + 6, val >> 48, map->priv);
-        map->write_b(addr + 7, val >> 56, map->priv);
+        MAP_WRITE_B(map, addr, val);
+        MAP_WRITE_B(map, addr + 1, val >> 8);
+        MAP_WRITE_B(map, addr + 2, val >> 16);
+        MAP_WRITE_B(map, addr + 3, val >> 24);
+        MAP_WRITE_B(map, addr + 4, val >> 32);
+        MAP_WRITE_B(map, addr + 5, val >> 40);
+        MAP_WRITE_B(map, addr + 6, val >> 48);
+        MAP_WRITE_B(map, addr + 7, val >> 56);
         return;
     }
 }
