@@ -58,6 +58,43 @@
 
 static const device_config_t at_54tdp_config[] = {
     // clang-format off
+    /* Two builds of the same AMI BIOS: 1.03 for one processor and 1.51,
+       "1MW_15_AIR54TDP", for two. Their boot blocks differ only in that
+       string and a checksum; what differs is in the compressed modules.
+       Each keeps its own CMOS and flash images, named after the entry,
+       and 1.03 keeps the machine's own name so a board that has been
+       running it finds its settings where they were. */
+    {
+        .name           = "bios",
+        .description    = "BIOS Version",
+        .type           = CONFIG_BIOS,
+        .default_string = "54tdp",
+        .default_int    = 0,
+        .file_filter    = NULL,
+        .spinner        = { 0 },
+        .selection      = { { 0 } },
+        .bios           = {
+            {
+                .name          = "AMIBIOS (07/15/95) - Revision 1.03, one processor",
+                .internal_name = "54tdp",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0,
+                .size          = 131072,
+                .files         = { "roms/machines/54tdp/54tdp103.rom", "" }
+            },
+            {
+                .name          = "AMIBIOS (07/15/95) - Revision 1.51, two processors",
+                .internal_name = "54tdp_151",
+                .bios_type     = BIOS_NORMAL,
+                .files_no      = 1,
+                .local         = 0,
+                .size          = 131072,
+                .files         = { "roms/machines/54tdp/54tdp151.rom", "" }
+            },
+            { .files_no = 0 }
+        },
+    },
     /* Whether a machine that has never had the configuration utility run
        on it starts with an empty but well formed EISA store, the way one
        off a factory line does, or with nothing at all, the way one whose
@@ -95,13 +132,18 @@ const device_t at_54tdp_device = {
 int
 machine_at_54tdp_init(const machine_t *model)
 {
-    int ret;
+    int         ret;
+    const char *fn;
 
-    /* Two builds of the same BIOS exist: 1.03 for one processor and 1.51
-       for two. This machine is the uniprocessor one, so it gets 1.03;
-       nothing here would know what to do with the second socket. */
-    ret = bios_load_linear("roms/machines/54tdp/54tdp103.rom",
-                           0x000e0000, 131072, 0);
+    if (!device_available(model->device))
+        return 0;
+
+    /* Which build: see at_54tdp_config. With 1.51 the second socket is
+       still empty here; nothing yet runs a second processor. */
+    device_context(model->device);
+    fn  = device_get_bios_file(machine_get_device(machine), device_get_config_bios("bios"), 0);
+    ret = bios_load_linear(fn, 0x000e0000, 131072, 0);
+    device_context_restore();
 
     if (bios_only || !ret)
         return ret;
