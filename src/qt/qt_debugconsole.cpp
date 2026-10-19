@@ -139,8 +139,10 @@ DebugConsole::DebugConsole(QWidget *parent)
 
 DebugConsole::~DebugConsole()
 {
-    if (server)
+    if (server) {
         server->close();
+        debugcon_token_remove();
+    }
     if (debugconsole_instance == this)
         debugconsole_instance = nullptr;
 }
@@ -255,13 +257,16 @@ DebugConsole::toggleServer()
 {
     if (server) {
         for (QTcpSocket *sock : clients) {
-            sock->write("Closing.\r\n");
+            disconnect(sock, nullptr, this, nullptr);
+            if (sock->property("debugcon_authed").toBool())
+                sock->write("Closing.\r\n");
             sock->disconnectFromHost();
         }
         clients.clear();
         server->close();
         server->deleteLater();
         server = nullptr;
+        debugcon_token_remove();
         serverButton->setText(tr("Open"));
         portEdit->setEnabled(true);
         append(tr("TCP console closed."));
@@ -286,11 +291,26 @@ DebugConsole::toggleServer()
         }
         port++;
     }
+
+    /* No client gets in without the token. */
+    const char *token_file = debugcon_token_create();
+    if (token_file == NULL) {
+        append(tr("Could not write the TCP console's token file; not listening."));
+        server->close();
+        server->deleteLater();
+        server = nullptr;
+        return;
+    }
+    pclog("Debug console: listening on 127.0.0.1:%u, token in %s\n", port, token_file);
+
     portEdit->setText(QString::number(port));
     connect(server, &QTcpServer::newConnection, this, &DebugConsole::newClient);
     serverButton->setText(tr("Close"));
     portEdit->setEnabled(false);
-    append(tr("TCP console open on 127.0.0.1:%1.").arg(port));
+    append(tr("TCP console open on 127.0.0.1:%1. A client's first line must be auth TOKEN, "
+              "with the token from %2.")
+               .arg(port)
+               .arg(QString::fromUtf8(token_file)));
 }
 
 void
@@ -300,20 +320,25 @@ DebugConsole::newClient()
         QTcpSocket *sock = server->nextPendingConnection();
         const int   id   = nextClient++;
 
+        /* Nothing is said to it, and nothing of the console's output goes
+           to it, until it has given the token. */
         clients.insert(id, sock);
         sock->setProperty("debugcon_id", id);
+        sock->setProperty("debugcon_authed", false);
         connect(sock, &QTcpSocket::readyRead, this, [this, sock]() { clientData(sock); });
         connect(sock, &QTcpSocket::disconnected, this, [this, sock, id]() {
+            const bool authed = sock->property("debugcon_authed").toBool();
+
             clients.remove(id);
             sock->deleteLater();
-            append(tr("TCP console %1 disconnected.").arg(id));
+            if (authed)
+                append(tr("TCP console %1 disconnected.").arg(id));
         });
-
-        append(tr("TCP console %1 connected from %2.").arg(id).arg(sock->peerAddress().toString()));
-        sock->write(QStringLiteral("86Box debug console %1. Type help; pause and continue run the machine.\r\n")
-                        .arg(id).toUtf8());
     }
 }
+
+/* The longest line a client may send; a longer one ends the connection. */
+static constexpr qint64 debugcon_line_max = 4096;
 
 /* A line at a time, as it arrives. */
 void
@@ -321,11 +346,40 @@ DebugConsole::clientData(QTcpSocket *sock)
 {
     const int id = sock->property("debugcon_id").toInt();
 
+    /* Nothing more from one that is being let go. */
+    if (sock->state() != QAbstractSocket::ConnectedState)
+        return;
+
     while (sock->canReadLine()) {
-        QString line = QString::fromUtf8(sock->readLine());
+        const QByteArray bytes = sock->readLine(debugcon_line_max + 1);
+
+        if (!bytes.endsWith('\n')) {
+            sock->write("Line too long.\r\n");
+            sock->disconnectFromHost();
+            return;
+        }
+
+        QString line = QString::fromUtf8(bytes);
 
         while (line.endsWith(QLatin1Char('\n')) || line.endsWith(QLatin1Char('\r')))
             line.chop(1);
+
+        /* The first line is auth TOKEN; anything else ends the connection. */
+        if (!sock->property("debugcon_authed").toBool()) {
+            if (!line.startsWith(QStringLiteral("auth ")) || !debugcon_token_matches(line.mid(5).toUtf8().constData())) {
+                pclog("Debug console: rejected a TCP client without a valid token\n");
+                sock->write("Authentication required.\r\n");
+                sock->disconnectFromHost();
+                return;
+            }
+            sock->setProperty("debugcon_authed", true);
+            append(tr("TCP console %1 connected from %2.").arg(id).arg(sock->peerAddress().toString()));
+            sock->write(QStringLiteral("86Box debug console %1. Type help; pause and continue run the machine.\r\n")
+                            .arg(id)
+                            .toUtf8());
+            continue;
+        }
+
         if (line.trimmed().isEmpty())
             continue;
 
@@ -334,6 +388,12 @@ DebugConsole::clientData(QTcpSocket *sock)
             return;
         }
         enqueue(id, line);
+    }
+
+    /* A line that has not ended yet, but is already too long. */
+    if (sock->bytesAvailable() > debugcon_line_max) {
+        sock->write("Line too long.\r\n");
+        sock->disconnectFromHost();
     }
 }
 
@@ -352,8 +412,10 @@ DebugConsole::append(const QString &text)
     if (!clients.isEmpty()) {
         const QByteArray bytes = (QString(t).replace(QStringLiteral("\n"), QStringLiteral("\r\n")) + QStringLiteral("\r\n")).toUtf8();
 
-        for (QTcpSocket *sock : clients)
-            sock->write(bytes);
+        for (QTcpSocket *sock : clients) {
+            if (sock->property("debugcon_authed").toBool())
+                sock->write(bytes);
+        }
     }
 }
 

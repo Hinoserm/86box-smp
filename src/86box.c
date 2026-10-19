@@ -255,6 +255,7 @@ int      is_new_808x = 0;                                         /* (C) Use the
 
 int      gdbstub_port = 12345;                                    /* (C) The GDB stub port. */
 int      debug_console_port = 0;                                  /* (C) The debug console listens here from start-up; 0 off. */
+char     debug_console_token_file[1024] = "";                     /* (G) Where the debug console's TCP token goes. */
 
 // Accelerator key array
 struct accelKey acc_keys[NUM_ACCELS];
@@ -815,6 +816,7 @@ pc_show_usage(void)
             "-D or --debug\t\t\t- force debug output logging\n"
 #endif
 #ifndef USE_SDL_UI
+            "--debug-console-token-file path\t- TCP debug console: write the access token to 'path'\n"
             "-E or --vmmpath\t\t- vm manager path\n"
 #endif
             "-F or --fullscreen\t\t- start in fullscreen mode\n"
@@ -1012,6 +1014,13 @@ usage:
             automation_allow_remote = 1;
         } else if (!strcasecmp(argv[c], "--automation-insecure")) {
             automation_insecure = 1;
+#endif
+#ifndef USE_SDL_UI
+        } else if (!strcasecmp(argv[c], "--debug-console-token-file")) {
+            if ((c + 1) == argc)
+                goto usage;
+
+            snprintf(debug_console_token_file, sizeof(debug_console_token_file), "%s", argv[++c]);
 #endif
         } else if (!strcasecmp(argv[c], "--fullscreen") || !strcasecmp(argv[c], "-F")) {
             start_in_fullscreen = 1;

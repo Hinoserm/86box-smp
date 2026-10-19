@@ -29,6 +29,13 @@ extern int  debugcon_submit(int source, const char *text);
 /* Commands that read nothing of the machine's, answered at once. */
 extern const char *debugcon_help_text(void);
 
+/* The TCP console's token: a new one, in its file (answers the file's
+   path, or NULL when it could not be made); whether a client's matches;
+   and away with it when the console stops listening. */
+extern const char *debugcon_token_create(void);
+extern int         debugcon_token_matches(const char *given);
+extern void        debugcon_token_remove(void);
+
 /* The emulation thread's end, from its loop while paused. */
 extern void debugcon_poll(void);
 

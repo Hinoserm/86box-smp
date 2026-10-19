@@ -22,6 +22,9 @@
  *
  *          Copyright 2026 Michael Pratte.
  */
+#ifdef _WIN32
+#    define _CRT_RAND_S /* rand_s(): the OS cryptographic RNG */
+#endif
 #include <ctype.h>
 #include <inttypes.h>
 #include <stdarg.h>
@@ -30,6 +33,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#ifndef _WIN32
+#    include <fcntl.h>
+#    include <sys/stat.h>
+#    include <unistd.h>
+#endif
 #include <86box/86box.h>
 #include "cpu.h"
 #include "x86.h"
@@ -1587,6 +1595,98 @@ debugcon_run(const char *line)
         cmd_help();
     } else
         out("Unknown command. Type `help'.\n");
+}
+
+/* ---- the TCP console's token --------------------------------------------- */
+
+/* As the automation's TCP transport does it: 127.0.0.1 is reachable by
+   every local process, and by the guest itself through SLiRP's 10.0.2.2,
+   so a TCP client's first line must be auth TOKEN. Each time the console
+   listens it makes a new token from the OS random source and writes it to
+   a file only this user can read. */
+static char debugcon_token[65]; /* 32 random bytes, hex; empty when none */
+static char debugcon_token_path[1024 + 32];
+
+const char *
+debugcon_token_create(void)
+{
+    unsigned char bytes[32];
+    FILE         *fp;
+    int           n;
+
+#ifdef _WIN32
+    for (int i = 0; i < 32; i += 4) {
+        unsigned int v;
+
+        if (rand_s(&v))
+            return NULL;
+        memcpy(bytes + i, &v, 4);
+    }
+#else
+    fp = fopen("/dev/urandom", "rb");
+    if (fp == NULL)
+        return NULL;
+    n = (int) fread(bytes, 1, sizeof(bytes), fp);
+    fclose(fp);
+    if (n != sizeof(bytes))
+        return NULL;
+#endif
+
+    if (debug_console_token_file[0])
+        n = snprintf(debugcon_token_path, sizeof(debugcon_token_path), "%s", debug_console_token_file);
+    else
+        n = snprintf(debugcon_token_path, sizeof(debugcon_token_path), "%sdebugcon.token", usr_path);
+    if ((n < 0) || (n >= (int) sizeof(debugcon_token_path)))
+        return NULL;
+
+    /* Owner-only on POSIX from the moment it exists; on Windows the file
+       takes its folder's permissions. */
+#ifdef _WIN32
+    fp = plat_fopen(debugcon_token_path, "wb");
+#else
+    {
+        int fd = open(debugcon_token_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+
+        if (fd < 0)
+            return NULL;
+        fchmod(fd, 0600);
+        fp = fdopen(fd, "wb");
+        if (fp == NULL)
+            close(fd);
+    }
+#endif
+    if (fp == NULL)
+        return NULL;
+
+    for (int i = 0; i < 32; i++)
+        sprintf(debugcon_token + (i * 2), "%02x", bytes[i]);
+    fprintf(fp, "%s\n", debugcon_token);
+    fclose(fp);
+
+    return debugcon_token_path;
+}
+
+/* Without an early exit, so the time taken tells nothing of the token. */
+int
+debugcon_token_matches(const char *given)
+{
+    size_t        len  = strlen(debugcon_token);
+    size_t        glen = strlen(given);
+    unsigned char diff = !len || (glen != len);
+
+    for (size_t i = 0; i < len; i++)
+        diff |= (unsigned char) (((i < glen) ? given[i] : 0) ^ debugcon_token[i]);
+    return !diff;
+}
+
+void
+debugcon_token_remove(void)
+{
+    if (!debugcon_token[0])
+        return;
+
+    plat_remove(debugcon_token_path);
+    memset(debugcon_token, 0, sizeof(debugcon_token));
 }
 
 /* ---- the queue between the consoles and the emulation thread ------------ */
