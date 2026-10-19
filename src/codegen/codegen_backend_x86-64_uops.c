@@ -338,6 +338,18 @@ codegen_CALL_INSTRUCTION_FUNC_ORDERED(codeblock_t *block, uop_t *uop)
     return 0;
 }
 
+
+/* The jumping path of a compare that leaves the block (the IR waits with
+   the stores a flush would make, CODEGEN_BACKEND_SLOW_EXITS): skip is the
+   jump over it, already emitted; here they are made, then the jump to p. */
+static void
+codegen_slow_exit(codeblock_t *block, uint32_t *skip, void *p)
+{
+    codegen_reg_emit_slow(block);
+    host_x86_JMP(block, p);
+    *skip = (uintptr_t) &block_write_data[block_pos] - ((uintptr_t) skip + 4);
+}
+
 static int
 codegen_CMP_IMM_JZ(codeblock_t *block, uop_t *uop)
 {
@@ -351,7 +363,12 @@ codegen_CMP_IMM_JZ(codeblock_t *block, uop_t *uop)
     else
         fatal("CMP_IMM_JZ %02x\n", uop->src_reg_a_real);
 #    endif
-    host_x86_JZ(block, uop->p);
+    if (codegen_reg_slow_size())
+        codegen_slow_exit(block, host_x86_JNZ_long(block), uop->p);
+    else {
+        codegen_reg_emit_slow(block);
+        host_x86_JZ(block, uop->p);
+    }
 
     return 0;
 }
@@ -411,8 +428,13 @@ codegen_CMP_JB(codeblock_t *block, uop_t *uop)
     else
         fatal("CMP_JB %02x\n", uop->src_reg_a_real);
 #    endif
-    jump_p  = host_x86_JB_long(block);
-    *jump_p = (uintptr_t) uop->p - ((uintptr_t) jump_p + 4);
+    if (codegen_reg_slow_size())
+        codegen_slow_exit(block, host_x86_JNB_long(block), uop->p);
+    else {
+        codegen_reg_emit_slow(block);
+        jump_p  = host_x86_JB_long(block);
+        *jump_p = (uintptr_t) uop->p - ((uintptr_t) jump_p + 4);
+    }
 
     return 0;
 }
@@ -432,8 +454,13 @@ codegen_CMP_JNBE(codeblock_t *block, uop_t *uop)
     else
         fatal("CMP_JNBE %02x\n", uop->src_reg_a_real);
 #    endif
-    jump_p  = host_x86_JNBE_long(block);
-    *jump_p = (uintptr_t) uop->p - ((uintptr_t) jump_p + 4);
+    if (codegen_reg_slow_size())
+        codegen_slow_exit(block, host_x86_JBE_long(block), uop->p);
+    else {
+        codegen_reg_emit_slow(block);
+        jump_p  = host_x86_JNBE_long(block);
+        *jump_p = (uintptr_t) uop->p - ((uintptr_t) jump_p + 4);
+    }
 
     return 0;
 }
@@ -450,16 +477,29 @@ codegen_CMP_JNWITHIN(codeblock_t *block, uop_t *uop)
     uint32_t *jump_p;
 
     if (REG_IS_L(src_size) && REG_IS_L(lo_size) && REG_IS_L(hi_size)) {
+        const int slow = codegen_reg_slow_size();
+        uint32_t *out_p[2];
+
+        if (!slow)
+            codegen_reg_emit_slow(block);
         host_x86_CMP32_REG_REG(block, src_reg, lo_reg);
-        jump_p  = host_x86_JB_long(block);
-        *jump_p = (uintptr_t) uop->p - ((uintptr_t) jump_p + 4);
+        out_p[0] = host_x86_JB_long(block);
         if (uop->imm_data) {
             host_x86_LEA_REG_IMM(block, REG_ECX, src_reg, uop->imm_data);
             host_x86_CMP32_REG_REG(block, REG_ECX, hi_reg);
         } else
             host_x86_CMP32_REG_REG(block, src_reg, hi_reg);
-        jump_p  = host_x86_JNBE_long(block);
-        *jump_p = (uintptr_t) uop->p - ((uintptr_t) jump_p + 4);
+        out_p[1] = host_x86_JNBE_long(block);
+        if (!slow) {
+            for (int i = 0; i < 2; i++)
+                *out_p[i] = (uintptr_t) uop->p - ((uintptr_t) out_p[i] + 4);
+        } else {
+            /* Both to the stores, then to p; past them when within */
+            jump_p = host_x86_JMP_long(block);
+            for (int i = 0; i < 2; i++)
+                *out_p[i] = (uintptr_t) &block_write_data[block_pos] - ((uintptr_t) out_p[i] + 4);
+            codegen_slow_exit(block, jump_p, uop->p);
+        }
     }
 #    ifdef RECOMPILER_DEBUG
     else

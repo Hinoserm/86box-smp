@@ -86,6 +86,26 @@ uop_is_mem_access(const uop_t *uop)
             return 0;
     }
 }
+
+/* A compare that leaves for an exception or the exit routine when it
+   jumps (a segment's limits, a null selector): the backend makes the
+   stores in the jumping path only (CODEGEN_BACKEND_SLOW_EXITS). */
+static int
+uop_is_slow_exit(UNUSED(const uop_t *uop))
+{
+#    ifdef CODEGEN_BACKEND_SLOW_EXITS
+    switch (uop->type & UOP_MASK) {
+        case UOP_CMP_JB & UOP_MASK:
+        case UOP_CMP_JNBE & UOP_MASK:
+        case UOP_CMP_JNWITHIN & UOP_MASK:
+        case UOP_CMP_IMM_JZ & UOP_MASK:
+            return 1;
+        default:
+            break;
+    }
+#    endif
+    return 0;
+}
 #endif
 
 void
@@ -182,7 +202,7 @@ codegen_ir_compile(ir_data_t *ir, codeblock_t *block)
 
             if (uop->type & UOP_TYPE_ORDER_BARRIER) {
 #ifdef CODEGEN_BACKEND_SLOW_STORES
-                if (uop_is_mem_access(uop))
+                if (uop_is_mem_access(uop) || uop_is_slow_exit(uop))
                     codegen_reg_flush_slow(ir, block);
                 else
 #endif
