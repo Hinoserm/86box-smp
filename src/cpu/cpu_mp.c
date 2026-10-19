@@ -59,6 +59,7 @@
 #include <86box/smram.h>
 #include <86box/nmi.h>
 #include <86box/cpu_mp.h>
+#include <86box/apic_lock.h>
 #include <86box/thread.h> /* thread_spin_pause */
 #include "cpu_core.h"
 #include "cpu_thread.h"
@@ -141,6 +142,24 @@ int cpu_mp_atomic = 0;
 int cpu_mp_count         = 1;
 int cpu_mp_cur           = 0;
 int cpu_mp_timers_frozen = 0;
+
+/* The processor whose own thread this is (cpu_thread.c sets it as each of
+   the others' threads starts); 0 on every other thread. */
+__thread int cpu_mp_thread_self = 0;
+
+/* The processor asking, on whatever thread: another processor's own
+   thread is always that processor's; the machine's thread is the one in
+   place, or the one whose access it is serving (cpu_thread_serve), which
+   only that thread sets. An NMI or SMI a processor sends itself is raised
+   in its own core by this (cpu_mp_nmi_ex); the APIC code has its own name
+   for the one asking, given with its lock (apic_bus_asker). */
+int
+cpu_mp_asking(void)
+{
+    const int self = cpu_mp_thread_self;
+
+    return self ? self : cpu_mp_cur;
+}
 
 int cpu_count        = 1;
 int cpu_smp_drift_us = CPU_SMP_DRIFT_DEFAULT;
@@ -329,6 +348,14 @@ cpu_mp_cur_core(void)
     return cpu_mp_copy_mode ? cpu_mp_core[cpu_mp_cur] : cpu_core_ops();
 }
 
+/* The core of the processor asking (cpu_mp_asking): on another
+   processor's own thread its own core, else the one in place. */
+static const cpu_core_ops_t *
+cpu_mp_asking_core(void)
+{
+    return cpu_mp_thread_self ? cpu_mp_core[cpu_mp_thread_self] : cpu_mp_cur_core();
+}
+
 /* CR0 of the processor in place, for a device that asks (in copy mode
    another processor's is in its own core). */
 uint32_t
@@ -442,8 +469,18 @@ void
 cpu_mp_hold_others(void)
 {
 #ifdef CPU_MP_SECOND_CORE
-    if (cpu_mp_parallel())
+    if (cpu_mp_parallel()) {
+        /* A map change under the APIC bus's lock (an APIC's window moved):
+           a processor waiting for that lock is inside an instruction and
+           parks only after it, so the lock is let go while they park and
+           taken back before anything is rebuilt. Where the map changes
+           under it, the APIC's own state is already what it will be. */
+        const int asker = apic_bus_asker;
+        const int apic  = apic_lock_release_all();
+
         cpu_thread_hold();
+        apic_lock_reacquire(apic, asker);
+    }
 #endif
 }
 
@@ -614,8 +651,8 @@ cpu_mp_next_slice_us(void)
 static void
 cpu_mp_nmi_ex(int index, int apic)
 {
-    if ((cpu_mp_count < 2) || (index < 0) || (index >= cpu_mp_count) || (index == cpu_mp_cur)) {
-        cpu_mp_cur_core()->nmi_raise(apic);
+    if ((cpu_mp_count < 2) || (index < 0) || (index >= cpu_mp_count) || (index == cpu_mp_asking())) {
+        cpu_mp_asking_core()->nmi_raise(apic);
         return;
     }
 
@@ -632,6 +669,8 @@ cpu_mp_nmi_ex(int index, int apic)
 #ifdef CPU_MP_SECOND_CORE
     if ((index != 0) && cpu_mp_parallel())
         cpu_thread_wake(index);
+    else if (cpu_mp_thread_self)
+        cpu_thread_machine_attn(); /* the first's, from another's thread: taken between its blocks */
 #endif
 }
 
@@ -653,8 +692,8 @@ cpu_mp_nmi_apic(int index)
 void
 cpu_mp_smi(int index)
 {
-    if ((cpu_mp_count < 2) || (index < 0) || (index >= cpu_mp_count) || (index == cpu_mp_cur)) {
-        cpu_mp_cur_core()->smi_raise();
+    if ((cpu_mp_count < 2) || (index < 0) || (index >= cpu_mp_count) || (index == cpu_mp_asking())) {
+        cpu_mp_asking_core()->smi_raise();
         return;
     }
 
@@ -662,6 +701,8 @@ cpu_mp_smi(int index)
 #ifdef CPU_MP_SECOND_CORE
     if ((index != 0) && cpu_mp_parallel())
         cpu_thread_wake(index);
+    else if (cpu_mp_thread_self)
+        cpu_thread_machine_attn();
 #endif
 }
 
@@ -1355,7 +1396,16 @@ cpu_mp_init_first(void)
        at instruction boundaries", Pentium Vol. 1, 2.7) by itself; stopping
        it mid-instruction charged the rest of its budget to the clock at
        once. The recompiler's chunk is ended here. */
-    if ((cpu_mp_cur == 0) && !cpu_exec386_active)
+    if (cpu_mp_thread_self) {
+        /* Sent from another processor's thread: the first's chunk is its
+           thread's to end, which looks at the INIT after it
+           (cpu_mp_after_chunk) or between its blocks (cpu_thread_main_poll);
+           its chain breaks now. */
+        cpu_mp_chain_signal(0);
+#ifdef CPU_MP_SECOND_CORE
+        cpu_thread_machine_attn();
+#endif
+    } else if ((cpu_mp_cur == 0) && !cpu_exec386_active)
         cpu_mp_stop_current();
     cpu_mp_log("CPU MP: INIT to processor 0\n");
 }

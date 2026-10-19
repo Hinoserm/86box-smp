@@ -18,6 +18,7 @@
 #include <86box/cpu_mp.h>
 
 #include "cpu.h"
+#include <86box/apic_lock.h>
 #include "lapic.h"
 #include "lapic_internal.h"
 
@@ -819,9 +820,11 @@ lapic_icr_retry_all(void)
     if (dev == NULL)
         return;
     for (uint8_t i = 0; (i < dev->count) && (i < APIC_MAX_LAPICS); i++) {
-        if (!lapic_icr_retry_pending[i])
+        /* Read first: this runs at every interrupt taken, and almost always
+           nothing waits. */
+        if (!__atomic_load_n(&lapic_icr_retry_pending[i], __ATOMIC_RELAXED) ||
+            !__atomic_exchange_n(&lapic_icr_retry_pending[i], 0, __ATOMIC_SEQ_CST))
             continue;
-        lapic_icr_retry_pending[i] = 0;
         lapic_icr_write(&dev->lapics[i], dev->lapics, dev->count, i, lapic_icr_retry_val[i],
                         lapic_icr_retry_route_parked[i], NULL, NULL);
     }
@@ -1365,8 +1368,8 @@ lapic_enabled(const lapic_state_t *lapic)
    APIC ID and Arb ID registers are not affected" (Pentium Vol. 3,
    19.3.1.11.3). The processor goes through INIT with it: the Dual to wait
    for a STARTUP, the primary on from the reset vector (cpu_mp.c). */
-void
-lapic_init_signal(lapic_state_t *lapic)
+static void
+lapic_init_signal_locked(lapic_state_t *lapic)
 {
     if (lapic == NULL)
         return;
@@ -1387,6 +1390,14 @@ lapic_init_signal(lapic_state_t *lapic)
     /* Its IRR and ISR are empty now: what others were refused by it goes
        again, and meets it as it stands after the INIT. */
     lapic_slot_freed();
+}
+
+void
+lapic_init_signal(lapic_state_t *lapic)
+{
+    apic_lock();
+    lapic_init_signal_locked(lapic);
+    apic_unlock();
 }
 
 /* A message this local APIC put on the bus other than an IPI (an EOI to
@@ -1429,8 +1440,8 @@ lapic_reset_startup_state(lapic_state_t *lapic, uint8_t index)
    alone, the start-up state still said "started" after a restart, so the
    BIOS's STARTUP was refused and POST waited for a processor that never
    came. */
-void
-lapic_index_board_reset(uint8_t index)
+static void
+lapic_index_board_reset_locked(uint8_t index)
 {
     lapic_state_t *lapic;
 
@@ -1447,6 +1458,14 @@ lapic_index_board_reset(uint8_t index)
     lapic_reset_regs(lapic);
     lapic_arbitration_id_reset_from_id(lapic);
     lapic_reset_startup_state(lapic, index);
+}
+
+void
+lapic_index_board_reset(uint8_t index)
+{
+    apic_lock();
+    lapic_index_board_reset_locked(index);
+    apic_unlock();
 }
 
 static void
@@ -1467,7 +1486,7 @@ lapic_reset_regs(lapic_state_t *lapic)
     memset(lapic->regs, 0, sizeof(lapic->regs));
     /* The ICR is cleared, and with it the message it was still sending. */
     if (lapic->index < APIC_MAX_LAPICS)
-        lapic_icr_retry_pending[lapic->index] = 0;
+        __atomic_store_n(&lapic_icr_retry_pending[lapic->index], 0, __ATOMIC_SEQ_CST);
     cpu_lapic_reset_index(lapic->index, lapic->id, lapic->base_msr);
     cpu_lapic_irr_reset_index(lapic->index);
     cpu_lapic_isr_reset_index(lapic->index);
@@ -1561,8 +1580,8 @@ lapic_timer_restore_target(lapic_state_t *lapic, uint32_t initial, uint32_t curr
     lapic_timer_schedule(lapic, current, 0);
 }
 
-void
-lapic_timer_callback(void *priv)
+static void
+lapic_timer_callback_locked(void *priv)
 {
     lapic_state_t *lapic = (lapic_state_t *) priv;
     uint32_t       lvt;
@@ -1605,4 +1624,12 @@ lapic_timer_callback(void *priv)
     }
 
     lapic_sync_int_regs(lapic);
+}
+
+void
+lapic_timer_callback(void *priv)
+{
+    apic_lock();
+    lapic_timer_callback_locked(priv);
+    apic_unlock();
 }

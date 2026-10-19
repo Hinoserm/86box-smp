@@ -90,6 +90,13 @@ extern void cpu_mp_nmi_apic(int index);
 extern void cpu_mp_smi(int index);
 extern int  cpu_mp_rsm_init_waits(int index);
 
+/* The processor whose own thread the caller is on (0: the machine's), the
+   processor asking on any thread, and whether an INIT or RESET is posted to
+   a processor on its own thread and not yet taken (cpu_mp.c). */
+extern __thread int cpu_mp_thread_self;
+extern int          cpu_mp_asking(void);
+extern int          cpu_mp_ap_reset_outstanding(int index);
+
 extern int  cpu_mp_begin_slice(int index, uint64_t start_tsc);
 extern void cpu_mp_end_slice(void);
 extern void cpu_mp_stop_running(void);

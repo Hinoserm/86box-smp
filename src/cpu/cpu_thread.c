@@ -70,6 +70,7 @@
 #include <86box/cpu_mp.h>
 #include <86box/pic.h>
 #include <86box/smram.h>
+#include <86box/apic_lock.h>
 #include "cpu_core.h"
 #include "cpu_thread.h"
 
@@ -469,7 +470,8 @@ void
 cpu_thread_main_poll(void)
 {
     (void) cpu_thread_serve_posted();
-    cpu_mp_after_serve(); /* an NMI, SMI or INIT for the first that came meanwhile */
+    cpu_lapic_timer_hosts_apply(); /* what another processor's APIC asked of the timers */
+    cpu_mp_after_serve();          /* an NMI, SMI or INIT for the first that came meanwhile */
 }
 
 /* Something is waiting for the machine's thread between its blocks
@@ -722,23 +724,50 @@ cpu_ap_mem_writel_phys(uint32_t addr, uint32_t val)
         (void) cpu_thread_forward(FWD_PHYS_WL, NULL, addr, val);
 }
 
-/* Another processor taking an interrupt (x86_interrupt.h): its APIC's IRR
-   into ISR, or an 8259 acknowledge through its LINT0, both on the
-   machine's thread, where that state is kept. */
+/* Another processor taking an interrupt (x86_interrupt.h): its own APIC's,
+   IRR into ISR, here on its own thread; an ExtINT is the 8259's, whose
+   acknowledge is the machine's (cpu_thread_take_vector). */
+extern int ioapic_lapic_vector_local(int who);              /* ioapic.c */
+extern int ioapic_external_interrupt_pending_at(int index); /* ioapic.c */
+
 int
 cpu_ap_interrupt_vector(void)
 {
-    if (!cpu_thread_self_index)
+    const int self = cpu_thread_self_index;
+    int       vector;
+
+    if (!self)
         return cpu_thread_take_vector();
+    vector = ioapic_lapic_vector_local(self);
+    if (vector >= 0)
+        return vector;
+    /* Nothing in its APIC to take, and still something pending: through
+       its LINT0 from the 8259. */
+    if (!ioapic_external_interrupt_pending_at(self))
+        return -1;
     return (int) cpu_thread_forward(FWD_INTVEC, NULL, 0, 0);
 }
 
-/* Device memory, its local APIC's window among it. */
+/* Device memory. A processor's own local APIC is part of it: every access
+   to its window is served on its own thread, never handed over -- the _as
+   forms name it to the APIC bus's lock, and lapic_mmio.c finds its APIC by
+   that name (86box/apic_lock.h). The mapping's handlers identify the
+   window. */
+extern uint8_t  lapic_readb(uint32_t addr, void *priv); /* lapic_mmio.c */
+extern uint16_t lapic_readw(uint32_t addr, void *priv);
+extern uint32_t lapic_readl(uint32_t addr, void *priv);
+extern void     lapic_writeb(uint32_t addr, uint8_t val, void *priv);
+extern void     lapic_writew(uint32_t addr, uint16_t val, void *priv);
+extern void     lapic_writel(uint32_t addr, uint32_t val, void *priv);
+#define CPU_THREAD_LAPIC_TPR 0x080 /* its offset in the window */
+
 uint8_t
 cpu_ap_map_read_b(mem_mapping_t *m, uint32_t a)
 {
     if (!cpu_thread_self_index)
         return m->read_b(a, m->priv);
+    if (m->read_b == lapic_readb)
+        return lapic_readb_as(cpu_thread_self_index, a, m->priv);
     return (uint8_t) cpu_thread_forward(FWD_MAP_RB, m, a, 0);
 }
 
@@ -747,14 +776,32 @@ cpu_ap_map_read_w(mem_mapping_t *m, uint32_t a)
 {
     if (!cpu_thread_self_index)
         return m->read_w(a, m->priv);
+    if (m->read_w == lapic_readw)
+        return lapic_readw_as(cpu_thread_self_index, a, m->priv);
     return (uint16_t) cpu_thread_forward(FWD_MAP_RW, m, a, 0);
 }
 
+/* The two registers the NT HAL touches at every IRQL change -- hundreds of
+   thousands of times a second -- go further, without the lock: TPR (read
+   and written) and PPR (read). Nothing races them: only this processor
+   writes its TPR, and the other threads read TPR and PPR for lowest-
+   priority arbitration, one 32-bit load each. */
 uint32_t
 cpu_ap_map_read_l(mem_mapping_t *m, uint32_t a)
 {
-    if (!cpu_thread_self_index)
+    const int self = cpu_thread_self_index;
+    uint32_t  reg;
+    uint32_t  val = 0;
+
+    if (!self)
         return m->read_l(a, m->priv);
+    if (m->read_l == lapic_readl) {
+        if (lapic_mmio_fast_reg(self, a, &reg)) {
+            (void) cpu_lapic_mmio_read_index((uint8_t) self, reg, &val);
+            return val;
+        }
+        return lapic_readl_as(self, a, m->priv);
+    }
     return cpu_thread_forward(FWD_MAP_RL, m, a, 0);
 }
 
@@ -763,6 +810,8 @@ cpu_ap_map_write_b(mem_mapping_t *m, uint32_t a, uint8_t v)
 {
     if (!cpu_thread_self_index)
         m->write_b(a, v, m->priv);
+    else if (m->write_b == lapic_writeb)
+        lapic_writeb_as(cpu_thread_self_index, a, v, m->priv);
     else
         (void) cpu_thread_forward(FWD_MAP_WB, m, a, v);
 }
@@ -772,6 +821,8 @@ cpu_ap_map_write_w(mem_mapping_t *m, uint32_t a, uint16_t v)
 {
     if (!cpu_thread_self_index)
         m->write_w(a, v, m->priv);
+    else if (m->write_w == lapic_writew)
+        lapic_writew_as(cpu_thread_self_index, a, v, m->priv);
     else
         (void) cpu_thread_forward(FWD_MAP_WW, m, a, v);
 }
@@ -779,8 +830,34 @@ cpu_ap_map_write_w(mem_mapping_t *m, uint32_t a, uint16_t v)
 void
 cpu_ap_map_write_l(mem_mapping_t *m, uint32_t a, uint32_t v)
 {
-    if (!cpu_thread_self_index)
+    const int self = cpu_thread_self_index;
+    uint32_t  reg;
+
+    if (!self) {
         m->write_l(a, v, m->priv);
+        return;
+    }
+    if ((m->write_l == lapic_writel) && lapic_mmio_fast_reg(self, a, &reg) && (reg == CPU_THREAD_LAPIC_TPR)) {
+        /* Posted before an INIT it has not taken yet: the write never
+           happens, and the INIT's APIC reset stands. */
+        if (cpu_mp_ap_reset_outstanding(self))
+            return;
+        /* As lapic_writel: a TPR raised or rewritten holds back more, so
+           nothing new to look at; one lowered may let a held interrupt in. */
+        if ((v & 0xff) < (cpu_lapic_tpr_read_index((uint8_t) self) & 0xff))
+            cpu_mp_chain_signal(self);
+        cpu_lapic_tpr_store_index((uint8_t) self, v);
+        /* The check and the store are two steps: an INIT posted between
+           them, with its APIC reset, would be undone by the store. Look
+           again after it; the TPR an INIT leaves is 0 (Pentium Vol. 3,
+           19.3.1.11.3), whichever of the two landed first. */
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        if (cpu_mp_ap_reset_outstanding(self))
+            cpu_lapic_tpr_store_index((uint8_t) self, 0);
+        return;
+    }
+    if (m->write_l == lapic_writel)
+        lapic_writel_as(self, a, v, m->priv);
     else
         (void) cpu_thread_forward(FWD_MAP_WL, m, a, v);
 }
@@ -903,6 +980,7 @@ cpu_thread_main(void *priv)
        MXCSR it found. */
     is_cpu_thread         = 1;
     cpu_thread_self_index = index;
+    cpu_mp_thread_self    = index; /* whose APIC this thread reaches (cpu_mp_asking) */
     cpu_thread_fpenv_set(cpu_thread_fpenv);
 #ifdef __APPLE__
     /* As the emulation thread (qt_main.cpp): on a performance core. */
@@ -1294,6 +1372,7 @@ cpu_thread_tick(void)
 {
     cpu_thread_publish_config();
     cpu_mp_after_serve();
+    cpu_lapic_timer_hosts_apply();
 
     for (int i = 1; i < CPU_MP_MAX; i++) {
         cpu_ap_t *ap = &cpu_aps[i];

@@ -31,6 +31,7 @@
 #include <86box/timer.h>
 #include <86box/video.h> /* cpuclock */
 #include <86box/cpu_mp.h>
+#include <86box/apic_lock.h>
 #include "../lapic_policy.h"
 
 /* Startup slots record AP requests without creating runnable CPU state. */
@@ -205,9 +206,15 @@ cpu_current_lapic_index(void)
     cpu_state_t *current = &cpu_state;
 
     /* With more than one processor the state never moves: the one asking
-       is the one in place (cpu_mp.c). */
-    if (cpu_mp_count > 1)
-        return (uint8_t) cpu_mp_self;
+       is the one the holder of the APIC bus's lock named (apic_lock_as) --
+       its own processor on another processor's thread, the one in place or
+       being served on the machine's. Asked without the lock, the one in
+       place. */
+    if (cpu_mp_count > 1) {
+        if (!apic_lock_held())
+            return (uint8_t) cpu_mp_cur;
+        return (uint8_t) apic_bus_asker;
+    }
 
     for (uint8_t i = 0; i < IOAPIC_STATE_MAX_LAPICS; i++) {
         if (cpu_lapic_contexts[i].state == current)
@@ -358,7 +365,20 @@ cpu_lapic_tpr_read_index(uint8_t lapic_index)
     if (lapic_index >= IOAPIC_STATE_MAX_LAPICS)
         return 0;
 
-    return cpu_lapic_tprs[lapic_index];
+    return __atomic_load_n(&cpu_lapic_tprs[lapic_index], __ATOMIC_RELAXED);
+}
+
+/* A TPR write its processor makes without the APIC bus's lock (lapic_mmio.c,
+   cpu_thread.c): the register alone, stored whole, as the others read it
+   for arbitration a load at a time. The PPR is worked out at each read;
+   the cached copy and the mirror are written under the lock. */
+void
+cpu_lapic_tpr_store_index(uint8_t lapic_index, uint32_t val)
+{
+    if (lapic_index >= IOAPIC_STATE_MAX_LAPICS)
+        return;
+
+    __atomic_store_n(&cpu_lapic_tprs[lapic_index], lapic_tpr_sanitize(val), __ATOMIC_RELAXED);
 }
 
 void
@@ -1130,10 +1150,15 @@ cpu_lapic_irrs_reset(void)
 static void
 cpu_lapic_irr_live_set(uint8_t lapic_index, int any)
 {
+    /* One bit each, written from every processor's thread: a read and a
+       store would lose another's bit set in between, and that processor
+       would not see its interrupt. Stored after the IRR word, with
+       release: a processor that sees it (x86_interrupt.h) sees the vector
+       too. */
     if (any)
-        cpu_lapic_irr_live |= 1u << lapic_index;
+        __atomic_fetch_or(&cpu_lapic_irr_live, 1u << lapic_index, __ATOMIC_RELEASE);
     else
-        cpu_lapic_irr_live &= ~(1u << lapic_index);
+        __atomic_fetch_and(&cpu_lapic_irr_live, ~(1u << lapic_index), __ATOMIC_RELEASE);
 }
 
 static void
@@ -1298,17 +1323,16 @@ cpu_lapic_tmr_save_index(uint8_t lapic_index, uint32_t words[IOAPIC_STATE_LAPIC_
     memcpy(words, cpu_lapic_tmrs[lapic_index], sizeof(cpu_lapic_tmrs[lapic_index]));
 }
 
+/* The highest vector set. Each word is loaded once, whole: another
+   processor's thread may read a register its own APIC's owner changes. */
 static int
 cpu_lapic_highest_vector(const uint32_t bits[IOAPIC_STATE_LAPIC_BIT_WORDS])
 {
     for (int word = IOAPIC_STATE_LAPIC_BIT_WORDS - 1; word >= 0; word--) {
-        if (!bits[word])
-            continue;
+        const uint32_t w = __atomic_load_n(&bits[word], __ATOMIC_ACQUIRE);
 
-        for (int bit = 31; bit >= 0; bit--) {
-            if (bits[word] & (1u << bit))
-                return (word << 5) | bit;
-        }
+        if (w)
+            return (word << 5) | (31 - __builtin_clz(w));
     }
 
     return -1;
@@ -1408,11 +1432,11 @@ cpu_lapic_fixed_delivery_action_index(uint8_t lapic_index, int started,
 }
 
 /* The processor priority from TPR and the highest ISR vector, as a read
-   of the register gives it. */
+   of the register gives it, from any thread. */
 static uint32_t
 cpu_lapic_ppr_value_index(uint8_t lapic_index)
 {
-    uint32_t tpr = cpu_lapic_tprs[lapic_index] & CPU_LAPIC_TPR_MASK;
+    uint32_t tpr = __atomic_load_n(&cpu_lapic_tprs[lapic_index], __ATOMIC_RELAXED) & CPU_LAPIC_TPR_MASK;
     int      isr = cpu_lapic_highest_vector(cpu_lapic_isrs[lapic_index]);
 
     return lapic_processor_priority(tpr, isr);
@@ -1436,7 +1460,7 @@ cpu_lapic_apr_value_index(uint8_t lapic_index)
 
     if (lapic_index >= IOAPIC_STATE_MAX_LAPICS)
         return 0;
-    tpr  = cpu_lapic_tprs[lapic_index] & CPU_LAPIC_TPR_MASK;
+    tpr  = __atomic_load_n(&cpu_lapic_tprs[lapic_index], __ATOMIC_RELAXED) & CPU_LAPIC_TPR_MASK;
     irr  = cpu_lapic_highest_vector(cpu_lapic_irrs[lapic_index]);
     isr  = cpu_lapic_highest_vector(cpu_lapic_isrs[lapic_index]);
     irrv = (irr < 0) ? 0 : (uint32_t) irr;
@@ -1472,16 +1496,20 @@ cpu_lapic_priority_deliverable_index(uint8_t lapic_index, uint8_t vector)
     return lapic_priority_deliverable(vector, ppr);
 }
 
+/* Written under the APIC bus's lock, read by a processor's thread without
+   it (x86_interrupt.h): each word stored whole, and set with release, so
+   that what the sender stored before raising the interrupt (a device's
+   DMA, another processor's message) is seen by the processor taking it. */
 static void
 cpu_lapic_clear_vector(uint32_t bits[IOAPIC_STATE_LAPIC_BIT_WORDS], uint8_t vector)
 {
-    bits[vector >> 5] &= ~(1u << (vector & 0x1f));
+    __atomic_store_n(&bits[vector >> 5], bits[vector >> 5] & ~(1u << (vector & 0x1f)), __ATOMIC_RELEASE);
 }
 
 static void
 cpu_lapic_set_vector(uint32_t bits[IOAPIC_STATE_LAPIC_BIT_WORDS], uint8_t vector)
 {
-    bits[vector >> 5] |= 1u << (vector & 0x1f);
+    __atomic_store_n(&bits[vector >> 5], bits[vector >> 5] | (1u << (vector & 0x1f)), __ATOMIC_RELEASE);
 }
 
 int
@@ -1580,7 +1608,8 @@ cpu_lapic_highest_deliverable_irr_index(uint8_t lapic_index, int started)
        lower vector's class is lower still (as are the invalid ones below
        10h). The processor priority is worked out once. */
     for (int word = IOAPIC_STATE_LAPIC_BIT_WORDS - 1; word >= 0; word--) {
-        uint32_t pending = cpu_lapic_irrs[lapic_index][word];
+        /* Loaded once: read twice, a store between could leave clz a 0. */
+        const uint32_t pending = __atomic_load_n(&cpu_lapic_irrs[lapic_index][word], __ATOMIC_ACQUIRE);
 
         if (pending) {
             int vector = (word << 5) | (31 - __builtin_clz(pending));
@@ -1990,14 +2019,41 @@ cpu_lapic_timer_host_add_index(uint8_t lapic_index, void (*callback)(void *priv)
     timer_add(&cpu_lapic_timer_hosts[lapic_index], callback, priv, 0);
 }
 
+/* Host timers asked for from another processor's own thread: only the
+   machine's thread may touch the timers, so it sets them between its
+   blocks (cpu_lapic_timer_hosts_apply), a bit per local APIC. The local
+   APIC timer's own state -- its count, the clock it started at -- is set
+   where it is written; only the host timer that fires it is late, by the
+   time the machine's thread takes to look, and every processor's clock
+   waits for that thread. */
+static uint32_t cpu_lapic_timer_host_resync;
+
+#ifdef CPU_MP_SECOND_CORE
+extern void cpu_thread_machine_attn(void); /* cpu_thread.c */
+#endif
+
+static int
+cpu_lapic_timer_host_elsewhere(uint8_t lapic_index)
+{
+    if (!cpu_mp_thread_self)
+        return 0;
+    __atomic_fetch_or(&cpu_lapic_timer_host_resync, 1u << lapic_index, __ATOMIC_SEQ_CST);
+#ifdef CPU_MP_SECOND_CORE
+    cpu_thread_machine_attn();
+#endif
+    return 1;
+}
+
 void
 cpu_lapic_timer_host_stop_index(uint8_t lapic_index)
 {
     if (lapic_index >= IOAPIC_STATE_MAX_LAPICS)
         return;
 
-    timer_stop(&cpu_lapic_timer_hosts[lapic_index]);
     cpu_lapic_timer_unschedule_index(lapic_index);
+    if (cpu_lapic_timer_host_elsewhere(lapic_index))
+        return;
+    timer_stop(&cpu_lapic_timer_hosts[lapic_index]);
 }
 
 void
@@ -2009,11 +2065,43 @@ cpu_lapic_timer_host_schedule_index(uint8_t lapic_index, uint32_t count, int in_
         return;
 
     delay = cpu_lapic_timer_schedule_delay_index(lapic_index, count);
+    if (cpu_lapic_timer_host_elsewhere(lapic_index))
+        return;
 
     if (in_callback)
         timer_advance_u64(&cpu_lapic_timer_hosts[lapic_index], delay);
     else
         timer_set_delay_u64(&cpu_lapic_timer_hosts[lapic_index], delay);
+}
+
+/* On the machine's thread: the host timers another thread asked for, set
+   from the local APIC timers' state as it is now -- stopped, or due when
+   the count reaches zero (at once if it has). */
+void
+cpu_lapic_timer_hosts_apply(void)
+{
+    uint32_t mask;
+
+    if (!__atomic_load_n(&cpu_lapic_timer_host_resync, __ATOMIC_RELAXED))
+        return;
+    apic_lock();
+    mask = __atomic_exchange_n(&cpu_lapic_timer_host_resync, 0, __ATOMIC_SEQ_CST);
+    while (mask) {
+        const uint8_t i = (uint8_t) __builtin_ctz(mask);
+
+        mask &= mask - 1;
+        if (!cpu_lapic_timer_enableds[i] || !cpu_lapic_timer_reload_counts[i]) {
+            timer_stop(&cpu_lapic_timer_hosts[i]);
+            continue;
+        }
+        {
+            const uint32_t current = cpu_lapic_timer_current_read_index(i);
+            const uint64_t delay   = current ? cpu_lapic_timer_schedule_delay_index(i, current) : (1ULL << 32);
+
+            timer_set_delay_u64(&cpu_lapic_timer_hosts[i], delay);
+        }
+    }
+    apic_unlock();
 }
 
 uint32_t
@@ -2106,7 +2194,7 @@ cpu_lapic_mmio_read_index(uint8_t lapic_index, uint32_t reg, uint32_t *val)
             *val = cpu_lapic_svrs[lapic_index];
             return 1;
         case CPU_LAPIC_REG_TPR:
-            *val = cpu_lapic_tprs[lapic_index];
+            *val = __atomic_load_n(&cpu_lapic_tprs[lapic_index], __ATOMIC_RELAXED);
             return 1;
         case CPU_LAPIC_REG_LDR:
             *val = cpu_lapic_ldrs[lapic_index];
@@ -2181,7 +2269,7 @@ cpu_lapic_mmio_write_index(uint8_t lapic_index, uint32_t reg, uint32_t val)
             lapic_svr_sync_index(lapic_index, cpu_lapic_svrs[lapic_index]);
             return 1;
         case CPU_LAPIC_REG_TPR:
-            cpu_lapic_tprs[lapic_index] = lapic_tpr_sanitize(val);
+            __atomic_store_n(&cpu_lapic_tprs[lapic_index], lapic_tpr_sanitize(val), __ATOMIC_RELAXED);
             lapic_tpr_sync_index(lapic_index, cpu_lapic_tprs[lapic_index]);
             cpu_lapic_ppr_update_index(lapic_index);
             return 1;
@@ -2402,12 +2490,23 @@ cpu_apic_base_msr_sanitize(uint8_t lapic_index, uint64_t val, uint64_t cur)
            (cur & CPU_APIC_BASE_BSP);
 }
 
-uint64_t
-cpu_apic_base_msr_read_current(void)
+static uint64_t
+cpu_apic_base_msr_read_current_locked(void)
 {
     uint8_t lapic_index = cpu_current_lapic_index_clamped();
 
     return cpu_apic_base_msrs[lapic_index];
+}
+
+uint64_t
+cpu_apic_base_msr_read_current(void)
+{
+    uint64_t ret_;
+
+    apic_lock();
+    ret_ = cpu_apic_base_msr_read_current_locked();
+    apic_unlock();
+    return ret_;
 }
 
 uint64_t
@@ -2437,8 +2536,8 @@ cpu_lapic_bsp_index(uint8_t lapic_index)
     return !!(cpu_apic_base_msr_read_index(lapic_index) & CPU_APIC_BASE_BSP);
 }
 
-void
-cpu_apic_base_msr_write_current(uint64_t val)
+static void
+cpu_apic_base_msr_write_current_locked(uint64_t val)
 {
     uint8_t lapic_index = cpu_current_lapic_index_clamped();
     uint64_t cur;
@@ -2449,6 +2548,14 @@ cpu_apic_base_msr_write_current(uint64_t val)
     lapic_apic_base_msr_sync_index(lapic_index, cpu_apic_base_msrs[lapic_index]);
     /* Enabled or disabled: what the processor may take changes. */
     cpu_mp_chain_signal(lapic_index);
+}
+
+void
+cpu_apic_base_msr_write_current(uint64_t val)
+{
+    apic_lock();
+    cpu_apic_base_msr_write_current_locked(val);
+    apic_unlock();
 }
 
 void
@@ -2481,8 +2588,8 @@ cpu_ap_startup_request(uint8_t lapic_index, uint8_t vector)
 }
 
 /* The processor core's resets reach the local APICs through these. */
-void
-cpu_lapic_reset_all(void)
+static void
+cpu_lapic_reset_all_locked(void)
 {
     memset(cpu_ap_startup_slots, 0, sizeof(cpu_ap_startup_slots));
     cpu_lapic_ids_reset();
@@ -2514,7 +2621,15 @@ cpu_lapic_reset_all(void)
 }
 
 void
-cpu_lapic_ven_reset(void)
+cpu_lapic_reset_all(void)
+{
+    apic_lock();
+    cpu_lapic_reset_all_locked();
+    apic_unlock();
+}
+
+static void
+cpu_lapic_ven_reset_locked(void)
 {
     cpu_lapic_ids_reset();
     cpu_lapic_ids_sync();
@@ -2562,4 +2677,12 @@ cpu_lapic_ven_reset(void)
     cpu_lapic_timer_divide_cfgs_sync();
     cpu_apic_base_msrs_reset();
     cpu_apic_base_msrs_sync();
+}
+
+void
+cpu_lapic_ven_reset(void)
+{
+    apic_lock();
+    cpu_lapic_ven_reset_locked();
+    apic_unlock();
 }

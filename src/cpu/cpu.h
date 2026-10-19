@@ -929,6 +929,7 @@ extern uint8_t  cpu_lapic_id_read_index(uint8_t lapic_index);
 extern void     cpu_lapic_id_load_index(uint8_t lapic_index, uint8_t id);
 extern void     cpu_lapic_svr_load_index(uint8_t lapic_index, uint32_t val);
 extern uint32_t cpu_lapic_tpr_read_index(uint8_t lapic_index);
+extern void     cpu_lapic_tpr_store_index(uint8_t lapic_index, uint32_t val);
 extern void     cpu_lapic_tpr_load_index(uint8_t lapic_index, uint32_t val);
 extern uint32_t cpu_lapic_ldr_read_index(uint8_t lapic_index);
 extern void     cpu_lapic_ldr_load_index(uint8_t lapic_index, uint32_t val);
@@ -1049,6 +1050,7 @@ extern uint64_t cpu_lapic_timer_schedule_delay_index(uint8_t lapic_index, uint32
 extern void     cpu_lapic_timer_host_add_index(uint8_t lapic_index, void (*callback)(void *priv), void *priv);
 extern void     cpu_lapic_timer_host_stop_index(uint8_t lapic_index);
 extern void     cpu_lapic_timer_host_schedule_index(uint8_t lapic_index, uint32_t count, int in_callback);
+extern void     cpu_lapic_timer_hosts_apply(void);
 extern void     cpu_lapic_timer_stop_index(uint8_t lapic_index);
 extern void     cpu_lapic_timer_arm_index(uint8_t lapic_index, uint32_t count);
 extern void     cpu_lapic_timer_rebase_current_index(uint8_t lapic_index, uint32_t current);

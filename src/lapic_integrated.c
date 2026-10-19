@@ -15,6 +15,7 @@
 #include <86box/device.h>
 #include <86box/machine.h>
 #include <86box/chipset.h>
+#include <86box/apic_lock.h>
 #include "apic_platform.h"
 
 typedef struct integrated_cpu_lapic_t {
@@ -48,7 +49,7 @@ integrated_cpu_lapic_apply(integrated_cpu_lapic_t *dev)
 }
 
 static void
-integrated_cpu_lapic_reset(void *priv)
+integrated_cpu_lapic_reset_locked(void *priv)
 {
     integrated_cpu_lapic_t *dev = (integrated_cpu_lapic_t *) priv;
 
@@ -65,7 +66,15 @@ integrated_cpu_lapic_reset(void *priv)
 }
 
 static void
-integrated_cpu_lapic_close(void *priv)
+integrated_cpu_lapic_reset(void *priv)
+{
+    apic_lock();
+    integrated_cpu_lapic_reset_locked(priv);
+    apic_unlock();
+}
+
+static void
+integrated_cpu_lapic_close_locked(void *priv)
 {
     integrated_cpu_lapic_t *dev = (integrated_cpu_lapic_t *) priv;
 
@@ -79,8 +88,16 @@ integrated_cpu_lapic_close(void *priv)
     free(dev);
 }
 
+static void
+integrated_cpu_lapic_close(void *priv)
+{
+    apic_lock();
+    integrated_cpu_lapic_close_locked(priv);
+    apic_unlock();
+}
+
 static void *
-integrated_cpu_lapic_init(const device_t *info)
+integrated_cpu_lapic_init_locked(const device_t *info)
 {
     integrated_cpu_lapic_t *dev;
 
@@ -108,6 +125,17 @@ integrated_cpu_lapic_init(const device_t *info)
     }
 
     return dev;
+}
+
+static void *
+integrated_cpu_lapic_init(const device_t *info)
+{
+    void *ret_;
+
+    apic_lock();
+    ret_ = integrated_cpu_lapic_init_locked(info);
+    apic_unlock();
+    return ret_;
 }
 
 const device_t integrated_cpu_lapic_device = {

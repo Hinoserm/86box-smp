@@ -15,6 +15,7 @@
 #include <86box/86box.h> /* cpu_use_dynarec */
 #include <86box/mem.h>
 #include <86box/cpu_mp.h>
+#include <86box/apic_lock.h>
 #include <86box/device.h>
 #include <86box/chipset.h> /* ioapic_retry_deliveries */
 
@@ -296,8 +297,8 @@ lapic_mmio_read_reg(lapic_state_t *lapic, uint32_t reg)
     return lapic_mirror_read_reg(lapic, reg);
 }
 
-uint32_t
-lapic_readl(uint32_t addr, void *priv)
+static uint32_t
+lapic_readl_locked(uint32_t addr, void *priv)
 {
     lapic_mmio_device_t *dev = (lapic_mmio_device_t *) priv;
     uint32_t             reg;
@@ -308,9 +309,11 @@ lapic_readl(uint32_t addr, void *priv)
         return 0xffffffff;
 
     /* The timer's current count is worked out from the machine's clock,
-       which only moves between blocks unless brought up to date. */
+       which only moves between blocks unless brought up to date -- by its
+       own thread: another processor's thread takes it as it stands, at
+       most the drift bound behind its own. */
 #ifdef USE_DYNAREC
-    if ((reg == LAPIC_REG_CURRENT_CNT) && cpu_use_dynarec)
+    if ((reg == LAPIC_REG_CURRENT_CNT) && cpu_use_dynarec && !cpu_mp_thread_self)
         update_tsc();
 #endif
 
@@ -330,24 +333,80 @@ lapic_readl(uint32_t addr, void *priv)
     return ret;
 }
 
+/* ---- who reaches the window --------------------------------------------
+
+   A processor's local APIC is part of it (86box/apic_lock.h). Processor
+   who, on its own thread, comes in through the _as forms (cpu_thread.c);
+   the mapping's own handlers below are the machine's thread, for the
+   processor it has in place. A bus master reaches nothing
+   (lapic_mmio_current_target). The two registers the NT HAL touches at
+   every IRQL change -- TPR, and PPR read -- are only their processor's to
+   write and the others' to read one 32-bit load at a time, and are served
+   without the lock, on every processor. */
+
+uint32_t
+lapic_readl_as(int who, uint32_t addr, void *priv)
+{
+    uint32_t ret;
+
+    apic_lock_as(who);
+    ret = lapic_readl_locked(addr, priv);
+    apic_unlock();
+    return ret;
+}
+
+uint16_t
+lapic_readw_as(int who, uint32_t addr, void *priv)
+{
+    return lapic_readl_as(who, addr & ~0x03, priv) >> ((addr & 0x02) * 8);
+}
+
+uint8_t
+lapic_readb_as(int who, uint32_t addr, void *priv)
+{
+    return lapic_readl_as(who, addr & ~0x03, priv) >> ((addr & 0x03) * 8);
+}
+
+/* TPR or PPR in processor who's own window, as it stands. */
+int
+lapic_mmio_fast_reg(int who, uint32_t addr, uint32_t *reg)
+{
+    const uint32_t off = addr - cpu_lapic_mmio_base_read_index((uint8_t) who);
+
+    if ((off >= 0x400) || !cpu_lapic_mmio_mapping_enabled_index((uint8_t) who))
+        return 0;
+    *reg = off & 0x3f0;
+    return (*reg == LAPIC_REG_TPR) || (*reg == LAPIC_REG_PPR);
+}
+
+uint32_t
+lapic_readl(uint32_t addr, void *priv)
+{
+    const int who = cpu_mp_cur;
+    uint32_t  reg;
+    uint32_t  val = 0;
+
+    if (!mem_bus_master_access() && lapic_mmio_fast_reg(who, addr, &reg)) {
+        (void) cpu_lapic_mmio_read_index((uint8_t) who, reg, &val);
+        return val;
+    }
+    return lapic_readl_as(who, addr, priv);
+}
+
 uint16_t
 lapic_readw(uint32_t addr, void *priv)
 {
-    uint32_t ret = lapic_readl(addr & ~0x03, priv);
-
-    return ret >> ((addr & 0x02) * 8);
+    return lapic_readl(addr & ~0x03, priv) >> ((addr & 0x02) * 8);
 }
 
 uint8_t
 lapic_readb(uint32_t addr, void *priv)
 {
-    uint32_t ret = lapic_readl(addr & ~0x03, priv);
-
-    return ret >> ((addr & 0x03) * 8);
+    return lapic_readl(addr & ~0x03, priv) >> ((addr & 0x03) * 8);
 }
 
-void
-lapic_writel(uint32_t addr, uint32_t val, void *priv)
+static void
+lapic_writel_locked(uint32_t addr, uint32_t val, void *priv)
 {
     lapic_mmio_device_t *dev = (lapic_mmio_device_t *) priv;
     uint32_t             reg;
@@ -357,6 +416,14 @@ lapic_writel(uint32_t addr, uint32_t val, void *priv)
     lapic_state_t       *lapic = lapic_mmio_current_target(dev, addr, &reg);
 
     if (lapic == NULL)
+        return;
+
+    /* A processor on its own thread with an INIT posted to it and not yet
+       taken: the INIT reset its APIC when it was delivered, so a write it
+       makes before reaching its instruction boundary would land after that
+       reset. On the board the write came first and the reset undid it: it
+       never happens. */
+    if ((lapic->index != 0) && (lapic->index < cpu_mp_count) && cpu_mp_ap_reset_outstanding(lapic->index))
         return;
 
     /* TPR, EOI, SVR, the LVTs, the timer: what the processor may take next
@@ -380,7 +447,7 @@ lapic_writel(uint32_t addr, uint32_t val, void *priv)
         /* The count so far, from a clock brought up to date (as a read of
            the current count does). */
 #ifdef USE_DYNAREC
-        if (cpu_use_dynarec)
+        if (cpu_use_dynarec && !cpu_mp_thread_self)
             update_tsc();
 #endif
         timer_current = lapic_timer_current(lapic);
@@ -446,6 +513,31 @@ lapic_writel(uint32_t addr, uint32_t val, void *priv)
     }
 }
 
+void
+lapic_writel_as(int who, uint32_t addr, uint32_t val, void *priv)
+{
+    apic_lock_as(who);
+    lapic_writel_locked(addr, val, priv);
+    apic_unlock();
+}
+
+void
+lapic_writel(uint32_t addr, uint32_t val, void *priv)
+{
+    const int who = cpu_mp_cur;
+    uint32_t  reg;
+
+    /* As lapic_writel_locked: a TPR raised or rewritten holds back more,
+       so nothing new to look at; one lowered may let a held interrupt in. */
+    if (!mem_bus_master_access() && lapic_mmio_fast_reg(who, addr, &reg) && (reg == LAPIC_REG_TPR)) {
+        if ((val & 0xff) < (cpu_lapic_tpr_read_index((uint8_t) who) & 0xff))
+            cpu_mp_chain_signal(who);
+        cpu_lapic_tpr_store_index((uint8_t) who, val);
+        return;
+    }
+    lapic_writel_as(who, addr, val, priv);
+}
+
 /* What a narrow write merges into: the register as stored, not a read of
    it. A read has effects of its own -- the P5's ESR clears -- and "a write
    to the ESR has no side effects" (Pentium Vol. 3, 19.3.3). */
@@ -460,24 +552,43 @@ lapic_narrow_base(uint32_t addr, void *priv)
 }
 
 void
-lapic_writew(uint32_t addr, uint16_t val, void *priv)
+lapic_writew_as(int who, uint32_t addr, uint16_t val, void *priv)
 {
     uint32_t shift = (addr & 0x02) * 8;
-    uint32_t cur   = lapic_narrow_base(addr & ~0x03, priv);
+    uint32_t cur;
 
-    /* Narrow writes reuse dword policy/sanitizers by merging through the aligned register. */
+    /* Narrow writes reuse dword policy/sanitizers by merging through the
+       aligned register: read and written under one hold of the lock. */
+    apic_lock_as(who);
+    cur = lapic_narrow_base(addr & ~0x03, priv);
     cur &= ~(0xffffu << shift);
     cur |= ((uint32_t) val) << shift;
-    lapic_writel(addr & ~0x03, cur, priv);
+    lapic_writel_locked(addr & ~0x03, cur, priv);
+    apic_unlock();
+}
+
+void
+lapic_writeb_as(int who, uint32_t addr, uint8_t val, void *priv)
+{
+    uint32_t shift = (addr & 0x03) * 8;
+    uint32_t cur;
+
+    apic_lock_as(who);
+    cur = lapic_narrow_base(addr & ~0x03, priv);
+    cur &= ~(0xffu << shift);
+    cur |= ((uint32_t) val) << shift;
+    lapic_writel_locked(addr & ~0x03, cur, priv);
+    apic_unlock();
+}
+
+void
+lapic_writew(uint32_t addr, uint16_t val, void *priv)
+{
+    lapic_writew_as(cpu_mp_cur, addr, val, priv);
 }
 
 void
 lapic_writeb(uint32_t addr, uint8_t val, void *priv)
 {
-    uint32_t shift = (addr & 0x03) * 8;
-    uint32_t cur   = lapic_narrow_base(addr & ~0x03, priv);
-
-    cur &= ~(0xffu << shift);
-    cur |= ((uint32_t) val) << shift;
-    lapic_writel(addr & ~0x03, cur, priv);
+    lapic_writeb_as(cpu_mp_cur, addr, val, priv);
 }

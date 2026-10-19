@@ -730,7 +730,7 @@ lapic_icr_write(lapic_state_t *lapic, lapic_state_t *lapics, uint8_t count,
     /* The ICR holds one message: this one replaces any still waiting to be
        sent again, before its delivery can free a slot and send that one. */
     if (lapic->index < APIC_MAX_LAPICS)
-        lapic_icr_retry_pending[lapic->index] = 0;
+        __atomic_store_n(&lapic_icr_retry_pending[lapic->index], 0, __ATOMIC_SEQ_CST);
 
     if (!cpu_lapic_icr_delivery_write_index(lapic->index, val, &icr))
         return;
@@ -777,7 +777,7 @@ lapic_icr_write(lapic_state_t *lapic, lapic_state_t *lapics, uint8_t count,
         if (lapic->index < APIC_MAX_LAPICS) {
             lapic_icr_retry_val[lapic->index]          = val;
             lapic_icr_retry_route_parked[lapic->index] = route_parked;
-            lapic_icr_retry_pending[lapic->index]      = 1;
+            __atomic_store_n(&lapic_icr_retry_pending[lapic->index], 1, __ATOMIC_SEQ_CST);
         }
         return;
     }

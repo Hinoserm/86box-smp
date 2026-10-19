@@ -26,6 +26,7 @@
 #include <86box/mem.h>
 #include <86box/chipset.h>
 #include <86box/ioapic_routes.h>
+#include <86box/apic_lock.h>
 #include <86box/cpu_mp.h>
 #include <86box/pic.h>
 #include <86box/pci.h>
@@ -279,8 +280,8 @@ ioapic_uniprocessor_apic_enabled(void)
     return (ioapic_global != NULL) && ioapic_global->uniprocessor_apic;
 }
 
-int
-ioapic_external_interrupt_pending(void)
+static int
+ioapic_external_interrupt_pending_locked(void)
 {
     ioapic_t *dev = ioapic_global;
 
@@ -290,12 +291,41 @@ ioapic_external_interrupt_pending(void)
     /* This enable state has been seen; until it changes the CPU's check
        may answer "nothing pending" without coming here. The first
        processor's flag, set only when it is the one asking. */
-    if (cpu_mp_self == 0)
+    if (apic_bus_asker == 0)
         cpu_apic_int_fast_ok = 1;
 
     return apic_platform_current_external_pending(dev->apic,
                                                   ioapic_pic_pending_adapter,
                                                   dev);
+}
+
+int
+ioapic_external_interrupt_pending(void)
+{
+    int ret_;
+
+    apic_lock();
+    ret_ = ioapic_external_interrupt_pending_locked();
+    apic_unlock();
+    return ret_;
+}
+
+/* The asking processor's own local APIC's highest deliverable interrupt,
+   into its ISR, from its own thread (cpu_thread.c): what its APIC holds
+   and nothing of the 8259's -- an ExtINT through LINT0 is acknowledged on
+   the machine's thread, which owns the 8259. -1 for none. */
+int
+ioapic_lapic_vector_local(int who)
+{
+    ioapic_t *dev = ioapic_global;
+    int       vector;
+
+    if ((dev == NULL) || !dev->uniprocessor_apic)
+        return -1;
+    apic_lock_as(who);
+    vector = apic_platform_current_external_vector(dev->apic, ioapic_pic_pending_adapter, NULL, dev);
+    apic_unlock();
+    return vector;
 }
 
 /* Whether processor index has an interrupt to take, asked while another
@@ -312,8 +342,8 @@ ioapic_external_interrupt_pending_at(int index)
                                              ioapic_pic_pending_adapter, dev);
 }
 
-int
-ioapic_pic_fallback_allowed(void)
+static int
+ioapic_pic_fallback_allowed_locked(void)
 {
     ioapic_t *dev = ioapic_global;
 
@@ -333,7 +363,18 @@ ioapic_pic_fallback_allowed(void)
 }
 
 int
-ioapic_lint1_raise(void)
+ioapic_pic_fallback_allowed(void)
+{
+    int ret_;
+
+    apic_lock();
+    ret_ = ioapic_pic_fallback_allowed_locked();
+    apic_unlock();
+    return ret_;
+}
+
+static int
+ioapic_lint1_raise_locked(void)
 {
     ioapic_t *dev = ioapic_global;
 
@@ -353,7 +394,18 @@ ioapic_lint1_raise(void)
 }
 
 int
-ioapic_external_interrupt_vector(void)
+ioapic_lint1_raise(void)
+{
+    int ret_;
+
+    apic_lock();
+    ret_ = ioapic_lint1_raise_locked();
+    apic_unlock();
+    return ret_;
+}
+
+static int
+ioapic_external_interrupt_vector_locked(void)
 {
     ioapic_t *dev = ioapic_global;
 
@@ -364,6 +416,17 @@ ioapic_external_interrupt_vector(void)
                                                  ioapic_pic_pending_adapter,
                                                  ioapic_pic_interrupt_adapter,
                                                  dev);
+}
+
+int
+ioapic_external_interrupt_vector(void)
+{
+    int ret_;
+
+    apic_lock();
+    ret_ = ioapic_external_interrupt_vector_locked();
+    apic_unlock();
+    return ret_;
 }
 
 static int
@@ -515,13 +578,21 @@ ioapic_retry_pending_transaction(ioapic_t *dev)
 
 /* A local APIC became able to take what it refused (enabled, addressed
    anew): the I/O APIC's refused messages go again. */
-void
-ioapic_retry_deliveries(void)
+static void
+ioapic_retry_deliveries_locked(void)
 {
     ioapic_t *dev = ioapic_global;
 
     if ((dev != NULL) && dev->uniprocessor_apic && dev->ioapic_send_pending)
         ioapic_retry_pending_transaction(dev);
+}
+
+void
+ioapic_retry_deliveries(void)
+{
+    apic_lock();
+    ioapic_retry_deliveries_locked();
+    apic_unlock();
 }
 
 static void
@@ -845,8 +916,8 @@ ioapic_wire_set(ioapic_t *dev, uint32_t *src, uint8_t pin, int level, int set)
 /* A source wired to an input of its own: a PCI interrupt learned from the
    MP table (counted in pci.c), or the ESC's SMI on INTIN0. The pin is
    sampled whatever any local APIC is doing. */
-void
-ioapic_intin_irq(uint8_t pin, int level, int set)
+static void
+ioapic_intin_irq_locked(uint8_t pin, int level, int set)
 {
     ioapic_t *dev = ioapic_global;
     uint32_t  low;
@@ -865,10 +936,18 @@ ioapic_intin_irq(uint8_t pin, int level, int set)
     ioapic_wire_set(dev, &dev->wire_pci, pin, level, set);
 }
 
+void
+ioapic_intin_irq(uint8_t pin, int level, int set)
+{
+    apic_lock();
+    ioapic_intin_irq_locked(pin, level, set);
+    apic_unlock();
+}
+
 /* An ISA/EISA IRQ line changed (picint_common: for a level source, the
    wired-OR of every source on it). */
-void
-ioapic_legacy_irq(uint16_t mask, int level, int set)
+static void
+ioapic_legacy_irq_locked(uint16_t mask, int level, int set)
 {
     ioapic_t *dev = ioapic_global;
 
@@ -898,6 +977,14 @@ ioapic_legacy_irq(uint16_t mask, int level, int set)
     }
 }
 
+void
+ioapic_legacy_irq(uint16_t mask, int level, int set)
+{
+    apic_lock();
+    ioapic_legacy_irq_locked(mask, level, set);
+    apic_unlock();
+}
+
 /* INTIN0 is the 8259's INTR (MP spec 1.1, Table 5-2; 82093AA 2.4; ESC
    Fig. 25: the internal 8259's output), replaced by SMI while the ESC's
    SMIRC routes SMI there. INTRC masks the ESC's external INTR pin only
@@ -913,8 +1000,8 @@ ioapic_wire_intr_update(ioapic_t *dev)
     }
 }
 
-void
-ioapic_pic_intr(int active)
+static void
+ioapic_pic_intr_locked(int active)
 {
     ioapic_t *dev = ioapic_global;
 
@@ -923,6 +1010,14 @@ ioapic_pic_intr(int active)
 
     dev->pic_intr = !!active;
     ioapic_wire_intr_update(dev);
+}
+
+void
+ioapic_pic_intr(int active)
+{
+    apic_lock();
+    ioapic_pic_intr_locked(active);
+    apic_unlock();
 }
 
 /* Whether a PCI interrupt the MP table puts on intin reaches the I/O APIC
@@ -944,8 +1039,8 @@ ioapic_pci_intin_own_wire(uint8_t intin, uint8_t irq_line)
     return 1;
 }
 
-void
-ioapic_set_pin0_smi(void *ioapic, int smi)
+static void
+ioapic_set_pin0_smi_locked(void *ioapic, int smi)
 {
     ioapic_t *dev = (ioapic_t *) ioapic;
 
@@ -954,6 +1049,14 @@ ioapic_set_pin0_smi(void *ioapic, int smi)
 
     dev->pin0_smi = !!smi;
     ioapic_wire_intr_update(dev);
+}
+
+void
+ioapic_set_pin0_smi(void *ioapic, int smi)
+{
+    apic_lock();
+    ioapic_set_pin0_smi_locked(ioapic, smi);
+    apic_unlock();
 }
 
 int
@@ -1281,7 +1384,7 @@ ioapic_window_write(ioapic_t *dev, uint32_t val)
 }
 
 static uint32_t
-ioapic_mmio_readl(uint32_t addr, void *priv)
+ioapic_mmio_readl_locked(uint32_t addr, void *priv)
 {
     ioapic_t *dev = (ioapic_t *) priv;
     uint32_t  reg = (addr - dev->mmio_base) & 0xff;
@@ -1299,24 +1402,57 @@ ioapic_mmio_readl(uint32_t addr, void *priv)
     return ret;
 }
 
+static uint32_t
+ioapic_mmio_readl(uint32_t addr, void *priv)
+{
+    uint32_t ret_;
+
+    apic_lock();
+    ret_ = ioapic_mmio_readl_locked(addr, priv);
+    apic_unlock();
+    return ret_;
+}
+
 static uint16_t
-ioapic_mmio_readw(uint32_t addr, void *priv)
+ioapic_mmio_readw_locked(uint32_t addr, void *priv)
 {
     uint32_t ret = ioapic_mmio_readl(addr & ~0x03, priv);
 
     return ret >> ((addr & 0x02) << 3);
 }
 
+static uint16_t
+ioapic_mmio_readw(uint32_t addr, void *priv)
+{
+    uint16_t ret_;
+
+    apic_lock();
+    ret_ = ioapic_mmio_readw_locked(addr, priv);
+    apic_unlock();
+    return ret_;
+}
+
 static uint8_t
-ioapic_mmio_readb(uint32_t addr, void *priv)
+ioapic_mmio_readb_locked(uint32_t addr, void *priv)
 {
     uint32_t ret = ioapic_mmio_readl(addr & ~0x03, priv);
 
     return ret >> ((addr & 0x03) << 3);
 }
 
+static uint8_t
+ioapic_mmio_readb(uint32_t addr, void *priv)
+{
+    uint8_t ret_;
+
+    apic_lock();
+    ret_ = ioapic_mmio_readb_locked(addr, priv);
+    apic_unlock();
+    return ret_;
+}
+
 static void
-ioapic_mmio_writel(uint32_t addr, uint32_t val, void *priv)
+ioapic_mmio_writel_locked(uint32_t addr, uint32_t val, void *priv)
 {
     ioapic_t *dev = (ioapic_t *) priv;
     uint32_t  reg = (addr - dev->mmio_base) & 0xff;
@@ -1332,7 +1468,15 @@ ioapic_mmio_writel(uint32_t addr, uint32_t val, void *priv)
 }
 
 static void
-ioapic_mmio_writew(uint32_t addr, uint16_t val, void *priv)
+ioapic_mmio_writel(uint32_t addr, uint32_t val, void *priv)
+{
+    apic_lock();
+    ioapic_mmio_writel_locked(addr, val, priv);
+    apic_unlock();
+}
+
+static void
+ioapic_mmio_writew_locked(uint32_t addr, uint16_t val, void *priv)
 {
     uint32_t shift = (addr & 0x02) << 3;
     uint32_t cur   = ioapic_mmio_readl(addr & ~0x03, priv);
@@ -1343,7 +1487,15 @@ ioapic_mmio_writew(uint32_t addr, uint16_t val, void *priv)
 }
 
 static void
-ioapic_mmio_writeb(uint32_t addr, uint8_t val, void *priv)
+ioapic_mmio_writew(uint32_t addr, uint16_t val, void *priv)
+{
+    apic_lock();
+    ioapic_mmio_writew_locked(addr, val, priv);
+    apic_unlock();
+}
+
+static void
+ioapic_mmio_writeb_locked(uint32_t addr, uint8_t val, void *priv)
 {
     uint32_t shift = (addr & 0x03) << 3;
     uint32_t cur   = ioapic_mmio_readl(addr & ~0x03, priv);
@@ -1351,6 +1503,14 @@ ioapic_mmio_writeb(uint32_t addr, uint8_t val, void *priv)
     cur &= ~(0xffu << shift);
     cur |= ((uint32_t) val) << shift;
     ioapic_mmio_writel(addr & ~0x03, cur, priv);
+}
+
+static void
+ioapic_mmio_writeb(uint32_t addr, uint8_t val, void *priv)
+{
+    apic_lock();
+    ioapic_mmio_writeb_locked(addr, val, priv);
+    apic_unlock();
 }
 
 static void
@@ -1389,7 +1549,7 @@ ioapic_mp_pci_irq_route(void *priv, uint8_t bus, uint8_t device, uint8_t intpin,
 }
 
 static void
-ioapic_write(UNUSED(uint16_t port), uint8_t val, void *priv)
+ioapic_write_locked(UNUSED(uint16_t port), uint8_t val, void *priv)
 {
     ioapic_t *dev = (ioapic_t *) priv;
     apic_platform_mp_table_policy_t policy;
@@ -1416,6 +1576,14 @@ ioapic_write(UNUSED(uint16_t port), uint8_t val, void *priv)
     policy.pci_irq_route_handler = ioapic_mp_pci_irq_route;
     /* Port 0x80 hook triggers MP-table patch policy; platform owns BIOS table edits. */
     (void) apic_platform_mp_table_post(dev->apic, val, &policy);
+}
+
+static void
+ioapic_write(uint16_t port, uint8_t val, void *priv)
+{
+    apic_lock();
+    ioapic_write_locked(port, val, priv);
+    apic_unlock();
 }
 
 static void
@@ -1453,8 +1621,8 @@ ioapic_reset(ioapic_t *dev)
     ioapic_reset_redir(dev);
 }
 
-void
-ioapic_set_legacy_irq_routing(void *ioapic, const ioapic_legacy_irq_routing_t *routing)
+static void
+ioapic_set_legacy_irq_routing_locked(void *ioapic, const ioapic_legacy_irq_routing_t *routing)
 {
     ioapic_t *dev = (ioapic_t *) ioapic;
 
@@ -1475,6 +1643,14 @@ ioapic_set_legacy_irq_routing(void *ioapic, const ioapic_legacy_irq_routing_t *r
     dev->legacy_routes_wired = 1;
 }
 
+void
+ioapic_set_legacy_irq_routing(void *ioapic, const ioapic_legacy_irq_routing_t *routing)
+{
+    apic_lock();
+    ioapic_set_legacy_irq_routing_locked(ioapic, routing);
+    apic_unlock();
+}
+
 /* The window where it is, while the APIC path is on. */
 static void
 ioapic_apply_mapping(ioapic_t *dev)
@@ -1486,8 +1662,8 @@ ioapic_apply_mapping(ioapic_t *dev)
 /* The ESC moves its I/O APIC with APICBASE; this is where it says so. The
    window is only mapped while the APIC path is on, but the address is
    kept either way. */
-void
-ioapic_set_mmio_base(void *ioapic, uint32_t base)
+static void
+ioapic_set_mmio_base_locked(void *ioapic, uint32_t base)
 {
     ioapic_t *dev = (ioapic_t *) ioapic;
 
@@ -1498,9 +1674,17 @@ ioapic_set_mmio_base(void *ioapic, uint32_t base)
     ioapic_apply_mapping(dev);
 }
 
-/* The chipset holding the 8259's INTR output inactive (the ESC's INTRC). */
 void
-ioapic_set_intr_masked(void *ioapic, int masked)
+ioapic_set_mmio_base(void *ioapic, uint32_t base)
+{
+    apic_lock();
+    ioapic_set_mmio_base_locked(ioapic, base);
+    apic_unlock();
+}
+
+/* The chipset holding the 8259's INTR output inactive (the ESC's INTRC). */
+static void
+ioapic_set_intr_masked_locked(void *ioapic, int masked)
 {
     ioapic_t *dev = (ioapic_t *) ioapic;
 
@@ -1509,6 +1693,14 @@ ioapic_set_intr_masked(void *ioapic, int masked)
 
     dev->intr_masked = !!masked;
     ioapic_wire_intr_update(dev);
+}
+
+void
+ioapic_set_intr_masked(void *ioapic, int masked)
+{
+    apic_lock();
+    ioapic_set_intr_masked_locked(ioapic, masked);
+    apic_unlock();
 }
 
 int
@@ -1534,7 +1726,7 @@ ioapic_set_smiout_handler(ioapic_smiout_handler_t handler, void *priv)
 }
 
 static void
-ioapic_device_reset(void *priv)
+ioapic_device_reset_locked(void *priv)
 {
     ioapic_t *dev = (ioapic_t *) priv;
 
@@ -1544,7 +1736,15 @@ ioapic_device_reset(void *priv)
 }
 
 static void
-ioapic_close(void *priv)
+ioapic_device_reset(void *priv)
+{
+    apic_lock();
+    ioapic_device_reset_locked(priv);
+    apic_unlock();
+}
+
+static void
+ioapic_close_locked(void *priv)
 {
     ioapic_t *dev = (ioapic_t *) priv;
 
@@ -1565,8 +1765,16 @@ ioapic_close(void *priv)
     free(dev);
 }
 
+static void
+ioapic_close(void *priv)
+{
+    apic_lock();
+    ioapic_close_locked(priv);
+    apic_unlock();
+}
+
 static void *
-ioapic_init(UNUSED(const device_t *info))
+ioapic_init_locked(UNUSED(const device_t *info))
 {
     ioapic_t *dev = (ioapic_t *) calloc(1, sizeof(ioapic_t));
     uintptr_t local = info->local;
@@ -1674,6 +1882,17 @@ ioapic_init(UNUSED(const device_t *info))
                   NULL, NULL, NULL, ioapic_write, NULL, NULL, dev);
 
     return dev;
+}
+
+static void *
+ioapic_init(const device_t *info)
+{
+    void *ret_;
+
+    apic_lock();
+    ret_ = ioapic_init_locked(info);
+    apic_unlock();
+    return ret_;
 }
 
 static const device_config_t ioapic_config[] = {
