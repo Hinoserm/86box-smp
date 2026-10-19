@@ -715,15 +715,20 @@ pci_write(uint16_t port, uint8_t val, UNUSED(void *priv))
             if (pci_flags & FLAG_TRC_450KX) {
                 /* The PB's TRC (82454KX/GX 2.2.2): bits 3:0 read back as
                    written, the reset starting as Reset CPU goes from 0 to
-                   1, of the type Hard Reset Enable says. The hard reset
-                   (RESET#) returns every PB register to its default, this
-                   one's 00h (2.3); the soft reset (INIT#) keeps them. */
+                   1. It is a hard reset (RESET#) when Hard Reset Enable is
+                   set, and when CPU BIST Enable is, whose value "overrides
+                   the value of the CPU Hard Reset bit"; the processor's
+                   BIST is not modelled, and passes (EAX 0, as RESET leaves
+                   it). Otherwise it is a soft reset (INIT#). The hard reset
+                   returns every PB register but BDNUM and CONFVR to its
+                   default, this one's 00h (2.0); the soft reset keeps them
+                   all. */
                 const int start = !(pci_trc_reg & 4) && (val & 4);
 
                 pci_trc_reg = val & 0x0f;
-                if (start && (val & 2)) {
+                if (start && (val & 0x0a)) {
                     pci_trc_reg = 0x00;
-                    pci_trc_reset(val);
+                    pci_trc_reset(val | 0x02);
                 } else if (start) {
                     /* INIT# to the processor, as the keyboard controller's
                        reset pulse gives it. */
