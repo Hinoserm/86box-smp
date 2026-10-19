@@ -890,6 +890,7 @@ exec386_dynarec_dyn(void)
         codegen_record_faulted = 0;
         codegen_block_start_recompile(block);
         codegen_in_recompile = 1;
+        mem_in_recompile     = 1;
 
         while (!cpu_block_end) {
             oldcs  = CS;
@@ -1045,6 +1046,7 @@ exec386_dynarec_dyn(void)
             codegen_reset();
 
         codegen_in_recompile = 0;
+        mem_in_recompile     = 0;
 #    if defined(__APPLE__) && defined(__aarch64__)
         if (__builtin_available(macOS 11.0, *)) {
             pthread_jit_write_protect_np(1);

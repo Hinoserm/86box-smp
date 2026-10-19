@@ -477,6 +477,41 @@ flushmmucache_write_cpu(void)
     mmuflush++;
 }
 
+/* A flush another core made of every set (mem_tlb_mark_others), taken by
+   this core's set in place: a map change (MEM_TLB_STALE_ALL) leaves no
+   link standing, as flushmmucache() leaves none of the flushing core's.
+   owner: from this core's own loop, between its blocks. */
+static void
+mem_tlb_take_stale(int owner)
+{
+    const uint8_t stale = mem_tlb_cur->stale;
+
+    mem_tlb_cur->stale = 0;
+    if (stale & MEM_TLB_STALE_ALL) {
+        if (owner)
+            LINKS_DROP_OWNED();
+        else
+            LINKS_DROP();
+        flushmmucache_common();
+    } else if (stale & MEM_TLB_STALE_WRITE)
+        flushmmucache_write_cpu();
+}
+
+/* Before this core runs again: what reached its set while it did not. */
+void
+mem_tlb_catch_up(void)
+{
+    mem_tlb_take_stale(1);
+}
+
+/* While this core runs its turn (mem_tlb_flush_running): what reached its
+   set just now, from whatever it was doing. */
+void
+mem_tlb_flush_now(void)
+{
+    mem_tlb_take_stale(0);
+}
+
 void
 flushmmucache_pc(void)
 {
@@ -2214,6 +2249,21 @@ mem_cpu_reset(void)
 {
     /* Reads of absent physical memory return floating high bits - see rammap() above. */
     memset(mem_unbacked_pt_page, 0xff, sizeof(mem_unbacked_pt_page));
+}
+
+/* A RAM handler serving this core's access while it runs its turn
+   (mem.c mem_ram_fill_read/_write): the fill is this core's, for its own
+   last linear address. */
+void
+mem_cpu_fill_read(uint32_t phys)
+{
+    addreadlookup(mem_logical_addr, phys);
+}
+
+void
+mem_cpu_fill_write(uint32_t phys)
+{
+    addwritelookup(mem_logical_addr, phys);
 }
 
 /* This core's copy of the page table, and its code cache's bookkeeping in

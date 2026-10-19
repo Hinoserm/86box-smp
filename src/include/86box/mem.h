@@ -306,6 +306,10 @@ extern void       mem_tlb_select(mem_tlb_t *t);
 extern void       mem_tlb_flush_local(int read_too);
 extern void       mem_tlb_user(int user);
 extern void       mem_tlb_bank_destroy(mem_tlb_t *b);
+extern void       mem_tlb_unregister(mem_tlb_t *t);
+extern void       mem_tlb_catch_up(void);
+extern void       mem_tlb_flush_now(void);
+extern void     (*mem_tlb_flush_running)(void);
 
 extern uint8_t *ram;
 extern uint32_t rammask;
@@ -410,6 +414,16 @@ extern uint64_t mmutranslatereal(uint32_t addr, int rw);
 extern uint32_t mmutranslatereal32(uint32_t addr, int rw);
 extern void     addreadlookup(uint32_t virt, uint32_t phys);
 extern void     addwritelookup(uint32_t virt, uint32_t phys);
+/* A RAM handler's TLB fill, for the core whose access it serves (mem.c),
+   and the hooks another core running its turn puts in. */
+extern void     mem_ram_fill_read(uint32_t virt, uint32_t phys);
+extern void     mem_ram_fill_write(uint32_t virt, uint32_t phys);
+extern void     mem_cpu_fill_read(uint32_t phys);
+extern void     mem_cpu_fill_write(uint32_t phys);
+extern void   (*mem_fill_read_running)(uint32_t phys);
+extern void   (*mem_fill_write_running)(uint32_t phys);
+extern int      mem_bus_master_access(void);
+extern int      mem_in_recompile;
 
 extern void mem_mapping_set(mem_mapping_t *,
                             uint32_t base,

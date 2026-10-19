@@ -285,7 +285,7 @@ neat_read_ram(uint32_t addr, void *priv)
         addr += (dev->ems_size << 10);
 
     if (cpu_use_exec)
-        addreadlookup(mem_logical_addr, addr);
+        mem_ram_fill_read(mem_logical_addr, addr);
 
     return ram[addr];
 }
@@ -299,7 +299,7 @@ neat_read_ramw(uint32_t addr, void *priv)
         addr += (dev->ems_size << 10);
 
     if (cpu_use_exec)
-        addreadlookup(mem_logical_addr, addr);
+        mem_ram_fill_read(mem_logical_addr, addr);
 
     return *(uint16_t *) &ram[addr];
 }
@@ -313,7 +313,7 @@ neat_write_ram(uint32_t addr, uint8_t val, void *priv)
         addr += (dev->ems_size << 10);
 
     if (cpu_use_exec) {
-        addwritelookup(mem_logical_addr, addr);
+        mem_ram_fill_write(mem_logical_addr, addr);
         mem_write_ramb_page(addr, val, &pages[addr >> 12]);
     } else
         ram[addr] = val;
@@ -328,7 +328,7 @@ neat_write_ramw(uint32_t addr, uint16_t val, void *priv)
         addr += (dev->ems_size << 10);
 
     if (cpu_use_exec) {
-        addwritelookup(mem_logical_addr, addr);
+        mem_ram_fill_write(mem_logical_addr, addr);
         mem_write_ramw_page(addr, val, &pages[addr >> 12]);
     } else
         *(uint16_t *) &ram[addr] = val;

@@ -224,7 +224,7 @@ ps2_read_split_ram(uint32_t addr, void *priv)
 {
     addr = ((addr - ps2.split_addr) & 0x000fffff) + ps2.split_phys;
     if (cpu_use_exec)
-        addreadlookup(mem_logical_addr, addr);
+        mem_ram_fill_read(mem_logical_addr, addr);
     return ram[addr];
 }
 static uint16_t
@@ -232,7 +232,7 @@ ps2_read_split_ramw(uint32_t addr, void *priv)
 {
     addr = ((addr - ps2.split_addr) & 0x000fffff) + ps2.split_phys;
     if (cpu_use_exec)
-        addreadlookup(mem_logical_addr, addr);
+        mem_ram_fill_read(mem_logical_addr, addr);
     return *(uint16_t *) &ram[addr];
 }
 static uint32_t
@@ -240,7 +240,7 @@ ps2_read_split_raml(uint32_t addr, void *priv)
 {
     addr = ((addr - ps2.split_addr) & 0x000fffff) + ps2.split_phys;
     if (cpu_use_exec)
-        addreadlookup(mem_logical_addr, addr);
+        mem_ram_fill_read(mem_logical_addr, addr);
     return *(uint32_t *) &ram[addr];
 }
 static void
@@ -249,7 +249,7 @@ ps2_write_split_ram(uint32_t addr, uint8_t val, void *priv)
     uint32_t oldaddr = addr;
     addr             = ((addr - ps2.split_addr) & 0x000fffff) + ps2.split_phys;
     if (cpu_use_exec) {
-        addwritelookup(mem_logical_addr, addr);
+        mem_ram_fill_write(mem_logical_addr, addr);
         mem_write_ramb_page(addr, val, &pages[oldaddr >> 12]);
     } else
         ram[addr] = val;
@@ -260,7 +260,7 @@ ps2_write_split_ramw(uint32_t addr, uint16_t val, void *priv)
     uint32_t oldaddr = addr;
     addr             = ((addr - ps2.split_addr) & 0x000fffff) + ps2.split_phys;
     if (cpu_use_exec) {
-        addwritelookup(mem_logical_addr, addr);
+        mem_ram_fill_write(mem_logical_addr, addr);
         mem_write_ramw_page(addr, val, &pages[oldaddr >> 12]);
     } else
         *(uint16_t *) &ram[addr] = val;
@@ -271,7 +271,7 @@ ps2_write_split_raml(uint32_t addr, uint32_t val, void *priv)
     uint32_t oldaddr = addr;
     addr             = ((addr - ps2.split_addr) & 0x000fffff) + ps2.split_phys;
     if (cpu_use_exec) {
-        addwritelookup(mem_logical_addr, addr);
+        mem_ram_fill_write(mem_logical_addr, addr);
         mem_write_raml_page(addr, val, &pages[oldaddr >> 12]);
     } else
         *(uint32_t *) &ram[addr] = val;
