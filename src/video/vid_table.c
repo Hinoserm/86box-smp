@@ -508,8 +508,7 @@ video_reset(int card)
         if ((gfxcard[i] == VID_NONE) || (gfxcard[i] == VID_INTERNAL) || (gfxcard[i] == VID_EXTERNAL))
             continue;
 
-        /* A card in a later slot is added whether or not the first slot holds one. */
-        if (device_is_valid(video_card_getdevice(gfxcard[i]), machine) &&
+        if ((card != VID_NONE) && device_is_valid(video_card_getdevice(gfxcard[i]), machine) &&
             (!machine_has_flags(machine, MACHINE_VIDEO_ONLY) || machine_has_flags(machine, MACHINE_VIDEO_EXT))) {
             video_monitor_init(i);
             monitor_index_global = 1;
