@@ -1558,12 +1558,20 @@ write_cmd_data_award(void *priv, uint8_t val)
     atkbc_t *dev = (atkbc_t *) priv;
     uint8_t  ret = 1;
 
-    switch (val) {
+    switch (dev->command) {
         default:
             break;
 
         case 0xcb: /* set keyboard mode */
-            kbc_at_log("ATkbc: AMI - set keyboard mode\n");
+            /* The VIA VT82C42 has no such command: the board sets its mode
+               with the T1 and P10 pins at reset, and CAh only reads it (VIA
+               VT82C42 data sheet, 1995). The byte is taken, the mode kept. */
+            if ((dev->flags & KBC_VEN_MASK) == KBC_VEN_VIA) {
+                kbc_at_log("ATkbc: VIA - keyboard mode %02X ignored\n", val);
+                ret = 0;
+                break;
+            }
+            kbc_at_log("ATkbc: Award - set keyboard mode\n");
             dev->ami_flags = val;
             dev->misc_flags &= ~FLAG_PS2;
             if (val & 0x01) {
