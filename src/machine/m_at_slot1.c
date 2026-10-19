@@ -1678,6 +1678,35 @@ machine_at_p2bls_init(const machine_t *model)
 }
 
 int
+machine_at_p2bds_init(const machine_t *model)
+{
+    int ret;
+
+    ret = bios_load_linear("roms/machines/p2bds/1014ds.003",
+                           0x000c0000, 262144, 0);
+
+    if (bios_only || !ret)
+        return ret;
+
+    machine_at_common_init(model);
+
+    machine_pci_init();
+    machine_pci_register_slots();
+
+    device_add(&i440bx_device);
+    device_add(&piix4e_device);
+    device_add_params(&w83977_device, (void *) (W83977EF | W83977_AMI | W83977_NO_NVR));
+#if 0
+    device_add(ics9xxx_get(ICS9150_08)); /* setting proper speeds requires some interaction with the AS97127F ASIC */
+#endif
+    device_add(&sst_flash_39sf020_device);
+    spd_register(SPD_TYPE_SDRAM, 0xF, 1024);
+    device_add_params(&ioapic_device, (void *) IOAPIC_TOPOLOGY_LAPIC_SLOTS(2));
+
+    return ret;
+}
+
+int
 machine_at_p3bf_init(const machine_t *model)
 {
     int ret;
