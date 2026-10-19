@@ -702,8 +702,13 @@ nvr_write(uint16_t addr, uint8_t val, void *priv)
             local->addr[addr_id] = (local->addr[addr_id] & 0x7f) | 0x80;
         if (local->bank[addr_id] > 0)
             local->addr[addr_id] = (local->addr[addr_id] & 0x7f) | (0x80 * local->bank[addr_id]);
-        if (!(local->flags & FLAG_NO_NMI))
+        if (!(local->flags & FLAG_NO_NMI)) {
+            const int was = nmi_mask;
+
             nmi_mask = (~val & 0x80);
+            if ((nmi_mask != was) && (nmi_mask_changed != NULL))
+                nmi_mask_changed();
+        }
     }
 }
 

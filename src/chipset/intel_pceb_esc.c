@@ -90,6 +90,7 @@ typedef struct esc_t {
     pc_timer_t fast_off; /* the Fast Off timer, one minute a tick */
     uint8_t    nmi_esc;  /* 0461h, extended NMI status and control */
     uint8_t    serr_nmi; /* SERR# is what is holding NMI up */
+    uint8_t    nmi_out;  /* the NMI output: a latched, enabled source, and port 70h's enable */
     uint8_t    last_mst; /* 0464h, last EISA bus master granted */
 
     void   *apm;
@@ -366,6 +367,40 @@ esc_apmc_write(UNUSED(uint16_t port), UNUSED(uint8_t val), void *priv)
     esc_smi_event((esc_t *) priv, 7);
 }
 
+/* The ESC's NMI output. Each source latches in its own detect flip-flop
+   (NMIESC bits 7 and 5, and SERR#'s), and port 70h bit 7 gates the output
+   without clearing them: "if NMI is disabled then enabled via Port 070h,
+   then an NMI will occur when Port 070h is re-enabled if one of the NMI
+   detect Flip-Flops had been previously set" (82374EB 9.10). The pin
+   reaches every socket, LINT1 with the APIC on (13.5, Figure 35), and it
+   is an NMI that FNMIEN makes a system event of (3.1 bit 29). */
+static void
+esc_nmi_update(esc_t *dev)
+{
+    const uint8_t out = (((dev->nmi_esc & 0xa0) != 0) || dev->serr_nmi) && nmi_mask;
+
+    if (out && !dev->nmi_out) {
+        nmi_raise();
+        esc_system_event(dev, 29);
+    }
+    dev->nmi_out = out;
+}
+
+static void
+esc_nmi_mask_changed(void)
+{
+    if (esc_inst != NULL)
+        esc_nmi_update(esc_inst);
+}
+
+/* The NMI output's level, as LINT1 sees it when its entry is level
+   triggered. */
+static int
+esc_nmi_line_level(void)
+{
+    return (esc_inst != NULL) && esc_inst->nmi_out;
+}
+
 static void
 esc_fail_safe_timer(int new_out, int old_out, UNUSED(void *priv))
 {
@@ -379,11 +414,7 @@ esc_fail_safe_timer(int new_out, int old_out, UNUSED(void *priv))
 
     esc_log("ESC: the fail-safe timer ran out\n");
     dev->nmi_esc |= 0x80;
-    nmi            = 1;
-    mem_chain_break(); /* the loop takes it */
-    nmi_auto_clear = 1;
-    /* FNMIEN: and so is an NMI. */
-    esc_system_event(dev, 29);
+    esc_nmi_update(dev);
 }
 
 /* ------------------------------------------------------------------ */
@@ -418,11 +449,8 @@ esc_serr(void)
         return;
 
     esc_log("ESC: SERR#\n");
-    dev->serr_nmi  = 1;
-    nmi            = 1;
-    mem_chain_break(); /* the loop takes it */
-    nmi_auto_clear = 1;
-    esc_system_event(dev, 29);
+    dev->serr_nmi = 1;
+    esc_nmi_update(dev);
 }
 
 static void
@@ -957,6 +985,7 @@ esc_conf_write(esc_t *dev, uint8_t index, uint8_t val)
             if (!(val & 0x08) && dev->serr_nmi) {
                 dev->serr_nmi = 0;
                 nmi           = 0;
+                esc_nmi_update(dev);
             }
             esc_pirq_update(dev);
             break;
@@ -1228,6 +1257,7 @@ esc_write(uint16_t port, uint8_t val, void *priv)
                 dev->nmi_esc &= ~0x80;
             if (!(val & 0x08))
                 dev->nmi_esc &= ~0x50;
+            esc_nmi_update(dev);
             /* Bit 0 drives RSTDRV, which resets everything on the bus.
                Software holds it for a few clocks and takes it away again;
                the cards see the edge, so reset them as it goes on. */
@@ -1240,8 +1270,7 @@ esc_write(uint16_t port, uint8_t val, void *priv)
         case 0x0462: /* SOFTNMI, a write of any value is the event */
             if (dev->nmi_esc & 0x02) {
                 dev->nmi_esc |= 0x20;
-                nmi = 1;
-                esc_system_event(dev, 29);
+                esc_nmi_update(dev);
             }
             break;
 
@@ -1379,6 +1408,8 @@ esc_reset_hard(esc_t *dev)
     dev->regs[0xa8] = 0x0f;
 
     dev->nmi_esc  = 0x00;
+    dev->serr_nmi = 0;
+    dev->nmi_out  = 0;
     dev->last_mst = 0x00;
 
     /* SMICNTL comes up 08h, which is the Fast Off timer frozen, and FTMR
@@ -1492,8 +1523,11 @@ esc_close(void *priv)
         flash_bios_read_gate      = NULL;
         flash_bios_read_gate_priv = NULL;
     }
-    if (esc_inst == dev)
-        esc_inst = NULL;
+    if (esc_inst == dev) {
+        esc_inst         = NULL;
+        nmi_mask_changed = NULL;
+        nmi_line_level   = NULL;
+    }
     free(dev);
 }
 
@@ -1502,7 +1536,9 @@ esc_init(UNUSED(const device_t *info))
 {
     esc_t *dev = (esc_t *) calloc(1, sizeof(esc_t));
 
-    esc_inst = dev;
+    esc_inst         = dev;
+    nmi_mask_changed = esc_nmi_mask_changed;
+    nmi_line_level   = esc_nmi_line_level;
 
     /* The BIOS flash's chip select is ours, reads and writes; see
        esc_bios_read_gate. */
