@@ -1022,15 +1022,21 @@ exec386_dynarec_dyn(void)
            the guard for it (before the byte was found to be one), compiled
            again; compiled with it, run only while the byte is the one
            compiled, its guard leaving at once otherwise -- the instruction
-           there interpreted then, one, as it is now. */
+           there interpreted then, one, as it is now. A block holding
+           nothing else (a RET compiled where the guest had just written
+           it) is compiled again instead, from what is there now. */
         if (hot && valid_block && (block->flags & CODEBLOCK_WAS_RECOMPILED)) {
             if (!block->entry_hot)
                 block->flags &= ~CODEBLOCK_WAS_RECOMPILED;
             else if (block->entry_byte != _mem_exec[phys_addr >> MEM_GRANULARITY_BITS][phys_addr & MEM_GRANULARITY_MASK]) {
-                if (!cpu_end_block_after_ins)
-                    cpu_end_block_after_ins = 1;
-                exec386_dynarec_int();
-                return;
+                if (!block->page_mask)
+                    block->flags &= ~CODEBLOCK_WAS_RECOMPILED;
+                else {
+                    if (!cpu_end_block_after_ins)
+                        cpu_end_block_after_ins = 1;
+                    exec386_dynarec_int();
+                    return;
+                }
             }
         }
     }

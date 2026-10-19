@@ -1080,6 +1080,7 @@ typedef struct block_version_t {
     uint16_t            next;  /*Next older kept version of the owner, or the next free one*/
     uint8_t             TOP;
     uint8_t             state;
+    uint8_t             entry_hot, entry_byte; /*The block's, for this version's code*/
     uint8_t             code[128]; /*The first 64-byte chunk, then the second*/
 } block_version_t;
 
@@ -1597,11 +1598,10 @@ add_to_block_list(codeblock_t *block)
     codegen_list_end();
 }
 
+/*Off its pages' lists, which it is on.*/
 static void
-remove_from_block_list_raw(codeblock_t *block, UNUSED(uint32_t pc))
+block_list_unlink(codeblock_t *block)
 {
-    if (!block->page_mask)
-        return;
 #ifndef RELEASE_BUILD
     if (block->flags & CODEBLOCK_IN_DIRTY_LIST)
         fatal("remove_from_block_list: in dirty list\n");
@@ -1642,6 +1642,16 @@ remove_from_block_list_raw(codeblock_t *block, UNUSED(uint32_t pc))
             codegen_code_page_maybe_lost(block->phys_2);
         }
     }
+}
+
+/*Off its pages' lists, if on them: a block whose mask is empty is on none
+  (codegen_block_end_recompile).*/
+static void
+remove_from_block_list_raw(codeblock_t *block, UNUSED(uint32_t pc))
+{
+    if (!block->page_mask)
+        return;
+    block_list_unlink(block);
 }
 
 static void
@@ -1909,6 +1919,11 @@ codegen_block_init(uint32_t phys_addr)
 
 static ir_data_t *ir_data;
 
+/*Whether the block being compiled was on its pages' lists as the compile
+  began (by its mask then: one holding only guarded rewritten bytes is on
+  none), for the compile's end to take it off before it goes on again.*/
+static int block_recompile_listed;
+
 ir_data_t *
 codegen_get_ir_data(void)
 {
@@ -1967,6 +1982,7 @@ codegen_block_start_recompile(codeblock_t *block)
     block->status = cpu_cur_status;
     block->used   = 1; /* new: not the next thing the eviction sweep takes */
 
+    block_recompile_listed = (block->page_mask != 0);
     block->page_mask = block->page_mask2 = 0;
     block->ins                           = 0;
     block->entry_hot                     = 0;
@@ -2191,12 +2207,18 @@ codegen_block_end_recompile(codeblock_t *block)
     codegen_list_begin();
     if (block->flags & CODEBLOCK_IN_DIRTY_LIST)
         block_dirty_list_remove(block);
-    else
-        remove_from_block_list(block, block->pc);
+    else if (block_recompile_listed)
+        block_list_unlink(block);
     block->next = block->prev = BLOCK_INVALID;
     block->next_2 = block->prev_2 = BLOCK_INVALID;
     codegen_block_generate_end_mask_recompile();
-    add_to_block_list(block);
+    /*No byte of its code but guarded rewritten ones (a RET compiled where
+      the guest had just written it, at the block's start): on no page's
+      list, as no write can make it wrong -- each such instruction is all
+      of its one byte, read as the block runs. The dispatcher compiles it
+      again when another byte is there (exec386_dynarec_dyn).*/
+    if (block->page_mask)
+        add_to_block_list_raw(block);
     codegen_list_end();
 
     if (!(block->flags & CODEBLOCK_HAS_FPU))
@@ -2215,7 +2237,7 @@ codegen_block_end_recompile(codeblock_t *block)
       guest rewrites the block: the bytes and mappings as at the start of the
       compile, if they are the same now and none of its code bytes is dirty
       (the block may have rewritten them as it ran here).*/
-    if (block_version_start_ok && (block->page_mask2 == page_mask2_compiled) &&
+    if (block_version_start_ok && block->page_mask && (block->page_mask2 == page_mask2_compiled) &&
         (block->flags & CODEBLOCK_BYTE_MASK) && (block->flags & CODEBLOCK_NO_IMMEDIATES) &&
         !(*block->dirty_mask & block->page_mask) &&
         !(block->page_mask2 && (*block->dirty_mask2 & block->page_mask2))) {
@@ -2240,6 +2262,8 @@ codegen_block_end_recompile(codeblock_t *block)
                 v->status                             = block->status;
                 v->flags                              = block->flags & (CODEBLOCK_HAS_FPU | CODEBLOCK_STATIC_TOP);
                 v->TOP                                = block->TOP;
+                v->entry_hot                          = block->entry_hot;
+                v->entry_byte                         = block->entry_byte;
                 v->state                              = BLOCK_VERSION_CURRENT;
                 block_version_cur[get_block_nr(block)] = nr;
             } else
@@ -2293,11 +2317,7 @@ codegen_block_restore_version(codeblock_t *block)
             }
         }
 
-        /*Match: it becomes the block's current code, as a compile would.
-          Whether it guards a rewritten first byte, and which, is not kept
-          with it: as not, so that one starting on such a byte is compiled
-          again rather than left to its guard (the dispatcher).*/
-        block->entry_hot            = 0;
+        /*Match: it becomes the block's current code, as a compile would*/
         *link                       = v->next;
         v->next                     = 0;
         v->state                    = BLOCK_VERSION_CURRENT;
@@ -2316,6 +2336,8 @@ codegen_block_restore_version(codeblock_t *block)
         block->page_mask2     = v->page_mask2;
         block->status         = v->status;
         block->TOP            = v->TOP;
+        block->entry_hot      = v->entry_hot;
+        block->entry_byte     = v->entry_byte;
         block->dirty_mask     = &page->byte_dirty_mask[(block->phys >> PAGE_BYTE_MASK_SHIFT) & PAGE_BYTE_MASK_OFFSET_MASK];
         block->dirty_mask2    = NULL;
         block->flags          = (block->flags & ~(CODEBLOCK_HAS_FPU | CODEBLOCK_STATIC_TOP)) | v->flags | CODEBLOCK_WAS_RECOMPILED;
