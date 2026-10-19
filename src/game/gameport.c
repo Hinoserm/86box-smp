@@ -188,13 +188,24 @@ static gameport_t *active_gameports = NULL;
 /* The game ports there are: the joysticks go with the last of them. */
 static int gameport_count = 0;
 
-/* The game port an address is on, and so the joystick it reads: the
-   first at 200h-207h, the second at 208h-20Fh (where the ThrustMaster
-   ACM puts its second port). */
+/* The game port a port is, and so the joystick it reads: the second at
+   208h-20Fh (where the ThrustMaster ACM puts its second port), the first
+   anywhere else. A port at 208h-20Fh is the first after all when no
+   joystick is set on the second and no other port is there for the
+   first: a lone port reads the joystick wherever it is. */
 static uint8_t
-gameport_gp(uint16_t addr)
+gameport_gp(const gameport_t *dev)
 {
-    return ((addr & 0xfff8) == 0x208) ? 1 : 0;
+    if ((dev->addr & 0xfff8) != 0x208)
+        return 0;
+    if (joystick_type[1])
+        return 1;
+    for (const gameport_t *other = active_gameports; other != NULL; other = other->next) {
+        if ((other->addr & 0xfff8) != 0x208)
+            return 1;
+    }
+
+    return 0;
 }
 
 static void timer_over(void *priv);
@@ -329,7 +340,7 @@ static void
 gameport_write(UNUSED(uint16_t addr), UNUSED(uint8_t val), void *priv)
 {
     gameport_t          *dev      = (gameport_t *) priv;
-    joystick_instance_t *joystick = joystick_instance[gameport_gp(dev->addr)];
+    joystick_instance_t *joystick = joystick_instance[gameport_gp(dev)];
 
     /* Respond only if a joystick is present and this port answers for its range. */
     if (!joystick || !gameport_answers(dev))
@@ -351,7 +362,7 @@ static uint8_t
 gameport_read(UNUSED(uint16_t addr), void *priv)
 {
     gameport_t          *dev      = (gameport_t *) priv;
-    joystick_instance_t *joystick = joystick_instance[gameport_gp(dev->addr)];
+    joystick_instance_t *joystick = joystick_instance[gameport_gp(dev)];
 
     /* Respond only if a joystick is present and this port answers for its range. */
     if (!joystick || !gameport_answers(dev))
@@ -407,8 +418,15 @@ gameport_update_joystick_type(uint8_t gp)
         }
         joystick_instance[gp]->intf = joysticks[joystick_type[gp]].joystick;
         joystick_instance[gp]->dat  = joystick_instance[gp]->intf->init(gp);
-    } else if (gameport_count > 0)
-        gameport_joystick(gp);
+    } else {
+        /* Made only when a port reads it. */
+        for (const gameport_t *dev = active_gameports; dev != NULL; dev = dev->next) {
+            if (gameport_gp(dev) == gp) {
+                gameport_joystick(gp);
+                break;
+            }
+        }
+    }
 }
 
 static void
@@ -470,7 +488,7 @@ gameport_remap(void *priv, uint16_t address)
     dev->addr = address;
 
     if (dev->addr) {
-        gameport_joystick(gameport_gp(dev->addr));
+        gameport_joystick(gameport_gp(dev));
 
         /* Add this port to the active ports list. */
         if (!active_gameports || ((dev->addr & 0xfff8) == 0x200)) {
