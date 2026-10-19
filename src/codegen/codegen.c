@@ -13,6 +13,7 @@
 #include "x87_sf.h"
 #include "x87.h"
 #include "x87_host.h"
+#include "x86_idle.h"
 
 #include "386_common.h"
 
@@ -678,6 +679,9 @@ codegen_generate_call(uint8_t opcode, OpFn op, uint32_t fetchdat, uint32_t new_p
     uint32_t     next_pc            = 0;
     uint16_t     op87               = 0x0000;
     uint32_t     fetchdat_pc;
+#ifdef CODEGEN_CHAIN
+    int is_pause = 0;
+#endif
 #ifdef DEBUG_EXTRA
     uint8_t last_prefix = 0;
 #endif
@@ -894,6 +898,9 @@ generate_call:
       plain instruction, and classify it and flush its branch cycles as
       one (the timing modules follow the prefixes themselves)*/
     if ((op_table == x86_dynarec_opcodes_REPNE || op_table == x86_dynarec_opcodes_REPE) && !op_table[opcode | op_32]) {
+#ifdef CODEGEN_CHAIN
+        is_pause = (op_table == x86_dynarec_opcodes_REPE) && (opcode == 0x90);
+#endif
         op_table        = x86_dynarec_opcodes;
         recomp_op_table = recomp_opcodes;
     }
@@ -937,6 +944,16 @@ generate_call:
         if (jump_cycles)
             codegen_accumulate(ir, ACCREG_cycles, jump_cycles);
     }
+
+#ifdef CODEGEN_CHAIN
+    /*PAUSE: an idle loop's (x86_idle.c), with the block's registers stored
+      and its cycles counted up to here. Still a NOP to the guest.*/
+    if (is_pause) {
+        codegen_accumulate_flush(ir);
+        uop_LOAD_FUNC_ARG_IMM(ir, 0, cpu_state.oldpc);
+        uop_CALL_FUNC(ir, x86_pause);
+    }
+#endif
 
     /*Only on a processor with 3DNow!: on the others 0F 0F is ILLEGAL in its
       own table, and the check below leaves it to the interpreter's #UD*/

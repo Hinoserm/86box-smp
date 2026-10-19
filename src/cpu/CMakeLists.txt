@@ -28,6 +28,7 @@ add_library(cpu OBJECT
     386.c
     386_common.c
     386_dynarec.c
+    x86_idle.c
     x86_ops_mmx.c
     x86_rep_host.c
     x86seg_common.c

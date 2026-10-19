@@ -43,6 +43,7 @@
 
 #include "386_common.h"
 #include "x86_interrupt.h"
+#include "x86_idle.h"
 
 #if defined(__APPLE__) && defined(__aarch64__)
 #    include <pthread.h>
@@ -633,6 +634,14 @@ exec386_chain_floor(void)
         return cycles - (int) until;
     return 0;
 }
+
+/* The processor's clock now, inside a compiled block (x86_idle.c): the
+   clock when the chain was entered, and the cycles run since. */
+uint64_t
+exec386_now_tsc(void)
+{
+    return exec386_chain_tsc + (uint64_t) (int64_t) (cpu_state.chain_cycles - cycles);
+}
 #    endif
 
 /* A REP string instruction's handler (x86_ops_rep_dyn.h) has spent the
@@ -822,6 +831,11 @@ exec386_dynarec_dyn(void)
 #    endif
         inrecomp = 1;
         code();
+#    ifdef CODEGEN_CHAIN
+        /* A pass of an idle loop being proven that has run too long. */
+        if (x86_idle_watch)
+            x86_idle_tick();
+#    endif
         inrecomp = 0;
 #    ifdef CODEGEN_CHAIN
         /* The chain left for want of a link, or by an indirect exit that

@@ -332,6 +332,10 @@ io_debug_check_addr(uint16_t port)
 }
 #endif
 
+/* Port accesses made: an idle loop's proof (x86_idle.c) holds only while
+   this stays as it was. */
+uint64_t io_port_count;
+
 uint8_t
 inb(uint16_t port)
 {
@@ -343,6 +347,7 @@ inb(uint16_t port)
     uint8_t qfound = 0;
 #endif
 
+    io_port_count++;
     mem_chain_break(); /* a chain leaves: the access may change what the loop looks at */
     io_port = port;
 
@@ -413,6 +418,7 @@ outb(uint16_t port, uint8_t val)
     uint8_t qfound = 0;
 #endif
 
+    io_port_count++;
     mem_chain_break(); /* a chain leaves: the access may change what the loop looks at */
     io_port = port;
     io_val  = val;
@@ -474,6 +480,7 @@ inw(uint16_t port)
 #endif
     uint8_t  ret8[2];
 
+    io_port_count++;
     mem_chain_break(); /* a chain leaves: the access may change what the loop looks at */
     io_port = port;
 
@@ -556,6 +563,7 @@ outw(uint16_t port, uint16_t val)
     uint8_t qfound = 0;
 #endif
 
+    io_port_count++;
     mem_chain_break(); /* a chain leaves: the access may change what the loop looks at */
     io_port = port;
     io_val  = val;
@@ -633,6 +641,7 @@ inl(uint16_t port)
     uint8_t  qfound = 0;
 #endif
 
+    io_port_count++;
     mem_chain_break(); /* a chain leaves: the access may change what the loop looks at */
     io_port = port;
 
@@ -746,6 +755,7 @@ outl(uint16_t port, uint32_t val)
     uint8_t qfound = 0;
 #endif
 
+    io_port_count++;
     mem_chain_break(); /* a chain leaves: the access may change what the loop looks at */
     io_port = port;
     io_val  = val;

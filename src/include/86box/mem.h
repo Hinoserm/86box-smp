@@ -441,6 +441,8 @@ extern void flushmmucache_cpu(void);
 extern void flushmmucache_nopc_cpu(void);
 extern void flushmmucache_cpl(void);
 extern void flushmmucache_invlpg(uint32_t addr);
+/* The TLB emptied and nothing else: no link, no translation changed. */
+extern void mem_tlb_empty(void);
 
 /* Chains of linked blocks (the new recompiler): a link stub leaves for the
    dispatcher while this word is not 0. brk: something the loop must look

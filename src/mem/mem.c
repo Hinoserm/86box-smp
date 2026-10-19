@@ -38,6 +38,7 @@
 #include <86box/plat.h>
 #include <86box/rom.h>
 #include <86box/gdbstub.h>
+#include "x86_idle.h"
 #ifdef USE_DYNAREC
 #    include "codegen_public.h"
 #else
@@ -116,6 +117,8 @@ int mem_a20_alt     = 0;
 int mem_a20_chipset = 0;
 int mem_a20_state   = 0;
 
+/* Moved by every flush that may change a translation: an idle loop's proof
+   (x86_idle.c) holds only while this stays as it was. */
 int mmuflush        = 0;
 int is_compare      = 0;
 
@@ -234,6 +237,7 @@ resetreadlookup(void)
     pccache      = 0xffffffff;
     high_page    = 0;
     mem_get_phys_forget();
+    mmuflush++;
 }
 
 #if defined(USE_DYNAREC) && defined(CODEGEN_CHAIN)
@@ -244,7 +248,8 @@ resetreadlookup(void)
 #    define LINKS_REVAL(a, l)
 #endif
 
-static void
+/* The TLB emptied, and nothing else. */
+void
 mem_tlb_empty(void)
 {
     mem_get_phys_forget();
@@ -327,6 +332,7 @@ flushmmucache_nopc(void)
 {
     LINKS_DROP();
     mem_tlb_empty();
+    mmuflush++;
 }
 
 void
@@ -334,6 +340,7 @@ flushmmucache_nopc_cpu(void)
 {
     LINKS_REVAL(1, 0);
     mem_tlb_empty();
+    mmuflush++;
 }
 
 /* A change of privilege: the lookups made at the old one go. The links
@@ -374,6 +381,7 @@ void
 flushmmucache_invlpg(uint32_t addr)
 {
     mem_tlb_empty();
+    mmuflush++;
 #if defined(USE_DYNAREC) && defined(CODEGEN_CHAIN)
     {
         uint64_t      *word = &mem_link_large_regions[addr >> 28];
@@ -825,6 +833,11 @@ addreadlookup(uint32_t virt, uint32_t phys)
     if (GDBSTUB_WATCHED(virt))
         return;
 
+    /* An idle loop's pass being proven: every access through the slow
+       paths (x86_idle.c). */
+    if (x86_idle_watch)
+        return;
+
     if (readlookup2[index] != (uintptr_t) LOOKUP_INV)
         return;
 
@@ -846,6 +859,9 @@ addwritelookup(uint32_t virt, uint32_t phys)
         return;
 
     if (GDBSTUB_WATCHED(virt))
+        return;
+
+    if (x86_idle_watch)
         return;
 
     if (page_lookup[virt >> 12])
@@ -993,12 +1009,21 @@ write_mem_w(uint32_t addr, uint16_t val)
     }
 }
 
+/* An idle loop's pass being proven (x86_idle.c): every access the processor
+   makes comes through these slow paths, and is logged. */
+#define IDLE_NOTE(addr, size, write, val)                               \
+    do {                                                                \
+        if (x86_idle_watch)                                             \
+            x86_idle_note((addr), (size), (write), (uint64_t) (val));   \
+    } while (0)
+
 uint8_t
 readmembl(uint32_t addr)
 {
     mem_mapping_t *map;
     uint64_t       a;
 
+    IDLE_NOTE(addr, 1, 0, 0);
     GDBSTUB_MEM_ACCESS(addr, GDBSTUB_MEM_READ, 1);
 #ifdef USE_DEBUG_REGS_486
     mem_debug_check_addr(addr, read_type);
@@ -1031,6 +1056,7 @@ writemembl(uint32_t addr, uint8_t val)
     mem_mapping_t *map;
     uint64_t       a;
 
+    IDLE_NOTE(addr, 1, 1, val);
     GDBSTUB_MEM_ACCESS(addr, GDBSTUB_MEM_WRITE, 1);
 #ifdef USE_DEBUG_REGS_486
     mem_debug_check_addr(addr, 2);
@@ -1066,6 +1092,7 @@ readmembl_no_mmut(uint32_t addr, uint32_t a64)
 {
     mem_mapping_t *map;
 
+    IDLE_NOTE(addr, 1, 0, 0);
     GDBSTUB_MEM_ACCESS(addr, GDBSTUB_MEM_READ, 1);
 
     mem_logical_addr = addr;
@@ -1091,6 +1118,7 @@ writemembl_no_mmut(uint32_t addr, uint32_t a64, uint8_t val)
 {
     mem_mapping_t *map;
 
+    IDLE_NOTE(addr, 1, 1, val);
     GDBSTUB_MEM_ACCESS(addr, GDBSTUB_MEM_WRITE, 1);
 
     mem_logical_addr = addr;
@@ -1119,6 +1147,7 @@ readmemwl(uint32_t addr)
     mem_mapping_t *map;
     uint64_t       a;
 
+    IDLE_NOTE(addr, 2, 0, 0);
     addr64a[0] = addr;
     addr64a[1] = addr + 1;
 #ifdef USE_DEBUG_REGS_486
@@ -1182,6 +1211,7 @@ writememwl(uint32_t addr, uint16_t val)
     mem_mapping_t *map;
     uint64_t       a;
 
+    IDLE_NOTE(addr, 2, 1, val);
     addr64a[0] = addr;
     addr64a[1] = addr + 1;
 #ifdef USE_DEBUG_REGS_486
@@ -1262,6 +1292,7 @@ readmemwl_no_mmut(uint32_t addr, uint32_t *a64)
 {
     mem_mapping_t *map;
 
+    IDLE_NOTE(addr, 2, 0, 0);
     GDBSTUB_MEM_ACCESS(addr, GDBSTUB_MEM_READ, 2);
 
     mem_logical_addr = addr;
@@ -1309,6 +1340,7 @@ writememwl_no_mmut(uint32_t addr, uint32_t *a64, uint16_t val)
 {
     mem_mapping_t *map;
 
+    IDLE_NOTE(addr, 2, 1, val);
     GDBSTUB_MEM_ACCESS(addr, GDBSTUB_MEM_WRITE, 2);
 
     mem_logical_addr = addr;
@@ -1365,6 +1397,7 @@ readmemll(uint32_t addr)
     int            i;
     uint64_t       a = 0x0000000000000000ULL;
 
+    IDLE_NOTE(addr, 4, 0, 0);
     for (i = 0; i < 4; i++) {
         addr64a[i] = (uint64_t) (addr + i);
 #ifdef USE_DEBUG_REGS_486
@@ -1444,6 +1477,7 @@ writememll(uint32_t addr, uint32_t val)
     int            i;
     uint64_t       a = 0x0000000000000000ULL;
 
+    IDLE_NOTE(addr, 4, 1, val);
     for (i = 0; i < 4; i++) {
         addr64a[i] = (uint64_t) (addr + i);
 #ifdef USE_DEBUG_REGS_486
@@ -1542,6 +1576,7 @@ readmemll_no_mmut(uint32_t addr, uint32_t *a64)
 {
     mem_mapping_t *map;
 
+    IDLE_NOTE(addr, 4, 0, 0);
     GDBSTUB_MEM_ACCESS(addr, GDBSTUB_MEM_READ, 4);
 
     mem_logical_addr = addr;
@@ -1591,6 +1626,7 @@ writememll_no_mmut(uint32_t addr, uint32_t *a64, uint32_t val)
 {
     mem_mapping_t *map;
 
+    IDLE_NOTE(addr, 4, 1, val);
     GDBSTUB_MEM_ACCESS(addr, GDBSTUB_MEM_WRITE, 4);
 
     mem_logical_addr = addr;
@@ -1653,6 +1689,7 @@ readmemql(uint32_t addr)
     int            i;
     uint64_t       a = 0x0000000000000000ULL;
 
+    IDLE_NOTE(addr, 8, 0, 0);
     for (i = 0; i < 8; i++) {
         addr64a[i] = (uint64_t) (addr + i);
 #ifdef USE_DEBUG_REGS_486
@@ -1742,6 +1779,7 @@ writememql(uint32_t addr, uint64_t val)
     int            i;
     uint64_t       a = 0x0000000000000000ULL;
 
+    IDLE_NOTE(addr, 8, 1, val);
     for (i = 0; i < 8; i++) {
         addr64a[i] = (uint64_t) (addr + i);
 #ifdef USE_DEBUG_REGS_486
