@@ -1490,7 +1490,6 @@ host_arm64_SMULL_V4S_4H(codeblock_t *block, int dst_reg, int src_n_reg, int src_
 {
     codegen_addlong(block, OPCODE_SMULL_V4S_4H | Rd(dst_reg) | Rn(src_n_reg) | Rm(src_m_reg));
 }
-
 void
 host_arm64_SQADD_V8B(codeblock_t *block, int dst_reg, int src_n_reg, int src_m_reg)
 {

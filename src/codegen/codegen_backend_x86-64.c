@@ -302,7 +302,6 @@ routine_start(codeblock_t *block)
 static void
 build_loadstore_routines(codeblock_t *block)
 {
-
     codegen_mem_load_byte = routine_start(block);
     build_load_routine(block, 1, 0, 0);
     codegen_mem_load_word = routine_start(block);
@@ -319,6 +318,7 @@ build_loadstore_routines(codeblock_t *block)
     build_load_routine(block, 2, 0, 1);
     codegen_mem_load_long_ea = routine_start(block);
     build_load_routine(block, 4, 0, 1);
+
     codegen_mem_store_byte = routine_start(block);
     build_store_routine(block, 1, 0);
     codegen_mem_store_word = routine_start(block);
