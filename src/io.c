@@ -63,6 +63,123 @@ uint8_t initialized = 0;
 io_t   *io[NPORTS];
 io_t   *io_last[NPORTS];
 
+/* Devices whose byte handlers another processor's thread may call itself
+   (cpu_thread.c), at the ports where such a handler is the only one:
+   io_ap_slot[port] names the device, kept up to date here, on the
+   machine's thread, as handlers come and go. The device's ok() says,
+   access by access, whether it changes nothing beyond the device's own
+   registers (no interrupt, timer, NMI or other device), or is still done
+   on the machine's thread. */
+#define IO_AP_LOCAL_MAX 8
+
+typedef struct io_ap_local_t {
+    uint8_t (*inb)(uint16_t port, void *priv);
+    void (*outb)(uint16_t port, uint8_t val, void *priv);
+    int (*ok)(uint16_t port, int write, uint8_t val, void *priv);
+    void *priv;
+} io_ap_local_t;
+
+static io_ap_local_t io_ap_local[IO_AP_LOCAL_MAX];
+static uint8_t       io_ap_slot[NPORTS];
+
+static void
+io_ap_local_port(uint32_t port)
+{
+    const io_t *p    = io[port];
+    uint8_t     slot = 0;
+
+    if (p && !p->next && !p->inw && !p->inl && !p->outw && !p->outl) {
+        for (int i = 0; i < IO_AP_LOCAL_MAX; i++) {
+            if (io_ap_local[i].ok && (io_ap_local[i].inb == p->inb) && (io_ap_local[i].outb == p->outb) &&
+                (io_ap_local[i].priv == p->priv)) {
+                slot = i + 1;
+                break;
+            }
+        }
+    }
+    __atomic_store_n(&io_ap_slot[port], slot, __ATOMIC_RELEASE);
+}
+
+static void
+io_ap_local_all(void)
+{
+    for (uint32_t c = 0; c < NPORTS; c++)
+        io_ap_local_port(c);
+}
+
+void
+io_ap_local_set(uint8_t (*inb)(uint16_t port, void *priv), void (*outb)(uint16_t port, uint8_t val, void *priv),
+                int (*ok)(uint16_t port, int write, uint8_t val, void *priv), void *priv)
+{
+    for (int i = 0; i < IO_AP_LOCAL_MAX; i++) {
+        if (!io_ap_local[i].ok) {
+            io_ap_local[i].inb  = inb;
+            io_ap_local[i].outb = outb;
+            io_ap_local[i].priv = priv;
+            io_ap_local[i].ok   = ok;
+            io_ap_local_all();
+            return;
+        }
+    }
+}
+
+void
+io_ap_local_clear(void *priv)
+{
+    for (int i = 0; i < IO_AP_LOCAL_MAX; i++) {
+        if (io_ap_local[i].ok && (io_ap_local[i].priv == priv)) {
+            io_ap_local[i].ok = NULL;
+            io_ap_local_all();
+            memset(&io_ap_local[i], 0, sizeof(io_ap_local_t));
+        }
+    }
+}
+
+/* On another processor's thread: the byte at port, if the device there
+   takes the access on this thread. Answers whether it did. */
+int
+io_ap_local_inb(uint16_t port, uint8_t *val)
+{
+#ifdef USE_DEBUG_REGS_486
+    /* An I/O breakpoint is the machine's to check (inb). */
+    (void) port;
+    (void) val;
+    return 0;
+#else
+    const uint8_t        slot = __atomic_load_n(&io_ap_slot[port], __ATOMIC_ACQUIRE);
+    const io_ap_local_t *l;
+
+    if (!slot)
+        return 0;
+    l = &io_ap_local[slot - 1];
+    if (!l->inb || !l->ok(port, 0, 0xff, l->priv))
+        return 0;
+    *val = l->inb(port, l->priv);
+    return 1;
+#endif
+}
+
+int
+io_ap_local_outb(uint16_t port, uint8_t val)
+{
+#ifdef USE_DEBUG_REGS_486
+    (void) port;
+    (void) val;
+    return 0;
+#else
+    const uint8_t        slot = __atomic_load_n(&io_ap_slot[port], __ATOMIC_ACQUIRE);
+    const io_ap_local_t *l;
+
+    if (!slot)
+        return 0;
+    l = &io_ap_local[slot - 1];
+    if (!l->outb || !l->ok(port, 1, val, l->priv))
+        return 0;
+    l->outb(port, val, l->priv);
+    return 1;
+#endif
+}
+
 #ifdef ENABLE_IO_LOG
 uint8_t io_do_log = ENABLE_IO_LOG;
 
@@ -109,6 +226,9 @@ io_init(void)
         /* io[c] should be NULL. */
         io[c] = io_last[c] = NULL;
     }
+
+    memset(io_ap_local, 0, sizeof(io_ap_local));
+    memset(io_ap_slot, 0, sizeof(io_ap_slot));
 }
 
 void
@@ -147,6 +267,7 @@ io_sethandler_common(uint16_t base, uint16_t size,
         q->next = NULL;
 
         io_last[base + c] = q;
+        io_ap_local_port(base + c);
 
         q = NULL;
     }
@@ -182,6 +303,7 @@ io_removehandler_common(uint16_t base, uint16_t size,
                     io_last[base + c] = p->prev;
                 free(p);
                 p = NULL;
+                io_ap_local_port(base + c);
                 break;
             }
             p = q;

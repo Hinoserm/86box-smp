@@ -405,6 +405,10 @@ mem_log(const char *fmt, ...)
    own codegen_in_recompile is, and this file serves every core. */
 __thread int mem_thread_in_recompile;
 
+/* Set on another processor's own thread (cpu_thread.c): a device's handler
+   it calls itself charges that processor (MEM_ACCESS_CHARGE). */
+__thread void (*mem_access_charge_ap)(int32_t cycs);
+
 /* A RAM handler fills the TLB of the core whose access it serves. The
    handlers are built once, and addreadlookup()/addwritelookup() named
    here are the first core's: while another core runs its turn, the fill

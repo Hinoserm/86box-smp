@@ -101,6 +101,16 @@ extern void io_handler_interleaved(uint8_t set, uint16_t base, uint16_t size,
                                    void (*outl)(uint16_t port, uint32_t val, void *priv),
                                    void *priv);
 
+/* A device whose byte port handlers another processor's thread may call
+   itself, where ok() allows the access (io.c, cpu_thread.c). */
+extern void io_ap_local_set(uint8_t (*inb)(uint16_t port, void *priv),
+                            void (*outb)(uint16_t port, uint8_t val, void *priv),
+                            int (*ok)(uint16_t port, int write, uint8_t val, void *priv),
+                            void *priv);
+extern void io_ap_local_clear(void *priv);
+extern int  io_ap_local_inb(uint16_t port, uint8_t *val);
+extern int  io_ap_local_outb(uint16_t port, uint8_t val);
+
 /* Port accesses made, for each processor, and whether the last byte read
    only repeats (io.c). */
 extern uint64_t io_port_count[];

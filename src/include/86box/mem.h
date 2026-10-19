@@ -461,6 +461,20 @@ extern void   (*mem_fill_write_running)(uint32_t phys);
 extern int      mem_bus_master_access(void);
 extern __thread int mem_thread_in_recompile;
 
+/* What a device's access costs the processor making it: the first's
+   cycles, or, on another processor's own thread calling a device's
+   handler itself (cpu_thread.c), that processor's. The thread-local hook
+   is a call on some hosts: looked at only while such threads exist. */
+extern int           cpu_mp_ap_threads;
+extern __thread void (*mem_access_charge_ap)(int32_t cycs);
+#define MEM_ACCESS_CHARGE(n)                                     \
+    do {                                                         \
+        if (cpu_mp_ap_threads && (mem_access_charge_ap != NULL)) \
+            mem_access_charge_ap((int32_t) (n));                 \
+        else                                                     \
+            cycles -= (n);                                       \
+    } while (0)
+
 extern void mem_mapping_set(mem_mapping_t *,
                             uint32_t base,
                             uint32_t size,

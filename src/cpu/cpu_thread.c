@@ -747,11 +747,32 @@ cpu_thread_post_write(int kind, mem_mapping_t *map, uint32_t addr, uint32_t val)
    (cpu_ap_rename.cmake). On the machine's thread -- a core taking its turn
    there -- a plain call. */
 
+/* A byte port a device lets this processor's thread handle itself
+   (io_ap_local_set), with none of its writes still posted: those go
+   first, so with any in the ring the access is handed over behind them as
+   before. It counts as this processor's port I/O (an idle loop's proof). */
+static inline int
+cpu_thread_port_ap_local(uint16_t port, int write, uint8_t *val)
+{
+    const cpu_ap_t *ap = &cpu_aps[cpu_thread_self_index];
+
+    if (ap->posted_head != __atomic_load_n(&ap->posted_tail, __ATOMIC_ACQUIRE))
+        return 0;
+    if (!(write ? io_ap_local_outb(port, *val) : io_ap_local_inb(port, val)))
+        return 0;
+    __atomic_fetch_add(&io_port_count[cpu_thread_self_index], 1, __ATOMIC_RELAXED);
+    return 1;
+}
+
 uint8_t
 cpu_ap_inb(uint16_t port)
 {
+    uint8_t v;
+
     if (!cpu_thread_self_index)
         return inb(port);
+    if (cpu_thread_port_ap_local(port, 0, &v))
+        return v;
     return (uint8_t) cpu_thread_forward(FWD_INB, NULL, port, 0);
 }
 
@@ -776,7 +797,7 @@ cpu_ap_outb(uint16_t port, uint8_t val)
 {
     if (!cpu_thread_self_index)
         outb(port, val);
-    else
+    else if (!cpu_thread_port_ap_local(port, 1, &val))
         (void) cpu_thread_forward(FWD_OUTB, NULL, port, val);
 }
 
@@ -1161,7 +1182,8 @@ cpu_thread_main(void *priv)
        MXCSR it found. */
     is_cpu_thread         = 1;
     cpu_thread_self_index = index;
-    cpu_mp_thread_self    = index; /* whose APIC this thread reaches (cpu_mp_asking) */
+    cpu_mp_thread_self    = index;            /* whose APIC this thread reaches (cpu_mp_asking) */
+    mem_access_charge_ap  = ap->core->charge; /* a device it reaches here charges it (MEM_ACCESS_CHARGE) */
     cpu_thread_fpenv_set(cpu_thread_fpenv);
 #ifdef __APPLE__
     /* As the emulation thread (qt_main.cpp): on a performance core. */

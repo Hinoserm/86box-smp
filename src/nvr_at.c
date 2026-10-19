@@ -679,7 +679,7 @@ nvr_write(uint16_t addr, uint8_t val, void *priv)
     local_t *local   = (local_t *) nvr->data;
     uint8_t  addr_id = (addr & 0x0e) >> 1;
 
-    cycles -= ISA_CYCLES(8);
+    MEM_ACCESS_CHARGE(ISA_CYCLES(8));
 
     if (local->bank[addr_id] == 0xff)
         return;
@@ -736,7 +736,7 @@ nvr_read(uint16_t addr, void *priv)
     uint16_t       i;
     uint16_t       checksum = 0x0000;
 
-    cycles -= ISA_CYCLES(8);
+    MEM_ACCESS_CHARGE(ISA_CYCLES(8));
 
     if (local->bank[addr_id] == 0xff)
         ret = 0xff;
@@ -936,6 +936,22 @@ nvr_read(uint16_t addr, void *priv)
     }
 
     return ret;
+}
+
+/* An access another processor's thread may do itself (io_ap_local_set):
+   one that changes nothing but the index -- a read of any register but C
+   and D, which reading changes, and a write of the index that leaves the
+   NMI mask as it is. */
+static int
+nvr_ap_local(uint16_t addr, int write, uint8_t val, void *priv)
+{
+    const nvr_t   *nvr     = (nvr_t *) priv;
+    const local_t *local   = (local_t *) nvr->data;
+    const uint8_t  addr_id = (addr & 0x0e) >> 1;
+
+    if (!write)
+        return !(addr & 1) || ((local->addr[addr_id] != RTC_REGC) && (local->addr[addr_id] != RTC_REGD));
+    return !(addr & 1) && ((local->flags & FLAG_NO_NMI) || (nmi_mask == (~val & 0x80)));
 }
 
 /* Secondary NVR write - used by SMC. */
@@ -1236,6 +1252,7 @@ nvr_at_init(const device_t *info)
         /* Set up the I/O handler for this device. */
         io_sethandler(local->default_addr, 2,
                       nvr_read, NULL, NULL, nvr_write, NULL, NULL, nvr);
+        io_ap_local_set(nvr_read, nvr_write, nvr_ap_local, nvr);
 
         if (local->flags & FLAG_MULTI_ADDRESS)
             io_sethandler(local->default_addr + 2, 2,
@@ -1261,6 +1278,7 @@ nvr_at_close(void *priv)
     local_t *local = (local_t *) nvr->data;
 
     nvr_close();
+    io_ap_local_clear(nvr);
 
     timer_disable(&local->rtc_timer);
     timer_disable(&local->update_timer);
