@@ -406,18 +406,35 @@ static int suppr_seen = 1;
 void pclog_ensure_stdlog_open(void);
 #endif
 
+/* The log file is the configuration's (log_path): appended to. */
+static int log_append = 0;
+
 /*
     A log file named by the machine's configuration, for when no -L was
     given. Anything already logged went to stdout; from here on it goes
-    to the file.
+    to the file. A relative path is the machine directory's, as the
+    configuration's image paths are. The file is appended to, never
+    truncated: a configuration can name any file.
 */
 void
 pclog_set_config_path(const char *path)
 {
+    char         name[1024];
+    const size_t dir = strlen(usr_path);
+
     if ((path == NULL) || (path[0] == '\0') || (log_path[0] != '\0'))
         return;
 
-    snprintf(log_path, sizeof(log_path), "%s", path);
+    snprintf(name, sizeof(name), "%s", path);
+    if (path_abs(name))
+        snprintf(log_path, sizeof(log_path), "%s", name);
+    else if ((dir + strlen(name)) < sizeof(log_path)) {
+        memcpy(log_path, usr_path, dir);
+        strcpy(log_path + dir, name);
+    } else
+        return;
+
+    log_append = 1;
 #ifndef RELEASE_BUILD
     if (stdlog == stdout)
         stdlog = NULL;
@@ -432,7 +449,7 @@ void pclog_ensure_stdlog_open(void)
 #ifndef RELEASE_BUILD
     if (stdlog == NULL) {
         if (log_path[0] != '\0') {
-            stdlog = plat_fopen(log_path, "w");
+            stdlog = plat_fopen(log_path, log_append ? "a" : "w");
             if (stdlog == NULL)
                 stdlog = stdout;
         } else
@@ -510,7 +527,7 @@ always_log(const char *fmt, ...)
 
     if (stdlog == NULL) {
         if (log_path[0] != '\0') {
-            stdlog = plat_fopen(log_path, "w");
+            stdlog = plat_fopen(log_path, log_append ? "a" : "w");
             if (stdlog == NULL)
                 stdlog = stdout;
         } else
@@ -537,7 +554,7 @@ fatal(const char *fmt, ...)
 
     if (stdlog == NULL) {
         if (log_path[0] != '\0') {
-            stdlog = plat_fopen(log_path, "w");
+            stdlog = plat_fopen(log_path, log_append ? "a" : "w");
             if (stdlog == NULL)
                 stdlog = stdout;
         } else
@@ -588,7 +605,7 @@ fatal_ex(const char *fmt, va_list ap)
 
     if (stdlog == NULL) {
         if (log_path[0] != '\0') {
-            stdlog = plat_fopen(log_path, "w");
+            stdlog = plat_fopen(log_path, log_append ? "a" : "w");
             if (stdlog == NULL)
                 stdlog = stdout;
         } else
@@ -639,7 +656,7 @@ warning(const char *fmt, ...)
 
     if (stdlog == NULL) {
         if (log_path[0] != '\0') {
-            stdlog = plat_fopen(log_path, "w");
+            stdlog = plat_fopen(log_path, log_append ? "a" : "w");
             if (stdlog == NULL)
                 stdlog = stdout;
         } else
@@ -677,7 +694,7 @@ warning_ex(const char *fmt, va_list ap)
 
     if (stdlog == NULL) {
         if (log_path[0] != '\0') {
-            stdlog = plat_fopen(log_path, "w");
+            stdlog = plat_fopen(log_path, log_append ? "a" : "w");
             if (stdlog == NULL)
                 stdlog = stdout;
         } else
