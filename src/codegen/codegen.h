@@ -158,9 +158,6 @@ extern void codegen_links_drop(codeblock_t *block);
 extern void codegen_links_drop_all(int owner);
 extern void codegen_links_revalidate_request(int all, uint32_t lin);
 extern void codegen_links_revalidate(void);
-/*Compiled code was written: the links into the written blocks go, at the
-  loop's next look.*/
-extern void codegen_links_written(void);
 #endif
 
 extern codeblock_t *codeblock;

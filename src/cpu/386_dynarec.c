@@ -578,7 +578,7 @@ codegen_chain_service(void)
 
     __atomic_store_n(&mem_chain_signal.brk, 0, __ATOMIC_SEQ_CST); /* cleared before looking */
     if (p & 0xffffff00)
-        return 1; /* code written, relink, revalidate: the loop's work */
+        return 1; /* a relink or a translation change: the loop's work */
     if (cpu_init || new_ne || smi_line || NMI_TAKEABLE() || cpu_state.abrt || !CACHE_ON() ||
         x86_was_reset || cpu_force_interpreter || cpu_override_dynarec || cpu_flush_pending)
         return 1;
@@ -1190,8 +1190,8 @@ exec386_dynarec(int32_t cycs)
 #    ifdef CODEGEN_CHAIN
             /* Whatever broke a chain is looked at below: the break is
                cleared first, so one set from now on breaks the next chain.
-               Code written, a relink and a translation change are taken
-               here, before the next dispatch. */
+               A relink and a translation change are taken here, before the
+               next dispatch. */
             if (__atomic_load_n(&mem_chain_signal.brk, __ATOMIC_RELAXED))
                 __atomic_store_n(&mem_chain_signal.brk, 0, __ATOMIC_SEQ_CST);
             if (__atomic_load_n(&mem_chain_signal.code, __ATOMIC_RELAXED)) {
@@ -1199,8 +1199,6 @@ exec386_dynarec(int32_t cycs)
 
                 if (why & MEM_CHAIN_CODE_RELINK)
                     codegen_links_drop_all(1);
-                if (why & MEM_CHAIN_CODE_WRITTEN)
-                    codegen_links_written();
                 if (why & MEM_CHAIN_CODE_REVALIDATE)
                     codegen_links_revalidate();
             }

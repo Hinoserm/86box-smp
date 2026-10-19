@@ -447,9 +447,8 @@ extern void mem_tlb_empty(void);
 /* Chains of linked blocks (the new recompiler): a link stub leaves for the
    dispatcher while this word is not 0. brk: something the loop must look
    at (port I/O, an interrupt pending, NMI, SMI, a sooner timer, a reset);
-   code: compiled code of a linked block was written (WRITTEN), every link
-   must go (RELINK), or translations may have changed (REVALIDATE). Set
-   from anywhere; harmless when nothing is chained. */
+   code: every link must go (RELINK), or translations may have changed
+   (REVALIDATE). Set from anywhere; harmless when nothing is chained. */
 typedef union mem_chain_signal_t {
     struct {
         uint8_t brk;
@@ -459,7 +458,6 @@ typedef union mem_chain_signal_t {
     uint32_t pending;
 } mem_chain_signal_t;
 extern mem_chain_signal_t mem_chain_signal;
-#define MEM_CHAIN_CODE_WRITTEN    1
 #define MEM_CHAIN_CODE_RELINK     2
 #define MEM_CHAIN_CODE_REVALIDATE 4
 
