@@ -604,9 +604,10 @@ x86_pause(uint32_t eip)
 }
 
 /* An IN AL,DX at eip has read a port whose reads only repeat
-   (io_poll_pure). The first processor's only: the flag is the machine's,
-   and another processor's reads are served on the machine's thread,
-   beside the first's own. */
+   (io_poll_pure[], this processor's own flag). The first processor's
+   only: the reads repeat until the device's next timer event, and only the
+   first processor's chains run down to the machine's timers
+   (exec386_chain_floor); another's would charge passes past them. */
 void
 x86_idle_in(uint32_t eip)
 {
