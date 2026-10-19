@@ -489,6 +489,7 @@ extern void mem_init(void);
 extern void mem_close(void);
 extern void mem_zero(void);
 extern void mem_reset(void);
+extern void mem_cpu_reset(void);
 extern void mem_remap_top_ex(int kb, uint32_t start);
 extern void mem_remap_top_ex_nomid(int kb, uint32_t start);
 extern void mem_remap_top(int kb);
