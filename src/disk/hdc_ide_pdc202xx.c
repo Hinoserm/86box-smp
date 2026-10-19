@@ -637,9 +637,6 @@ pdc_mem_writel(uint32_t addr, uint32_t val, void *priv)
 static void
 pdc_mem_handler(pdc_t *dev)
 {
-    if (dev->card == PDC_FASTTRAK)
-        return;
-
     mem_mapping_disable(&dev->mem_mapping);
 
     dev->mem_base = (dev->pci_regs[0x27] << 24) | (dev->pci_regs[0x26] << 16) |
@@ -1006,20 +1003,15 @@ pdc_init(const device_t *info)
     ide_set_bus_master(dev->ch[0], pdc_bm_dma_0, pdc_set_irq_0, dev);
     ide_set_bus_master(dev->ch[1], pdc_bm_dma_1, pdc_set_irq_1, dev);
 
-    /* THE MEMORY WINDOW IS THE ULTRA'S AND NOT THE FASTTRAK'S. Promise's
-       plain driver maps it on this generation and does its register work
-       through it; their RAID driver for the same silicon never touches it,
-       and says so plainly -- it imports no memory accessor at all, never
-       reads the sixth base address register, declares five ranges rather
-       than six, and asks for sixteen bytes of the fifth. So the window is
-       offered where a driver looks for it and withheld where none does. */
-    if (dev->card != PDC_FASTTRAK) {
-        mem_mapping_add(&dev->mem_mapping, 0, 0,
-                        pdc_mem_readb, pdc_mem_readw, pdc_mem_readl,
-                        pdc_mem_writeb, pdc_mem_writew, pdc_mem_writel,
-                        NULL, MEM_MAPPING_EXTERNAL, dev);
-        mem_mapping_disable(&dev->mem_mapping);
-    }
+    /* The sixteen kilobyte memory window, on both cards: it is the same
+       silicon. Promise's plain driver does its register work through it on
+       this generation, and so does Linux's pata_pdc2027x, which drives the
+       FastTrak too; Promise's RAID driver never touches it. */
+    mem_mapping_add(&dev->mem_mapping, 0, 0,
+                    pdc_mem_readb, pdc_mem_readw, pdc_mem_readl,
+                    pdc_mem_writeb, pdc_mem_writew, pdc_mem_writel,
+                    NULL, MEM_MAPPING_EXTERNAL, dev);
+    mem_mapping_disable(&dev->mem_mapping);
 
     /* The two channels come with the bus master: the SFF core adds them
        itself for the first instance of it, so a card that added them again
