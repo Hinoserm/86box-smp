@@ -55,8 +55,11 @@ void
 FileField::on_pushButton_clicked()
 {
     QString fileName;
-    const QString initial = fileName_.isEmpty() ? defaultDirectory_
-                                                : QDir(defaultDirectory_).absoluteFilePath(fileName_);
+    /* Where the browser opens: Qt's own choice, unless the field has a
+       directory of its own (setDefaultDirectory()). */
+    QString initial;
+    if (!defaultDirectory_.isEmpty())
+        initial = fileName_.isEmpty() ? defaultDirectory_ : QDir(defaultDirectory_).absoluteFilePath(fileName_);
     if (createFile_) {
         fileName = QFileDialog::getSaveFileName(this, QString(), initial, filter_, &selectedFilter_);
     } else {
