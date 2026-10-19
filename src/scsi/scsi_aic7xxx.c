@@ -5588,19 +5588,29 @@ aic_debug_info(const char *arg, void *priv)
     }
 
     if (!strcmp(what, "seqram")) {
-        int start = dev->pc;
-        int count = 16;
+        long start = dev->pc;
+        long count = 16;
 
         while (*arg && ((*arg == ' ') || (*arg == '\t')))
             arg++;
         if (*arg) {
-            start = (int) strtol(arg, (char **) &arg, 16);
+            start = strtol(arg, (char **) &arg, 16);
             while (*arg && ((*arg == ' ') || (*arg == '\t')))
                 arg++;
             if (*arg)
-                count = (int) strtol(arg, NULL, 0);
+                count = strtol(arg, NULL, 0);
         }
-        for (int i = start; (i < (start + count)) && (i < SEQ_INSNS); i++) {
+        /* START is a word of the program store, and COUNT stops at its end:
+           a negative START would read in front of seqram. */
+        if ((start < 0) || (start >= SEQ_INSNS)) {
+            debugcon_out("START is 0 to %03X.\n", SEQ_INSNS - 1);
+            return;
+        }
+        if (count < 0)
+            count = 0;
+        if (count > (SEQ_INSNS - start))
+            count = SEQ_INSNS - start;
+        for (int i = (int) start; i < (int) (start + count); i++) {
             uint32_t insn = (uint32_t) dev->seqram[i * 4] | ((uint32_t) dev->seqram[i * 4 + 1] << 8) |
                             ((uint32_t) dev->seqram[i * 4 + 2] << 16) | ((uint32_t) dev->seqram[i * 4 + 3] << 24);
 
