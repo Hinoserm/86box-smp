@@ -1941,7 +1941,7 @@ banshee_read_linear(uint32_t addr, void *priv)
     const voodoo_t *voodoo  = banshee->voodoo;
     const svga_t   *svga    = &banshee->svga;
 
-    cycles -= voodoo->read_time;
+    MEM_ACCESS_CHARGE(voodoo->read_time);
 
     if ((banshee->pci_regs[0x30] & 0x01) && addr >= banshee->bios_rom.mapping.base && addr < (banshee->bios_rom.mapping.base + banshee->bios_rom.sz)) {
         return rom_read(addr & (banshee->bios_rom.sz - 1), &banshee->bios_rom);
@@ -1963,7 +1963,7 @@ banshee_read_linear(uint32_t addr, void *priv)
     if (addr >= svga->vram_max)
         return 0xff;
 
-    cycles -= svga->monitor->mon_video_timing_read_b;
+    MEM_ACCESS_CHARGE(svga->monitor->mon_video_timing_read_b);
 
 #if 0
     banshee_log("read_linear: addr=%08x val=%02x\n", addr, svga->vram[addr & svga->vram_mask]);
@@ -1982,7 +1982,7 @@ banshee_read_linear_w(uint32_t addr, void *priv)
     if (addr & 1)
         return banshee_read_linear(addr, priv) | (banshee_read_linear(addr + 1, priv) << 8);
 
-    cycles -= voodoo->read_time;
+    MEM_ACCESS_CHARGE(voodoo->read_time);
     if ((banshee->pci_regs[0x30] & 0x01) && addr >= banshee->bios_rom.mapping.base && addr < (banshee->bios_rom.mapping.base + banshee->bios_rom.sz)) {
         return rom_readw(addr & (banshee->bios_rom.sz - 1), &banshee->bios_rom);
     }
@@ -2003,7 +2003,7 @@ banshee_read_linear_w(uint32_t addr, void *priv)
     if (addr >= svga->vram_max)
         return 0xff;
 
-    cycles -= svga->monitor->mon_video_timing_read_w;
+    MEM_ACCESS_CHARGE(svga->monitor->mon_video_timing_read_w);
 
 #if 0
     banshee_log("read_linear: addr=%08x val=%02x\n", addr, svga->vram[addr & svga->vram_mask]);
@@ -2022,7 +2022,7 @@ banshee_read_linear_l(uint32_t addr, void *priv)
     if (addr & 3)
         return banshee_read_linear_w(addr, priv) | (banshee_read_linear_w(addr + 2, priv) << 16);
 
-    cycles -= voodoo->read_time;
+    MEM_ACCESS_CHARGE(voodoo->read_time);
 
     if ((banshee->pci_regs[0x30] & 0x01) && addr >= banshee->bios_rom.mapping.base && addr < (banshee->bios_rom.mapping.base + banshee->bios_rom.sz)) {
         return rom_readl(addr & (banshee->bios_rom.sz - 1), &banshee->bios_rom);
@@ -2044,13 +2044,39 @@ banshee_read_linear_l(uint32_t addr, void *priv)
     if (addr >= svga->vram_max)
         return 0xff;
 
-    cycles -= svga->monitor->mon_video_timing_read_l;
+    MEM_ACCESS_CHARGE(svga->monitor->mon_video_timing_read_l);
 
 #if 0
     banshee_log("read_linear: addr=%08x val=%02x\n", addr, svga->vram[addr & svga->vram_mask]);
 #endif
 
     return *(uint32_t *) &svga->vram[addr & svga->vram_mask];
+}
+
+/* Whether a write to the linear frame buffer at addr may run on another
+   processor's own thread (MEM_MAPPING_AP_LOCAL): not one landing in a
+   command FIFO, whose pointers and hole count the FIFO thread shares
+   (banshee_write_linear_l). The address as the handlers decode it. */
+static int
+banshee_linear_ap_local_write(uint32_t addr, void *priv)
+{
+    const banshee_t *banshee = (banshee_t *) priv;
+    const voodoo_t  *voodoo  = banshee->voodoo;
+    const svga_t    *svga    = &banshee->svga;
+
+    addr &= svga->decode_mask;
+    if (addr >= voodoo->tile_base) {
+        const uint32_t off = addr - voodoo->tile_base;
+        const int      x   = off & (voodoo->tile_stride - 1);
+        const int      y   = off >> voodoo->tile_stride_shift;
+
+        addr = voodoo->tile_base + (x & 127) + ((x >> 7) * 128 * 32) + ((y & 31) * 128) + (y >> 5) * voodoo->tile_x_real;
+    }
+    if (voodoo->cmdfifo_enabled && (addr >= voodoo->cmdfifo_base) && (addr < voodoo->cmdfifo_end))
+        return 0;
+    if (voodoo->cmdfifo_enabled_2 && (addr >= voodoo->cmdfifo_base_2) && (addr < voodoo->cmdfifo_end_2))
+        return 0;
+    return 1;
 }
 
 static void
@@ -2060,7 +2086,7 @@ banshee_write_linear(uint32_t addr, uint8_t val, void *priv)
     const voodoo_t *voodoo  = banshee->voodoo;
     svga_t         *svga    = &banshee->svga;
 
-    cycles -= voodoo->write_time;
+    MEM_ACCESS_CHARGE(voodoo->write_time);
 
 #if 0
     banshee_log("write_linear: addr=%08x val=%02x\n", addr, val);
@@ -2082,7 +2108,7 @@ banshee_write_linear(uint32_t addr, uint8_t val, void *priv)
     if (addr >= svga->vram_max)
         return;
 
-    cycles -= svga->monitor->mon_video_timing_write_b;
+    MEM_ACCESS_CHARGE(svga->monitor->mon_video_timing_write_b);
 
     svga->changedvram[addr >> 12]      = changeframecount;
     svga->vram[addr & svga->vram_mask] = val;
@@ -2101,7 +2127,7 @@ banshee_write_linear_w(uint32_t addr, uint16_t val, void *priv)
         return;
     }
 
-    cycles -= voodoo->write_time;
+    MEM_ACCESS_CHARGE(voodoo->write_time);
 #if 0
     banshee_log("write_linear: addr=%08x val=%02x\n", addr, val);
 #endif
@@ -2122,7 +2148,7 @@ banshee_write_linear_w(uint32_t addr, uint16_t val, void *priv)
     if (addr >= svga->vram_max)
         return;
 
-    cycles -= svga->monitor->mon_video_timing_write_w;
+    MEM_ACCESS_CHARGE(svga->monitor->mon_video_timing_write_w);
 
     svga->changedvram[addr >> 12]                     = changeframecount;
     *(uint16_t *) &svga->vram[addr & svga->vram_mask] = val;
@@ -2146,7 +2172,7 @@ banshee_write_linear_l(uint32_t addr, uint32_t val, void *priv)
         timing = voodoo->burst_time;
     else
         timing = voodoo->write_time;
-    cycles -= timing;
+    MEM_ACCESS_CHARGE(timing);
     voodoo->last_write_addr = addr;
 
 #if 0
@@ -2171,7 +2197,7 @@ banshee_write_linear_l(uint32_t addr, uint32_t val, void *priv)
     if (addr >= svga->vram_max)
         return;
 
-    cycles -= svga->monitor->mon_video_timing_write_l;
+    MEM_ACCESS_CHARGE(svga->monitor->mon_video_timing_write_l);
 
     svga->changedvram[addr >> 12]                     = changeframecount;
     *(uint32_t *) &svga->vram[addr & svga->vram_mask] = val;
@@ -3415,6 +3441,9 @@ banshee_init_common(const device_t *info, const char *fn, const int has_sgram,
               banshee_overlay_draw);
     banshee->svga.vsync_callback = banshee_vsync_callback;
 
+    /* The linear frame buffer is VRAM: another processor reaches it on its
+       own thread (MEM_MAPPING_AP_LOCAL), as two processors reach the
+       board's memory at once -- but for writes into a command FIFO. */
     mem_mapping_add(&banshee->linear_mapping, 0, 0, banshee_read_linear,
                     banshee_read_linear_w,
                     banshee_read_linear_l,
@@ -3422,8 +3451,9 @@ banshee_init_common(const device_t *info, const char *fn, const int has_sgram,
                     banshee_write_linear_w,
                     banshee_write_linear_l,
                     NULL,
-                    MEM_MAPPING_EXTERNAL,
+                    MEM_MAPPING_EXTERNAL | MEM_MAPPING_AP_LOCAL,
                     &banshee->svga);
+    banshee->linear_mapping.ap_local_write = banshee_linear_ap_local_write;
     mem_mapping_add(&banshee->reg_mapping_low, 0, 0, banshee_reg_read,
                     banshee_reg_readw,
                     banshee_reg_readl,

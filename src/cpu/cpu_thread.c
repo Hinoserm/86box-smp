@@ -963,6 +963,21 @@ extern void     lapic_writew(uint32_t addr, uint16_t val, void *priv);
 extern void     lapic_writel(uint32_t addr, uint32_t val, void *priv);
 #define CPU_THREAD_LAPIC_TPR 0x080 /* its offset in the window */
 
+/* A mapping whose handlers may run on this processor's own thread
+   (MEM_MAPPING_AP_LOCAL), with none of its writes still posted: those go
+   first, so with any in the ring the access is posted or handed over
+   behind them as before. Inside a locked instruction it is handed over,
+   the one bus operation the others are kept off (cpu_thread_forward). */
+static inline int
+cpu_thread_ap_local(const mem_mapping_t *m, uint32_t a, int write)
+{
+    const cpu_ap_t *ap = &cpu_aps[cpu_thread_self_index];
+
+    return (m->flags & MEM_MAPPING_AP_LOCAL) && !ap->locked_ins &&
+           (!write || !m->ap_local_write || m->ap_local_write(a, m->priv)) &&
+           (ap->posted_head == __atomic_load_n(&ap->posted_tail, __ATOMIC_ACQUIRE));
+}
+
 uint8_t
 cpu_ap_map_read_b(mem_mapping_t *m, uint32_t a)
 {
@@ -970,6 +985,8 @@ cpu_ap_map_read_b(mem_mapping_t *m, uint32_t a)
         return m->read_b(a, m->priv);
     if (m->read_b == lapic_readb)
         return lapic_readb_as(cpu_thread_self_index, a, m->priv);
+    if (cpu_thread_ap_local(m, a, 0))
+        return m->read_b(a, m->priv);
     return (uint8_t) cpu_thread_forward(FWD_MAP_RB, m, a, 0);
 }
 
@@ -980,6 +997,8 @@ cpu_ap_map_read_w(mem_mapping_t *m, uint32_t a)
         return m->read_w(a, m->priv);
     if (m->read_w == lapic_readw)
         return lapic_readw_as(cpu_thread_self_index, a, m->priv);
+    if (cpu_thread_ap_local(m, a, 0))
+        return m->read_w(a, m->priv);
     return (uint16_t) cpu_thread_forward(FWD_MAP_RW, m, a, 0);
 }
 
@@ -1004,6 +1023,8 @@ cpu_ap_map_read_l(mem_mapping_t *m, uint32_t a)
         }
         return lapic_readl_as(self, a, m->priv);
     }
+    if (cpu_thread_ap_local(m, a, 0))
+        return m->read_l(a, m->priv);
     return cpu_thread_forward(FWD_MAP_RL, m, a, 0);
 }
 
@@ -1014,6 +1035,8 @@ cpu_ap_map_write_b(mem_mapping_t *m, uint32_t a, uint8_t v)
         m->write_b(a, v, m->priv);
     else if (m->write_b == lapic_writeb)
         lapic_writeb_as(cpu_thread_self_index, a, v, m->priv);
+    else if (cpu_thread_ap_local(m, a, 1))
+        m->write_b(a, v, m->priv);
     else
         cpu_thread_post_write(FWD_MAP_WB, m, a, v);
 }
@@ -1025,6 +1048,8 @@ cpu_ap_map_write_w(mem_mapping_t *m, uint32_t a, uint16_t v)
         m->write_w(a, v, m->priv);
     else if (m->write_w == lapic_writew)
         lapic_writew_as(cpu_thread_self_index, a, v, m->priv);
+    else if (cpu_thread_ap_local(m, a, 1))
+        m->write_w(a, v, m->priv);
     else
         cpu_thread_post_write(FWD_MAP_WW, m, a, v);
 }
@@ -1060,6 +1085,8 @@ cpu_ap_map_write_l(mem_mapping_t *m, uint32_t a, uint32_t v)
     }
     if (m->write_l == lapic_writel)
         lapic_writel_as(self, a, v, m->priv);
+    else if (cpu_thread_ap_local(m, a, 1))
+        m->write_l(a, v, m->priv);
     else
         cpu_thread_post_write(FWD_MAP_WL, m, a, v);
 }

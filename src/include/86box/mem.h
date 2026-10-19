@@ -118,6 +118,11 @@
 #define MEM_MAPPING_SMRAM     32 /* On internal bus (RAM) but SMRAM. */
 #define MEM_MAPPING_CACHE     64 /* Cache or MTRR - please avoid such mappings unless \
                                     stricly necessary (eg. for CoreBoot). */
+#define MEM_MAPPING_AP_LOCAL  128 /* Its handlers may run on any processor's own thread
+                                     (cpu_thread.c): they touch nothing of the device but what
+                                     two processors' accesses may race on, as on memory, and
+                                     charge their time with MEM_ACCESS_CHARGE; a write may be
+                                     kept from it (ap_local_write). */
 
 /* #define's for memory granularity, currently 4k, less does
    not work because of internal 4k pages. */
@@ -191,6 +196,11 @@ typedef struct _mem_mapping_ {
     uint8_t *exec;
 
     uint32_t flags;
+
+    /* With MEM_MAPPING_AP_LOCAL: whether a write at addr may run on another
+       processor's own thread too; NULL, any may. A write the device does
+       more for than memory (a command FIFO's pointers) answers no. */
+    int (*ap_local_write)(uint32_t addr, void *priv);
 
     /* There is never a needed to pass a pointer to the mapping itself, it is much preferable to
        prepare a structure with the requires data (usually, the base address and mask) instead. */
