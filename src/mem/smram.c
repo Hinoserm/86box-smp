@@ -406,3 +406,10 @@ smram_set_separate_smram(uint8_t set)
 {
     use_separate_smram = set;
 }
+
+/* The debug console walks the SMRAM regions from here. */
+smram_t *
+smram_debug_first(void)
+{
+    return base_smram;
+}

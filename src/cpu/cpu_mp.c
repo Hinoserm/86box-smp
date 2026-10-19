@@ -580,6 +580,74 @@ cpu_mp_switch(int index)
     }
 }
 
+/* Put a processor's state in place only to look at it (the debug
+   console, with the machine paused and the others parked), and put the
+   one that was there back. Nothing a switch does for a processor about to
+   run happens: a pending NMI or SMI stays pending. */
+void
+cpu_mp_peek(int index, void (*look)(void))
+{
+    const int was = cpu_mp_cur;
+    uint8_t   nmi_i;
+    uint8_t   smi_i;
+    uint8_t   nmi_w;
+    uint8_t   smi_w;
+
+    if ((cpu_mp_count < 2) || (index == cpu_mp_cur) || (index < 0) || (index >= cpu_mp_count)) {
+        look();
+        return;
+    }
+
+    /* Its state lives in a core of its own: lent to the first core for the
+       look, and whatever the look changed given back. */
+    if (cpu_mp_copy_mode) {
+        uint8_t *mine   = malloc(cpu_mp_blob_size);
+        uint8_t *theirs = malloc(cpu_mp_blob_size);
+
+        if ((mine == NULL) || (theirs == NULL)) {
+            free(mine);
+            free(theirs);
+            return;
+        }
+        cpu_mp_save_blob_of(0, mine);
+        cpu_mp_save_blob_of(index, theirs);
+        cpu_mp_load_blob_into(0, theirs);
+        mem_smm_view(!!(cpu_cur_status & CPU_STATUS_SMM));
+        /* Its CR3, not the first core's: a look translates afresh. */
+        flushmmucache_cpu();
+        cpu_mp_cur = index;
+
+        look();
+
+        cpu_mp_cur = was;
+        cpu_mp_save_blob_of(0, theirs);
+        cpu_mp_load_blob_into(index, theirs);
+        cpu_mp_load_blob_into(0, mine);
+        mem_smm_view(!!(cpu_cur_status & CPU_STATUS_SMM));
+        flushmmucache_cpu();
+        cpu_mp_core[index]->after_load();
+        free(mine);
+        free(theirs);
+        return;
+    }
+
+    nmi_i = cpu_mp_ctx[index].nmi_pending;
+    smi_i = cpu_mp_ctx[index].smi_pending;
+    nmi_w = cpu_mp_ctx[was].nmi_pending;
+    smi_w = cpu_mp_ctx[was].smi_pending;
+    cpu_mp_ctx[index].nmi_pending = cpu_mp_ctx[index].smi_pending = 0;
+    cpu_mp_ctx[was].nmi_pending   = cpu_mp_ctx[was].smi_pending   = 0;
+
+    cpu_mp_switch(index);
+    look();
+    cpu_mp_switch(was);
+
+    cpu_mp_ctx[index].nmi_pending = nmi_i;
+    cpu_mp_ctx[index].smi_pending = smi_i;
+    cpu_mp_ctx[was].nmi_pending   = nmi_w;
+    cpu_mp_ctx[was].smi_pending   = smi_w;
+}
+
 /* Whether a halted processor's maskable interrupts could end its HLT:
    "An enabled interrupt, NMI, or a reset will resume execution" (Pentium
    Vol. 3, HLT). Its IF, from its own core or its saved state (cpu_state is
@@ -1664,4 +1732,32 @@ cpu_mp_configure(int count)
     cpu_mp_log("CPU MP: %i processors, %u bytes of state each, %s\n", count, cpu_mp_blob_size,
                cpu_mp_parallel() ? "each on a thread of its own" :
                (cpu_mp_copy_mode ? "each in a core of its own" : "sharing one core"));
+}
+
+/* The debug console: what each processor is doing. */
+void
+cpu_mp_debug_dump(void (*out)(const char *fmt, ...))
+{
+    static const char *const states[] = { "running", "waiting for STARTUP", "starting",
+                                          "in SMM from waiting for STARTUP" };
+
+    out("%i processor%s; processor %i in place\n", cpu_mp_count, (cpu_mp_count == 1) ? "" : "s", cpu_mp_cur);
+    if (cpu_mp_count == 1)
+        return;
+    for (int i = 0; i < cpu_mp_count; i++) {
+        const int state = cpu_mp_ctx[i].state;
+
+        out("  processor %i: %s%s%s%s%s\n", i,
+            ((state >= 0) && (state < (int) (sizeof(states) / sizeof(states[0])))) ? states[state] : "?",
+            cpu_mp_ctx[i].halted ? ", halted" : "",
+            cpu_mp_ctx[i].nmi_pending ? ", NMI pending" : "",
+            cpu_mp_ctx[i].smi_pending ? ", SMI pending" : "",
+            cpu_mp_ctx[i].init_pending ? ", INIT pending" : "");
+    }
+    if (cpu_mp_parallel())
+        out("processors 1 to %i on threads of their own, each within %i us of processor 0\n", cpu_mp_count - 1,
+            cpu_smp_drift_us);
+    else
+        out("%s; turns of up to %i us (now %i us)\n", cpu_mp_copy_mode ? "each in a core of its own" : "sharing one core",
+            cpu_smp_drift_us, cpu_mp_slice_now_us);
 }

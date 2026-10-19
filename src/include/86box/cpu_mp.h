@@ -86,6 +86,11 @@ cpu_mp_drain_posted(void)
 extern void cpu_mp_split_begin(void);
 extern void cpu_mp_split_end(void);
 
+/* The debug console (the machine paused): processor index's state in place
+   for look() to read, and what each processor is doing. */
+extern void cpu_mp_peek(int index, void (*look)(void));
+extern void cpu_mp_debug_dump(void (*out)(const char *fmt, ...));
+
 extern void cpu_mp_close(void);
 extern void cpu_mp_configure(int count);
 extern void cpu_mp_register(void *addr, uint32_t size);

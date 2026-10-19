@@ -47,8 +47,11 @@
 #include "x87.h"
 #include <86box/timer.h>
 #include <86box/mem.h>
+#include <86box/smram.h>
 #include <86box/plat.h>
 #include <86box/thread.h>
+#include <86box/cpu_mp.h>
+#include <86box/chipset.h>
 #include <86box/device.h>
 #include <86box/machine.h>
 #include <86box/pci.h>
@@ -524,8 +527,27 @@ cmd_info_registers(const char *arg)
         word[n++] = *arg++;
     word[n] = '\0';
 
+    /* No argument: every processor, one after the other. */
     if (!word[0]) {
-        show_registers();
+        for (int i = 0; i < cpu_mp_count; i++) {
+            if (cpu_mp_count > 1)
+                out("%sProcessor %i:\n", i ? "\n" : "", i);
+            cpu_mp_peek(i, show_registers);
+        }
+        return;
+    }
+
+    /* A processor number: its registers. */
+    if (isdigit((unsigned char) word[0])) {
+        const int cpu_n = atoi(word);
+
+        if (cpu_n >= cpu_mp_count) {
+            out("There is no processor %i; this machine has %i.\n", cpu_n, cpu_mp_count);
+            return;
+        }
+        if (cpu_mp_count > 1)
+            out("Processor %i:\n", cpu_n);
+        cpu_mp_peek(cpu_n, show_registers);
         return;
     }
 
@@ -1280,6 +1302,105 @@ cmd_info_mem(const char *arg)
     }
 }
 
+/* ---- processors, SMM and APICs ------------------------------------------ */
+
+static void
+show_smm_one(void)
+{
+    out("  processor %i: %s, SMBASE 0x%08x, SMI line %u%s\n", cpu_mp_cur,
+        in_smm ? "in SMM" : "not in SMM", smbase, smi_line, smi_latched ? ", SMI latched" : "");
+}
+
+/* Each processor's SMM state, which of them hold SMIACT#, and the
+   chipset's SMRAM regions. */
+static void
+cmd_info_smm(void)
+{
+    const uint32_t cpus = mem_debug_smm_cpus();
+    int            any  = 0;
+
+    for (int i = 0; i < cpu_mp_count; i++)
+        cpu_mp_peek(i, show_smm_one);
+    out("SMIACT#: %s (processors 0x%x)\n", cpus ? "asserted" : "not asserted", cpus);
+
+    for (const smram_t *r = smram_debug_first(); r; r = r->next) {
+        if (!any)
+            out("SMRAM regions:\n");
+        out("  host 0x%08x -> RAM 0x%08x, %u KB, mapping %s\n", r->host_base, r->ram_base, r->size >> 10,
+            r->mapping.enable ? "on" : "off");
+        any = 1;
+    }
+    if (!any)
+        out("The chipset has no SMRAM regions.\n");
+}
+
+static void
+cmd_info_cpu(void)
+{
+    out("%s at %u MHz, %s, %s FPU\n", cpu_s ? cpu_s->name : "?", cpu_s ? (cpu_s->rspeed / 1000000) : 0,
+        cpu_use_dynarec ? "recompiler" : "interpreter",
+        fpu_host_x87 ? "host x87" : (fpu_softfloat ? "softfloat" : "default"));
+    cpu_mp_debug_dump(out);
+}
+
+/* The vectors set in one of a local APIC's 256-bit registers. */
+static void
+vector_bits(const char *name, int lapic, uint32_t base)
+{
+    int any = 0;
+
+    out("  %-4s", name);
+    for (int w = 0; w < 8; w++) {
+        uint32_t val = 0;
+
+        (void) cpu_lapic_mmio_read_index((uint8_t) lapic, base + (w << 4), &val);
+        for (int b = 0; b < 32; b++) {
+            if (val & (1u << b)) {
+                out(" %02x", (w << 5) | b);
+                any = 1;
+            }
+        }
+    }
+    out("%s\n", any ? "" : " -");
+}
+
+/* Each processor's local APIC, from its state, and the I/O APICs. */
+static void
+cmd_info_apic(void)
+{
+    static const struct {
+        uint32_t    reg;
+        const char *name;
+    } lregs[] = {
+        // clang-format off
+        { 0x020, "ID" }, { 0x030, "version" }, { 0x080, "TPR" }, { 0x090, "APR" }, { 0x0a0, "PPR" },
+        { 0x0d0, "LDR" }, { 0x0e0, "DFR" }, { 0x0f0, "SVR" }, { 0x280, "ESR" },
+        { 0x300, "ICR low" }, { 0x310, "ICR high" }, { 0x320, "LVT timer" }, { 0x350, "LVT LINT0" },
+        { 0x360, "LVT LINT1" }, { 0x370, "LVT error" }, { 0x380, "timer initial" },
+        { 0x390, "timer current" }, { 0x3e0, "timer divide" }, { 0, NULL }
+        // clang-format on
+    };
+
+    for (int i = 0; i < cpu_mp_count; i++) {
+        uint32_t val = 0;
+
+        if (!cpu_lapic_mmio_read_index((uint8_t) i, 0x020, &val)) {
+            out("Local APIC %i: none.\n", i);
+            continue;
+        }
+        out("Local APIC %i:\n", i);
+        for (int r = 0; lregs[r].name; r++) {
+            if (cpu_lapic_mmio_read_index((uint8_t) i, lregs[r].reg, &val))
+                out("  %-14s 0x%08x\n", lregs[r].name, val);
+        }
+        vector_bits("ISR", i, 0x100);
+        vector_bits("TMR", i, 0x180);
+        vector_bits("IRR", i, 0x200);
+    }
+    out("\n");
+    ioapic_debug_dump(out);
+}
+
 static void
 show_pic(const char *name, const pic_t *p)
 {
@@ -1551,6 +1672,12 @@ cmd_info(const char *arg)
         cmd_info_devices();
     else if (IS("mem", 1))
         cmd_info_mem(arg);
+    else if (IS("smm", 2))
+        cmd_info_smm();
+    else if (IS("cpu", 2))
+        cmd_info_cpu();
+    else if (IS("apic", 1))
+        cmd_info_apic();
     else if (IS("pic", 3))
         cmd_info_pic();
     else if (IS("pit", 3))
@@ -1564,14 +1691,14 @@ cmd_info(const char *arg)
     else if (IS("idt", 1))
         cmd_info_desc("IDT", &idt, 1);
     else if (!debugcon_device_info(word, arg)) {
-        out("info what? registers, float, gdt, idt, mem, pic, pit, dma,\n"
-            "pci, eisa, board, devices.\n");
+        out("info what? registers, cpu, float, gdt, idt, mem, smm, apic, pic, pit,\n"
+            "dma, pci, eisa, board, devices.\n");
         debugcon_device_help();
     }
 #undef IS
 }
 
-/* The registers, into a text file. */
+/* Every processor's registers, into a text file. */
 static void
 dump_registers(FILE *fp, const char *path)
 {
@@ -1591,10 +1718,13 @@ static const char debugcon_help[] =
     "pause                      stop the machine\n"
     "continue | unpause | run   let it run again (c for short)\n"
     "hardreset                  what the Action menu's Hard Reset does\n"
-    "info registers [REG]       the processor's registers, or one\n"
+    "info registers [N | REG]   every processor's registers, processor N's, or one\n"
+    "info cpu                   the processor model, and what each processor is doing\n"
     "info float                 x87 stack, control/status/tag words, MMX\n"
     "info gdt | idt             descriptor tables (the IVT in real mode)\n"
     "info mem [ADDRESS]         the memory map, or what is at one address\n"
+    "info smm                   each processor's SMM state, the SMRAM regions\n"
+    "info apic                  the local APICs and the I/O APICs\n"
     "info pic | pit | dma       8259s, 8254 counters, 8237 channels\n"
     "info pci                   every PCI function's configuration space, read\n"
     "                           through each card's own handler, as the guest would\n"
@@ -1610,7 +1740,7 @@ static const char debugcon_help[] =
     "set {TYPE} ADDRESS = VALUE write memory; TYPE char, short, int, long long\n"
     "dump binary memory FILE START STOP\n"
     "dump ram FILE              all of physical RAM\n"
-    "dump registers FILE        the registers, as text\n"
+    "dump registers FILE        every processor's registers, as text\n"
     "\n"
     "ADDRESS is linear (through paging), SEG:OFFSET with a segment register\n"
     "or a real-mode segment number, or phys:ADDRESS for physical memory.\n"

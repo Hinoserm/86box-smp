@@ -2323,3 +2323,38 @@ const device_t validated_up_apic_board_device = {
     .force_redraw  = NULL,
     .config        = ioapic_validated_up_config
 };
+
+/* The debug console: each I/O APIC's identifier and redirection table,
+   from its state and without a register access. */
+static void
+ioapic_debug_dump_one(const ioapic_t *dev, void (*out)(const char *fmt, ...))
+{
+    out("I/O APIC %u at 0x%08x%s, version 0x%08x, %u pins%s\n", dev->ioapic_id, dev->mmio_base,
+        (dev->secondary && !dev->mapped) ? " (not reached)" : "", dev->version_reg, dev->pins,
+        dev->is_esc ? " (82374 ESC)" : (dev->secondary ? " (second)" : ""));
+    out("pin  vector deliv   dest-mode trig  pol  mask remote-irr dest   raw-line\n");
+    for (int pin = 0; pin < dev->pins; pin++) {
+        uint32_t lo = dev->ioapic_redir[pin * 2];
+        uint32_t hi = dev->ioapic_redir[(pin * 2) + 1];
+
+        out("%3i  0x%02x   %-7s %-9s %-5s %-4s %-4s %-10s 0x%02x   %u\n", pin, lo & 0xff,
+            ioapic_82093aa_redir_delivery_name(lo), (lo & 0x800) ? "logical" : "physical",
+            (lo & 0x8000) ? "level" : "edge", (lo & 0x2000) ? "low" : "high",
+            (lo & 0x10000) ? "yes" : "no", (lo & 0x4000) ? "set" : "-", hi >> 24,
+            (dev->ioapic_pin_raw_lines >> pin) & 1);
+    }
+}
+
+void
+ioapic_debug_dump(void (*out)(const char *fmt, ...))
+{
+    apic_lock();
+    if (ioapic_global == NULL)
+        out("No I/O APIC.\n");
+    else
+        ioapic_debug_dump_one(ioapic_global, out);
+    for (int i = 0; i < IOAPIC_SECONDARY_MAX; i++)
+        if (ioapic_secondaries[i] != NULL)
+            ioapic_debug_dump_one(ioapic_secondaries[i], out);
+    apic_unlock();
+}

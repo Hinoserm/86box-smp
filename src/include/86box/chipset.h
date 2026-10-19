@@ -147,6 +147,8 @@ extern const device_t ioapic_esc_device;
 extern const device_t ioapic_secondary_device;
 extern void           ioapic_secondary_map(void *ioapic, uint32_t base, int enable);
 extern void           ioapic_secondary_line(void *ioapic, uint8_t pin, int set);
+/* The debug console: every I/O APIC's redirection table. */
+extern void           ioapic_debug_dump(void (*out)(const char *fmt, ...));
 extern void           ioapic_set_mmio_base(void *ioapic, uint32_t base);
 extern void           ioapic_set_host_decode(void *ioapic, uint32_t lo, uint32_t hi, int open);
 extern int            ioapic_apic_path_active(const void *ioapic);
