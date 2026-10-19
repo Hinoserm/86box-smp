@@ -1007,6 +1007,36 @@ fitError(const device_t *adding, const Card *without)
         .arg(name, bus).arg(cap);
 }
 
+/* The first video slot is never left empty with a card in the second:
+   video_reset() adds no card past an empty first slot, as upstream's
+   does. The second card moves up, and its placement with it. */
+static void
+promoteSecondVideo()
+{
+    auto *first  = qobject_cast<QComboBox *>(control("comboBoxVideo"));
+    auto *second = qobject_cast<QComboBox *>(control("comboBoxVideoSecondary"));
+
+    if ((first == nullptr) || (second == nullptr) || (first->currentData().toInt() != VID_NONE))
+        return;
+
+    const int id  = second->currentData().toInt();
+    const int row = first->findData(id);
+    if ((id <= VID_EXTERNAL) || (row < 0))
+        return;
+
+    const device_t *dev   = video_card_getdevice(id);
+    const int       slot  = assignments.value(deviceKey(dev, 2), -1);
+    const int       empty = second->findData(VID_NONE);
+
+    first->setCurrentIndex(row);
+    if (empty >= 0)
+        second->setCurrentIndex(empty);
+    assignments.remove(deviceKey(dev, 2));
+    if (slot >= 0)
+        assignments.insert(deviceKey(dev, 1), slot);
+    assignmentsEdited = true;
+}
+
 void
 remove(const Card &card)
 {
@@ -1025,6 +1055,8 @@ remove(const Card &card)
         const int none = cbox->findData(0);
         if (none >= 0)
             cbox->setCurrentIndex(none);
+        if ((card.category == CATEGORY_VIDEO) && (card.control == "comboBoxVideo"))
+            promoteSecondVideo();
     }
 }
 
