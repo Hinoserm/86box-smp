@@ -320,7 +320,7 @@ machine_at_ficpo6000_init(const machine_t *model)
     machine_pci_init();
     machine_pci_register_slots();
 
-    device_add(&i450kx_device);
+    device_add(&i450gx_device);
     device_add(&sio_zb_device);
     device_add(machine_get_ide_device(machine));
     /* Input port bit 2 must be 1 or CMOS Setup is disabled. */
