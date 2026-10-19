@@ -1179,6 +1179,33 @@ nuked_cqm_drv_set_do_cycles(void *priv, int8_t do_cycles)
         dev->flags &= ~FLAG_CYCLES;
 }
 
+/* The samples of the clock between two wakes of the synthesis thread:
+   at a buffer's end the emulation waits for at most this many. */
+#define NUKED_CQM_WAKE 64
+
+/* The emulation's side of the clock: every NUKED_CQM_WAKE samples it
+   wakes the synthesis thread to generate them. So the thread keeps up
+   while the machine runs and sleeps while it does not. */
+static void
+nuked_cqm_wake(void *priv)
+{
+    nuked_cqm_drv_t *dev = (nuked_cqm_drv_t *) priv;
+
+    thread_set_event((event_t *) dev->wake);
+    timer_on_auto(&dev->wake_timer, dev->wake_us);
+}
+
+/* Nothing to do: the synthesis thread sleeps until the emulation has more
+   for it. It is woken as the clock moves (nuked_cqm_wake), at a buffer's
+   end, for a reset, on a full queue and at close; the timeout only bounds
+   a wake that is missed. */
+static void
+nuked_cqm_sleep(nuked_cqm_drv_t *dev)
+{
+    thread_wait_event((event_t *) dev->wake, 10);
+    thread_reset_event((event_t *) dev->wake);
+}
+
 /* The synthesis thread: it follows the sound clock, applies each queued
    register write just before the sample it was made at -- as the
    emulation's thread did when it generated up to the clock before every
@@ -1209,8 +1236,7 @@ nuked_cqm_worker(void *priv)
         target = __atomic_load_n(dev->pos_global, __ATOMIC_ACQUIRE);
         if (__atomic_load_n(&dev->gate, __ATOMIC_ACQUIRE)) {
             if (target >= dev->gate_limit) {
-                thread_wait_event((event_t *) dev->wake, 1);
-                thread_reset_event((event_t *) dev->wake);
+                nuked_cqm_sleep(dev);
                 continue;
             }
             __atomic_store_n(&dev->gate, 0, __ATOMIC_SEQ_CST);
@@ -1232,19 +1258,7 @@ nuked_cqm_worker(void *priv)
             }
             __atomic_store_n(&dev->q_tail, tail, __ATOMIC_RELEASE);
 
-            /* Caught up: watch the clock a little before sleeping. Fast
-               forward moves it every few microseconds, and a millisecond's
-               sleep would leave the emulation waiting at the buffer's end. */
-            int spins = 4096;
-
-            while ((spins-- > 0) && (__atomic_load_n(dev->pos_global, __ATOMIC_ACQUIRE) == target) &&
-                   (__atomic_load_n(&dev->reset_req, __ATOMIC_ACQUIRE) == dev->reset_ack) &&
-                   __atomic_load_n(&dev->run, __ATOMIC_ACQUIRE))
-                thread_spin_pause();
-            if (spins < 0) {
-                thread_wait_event((event_t *) dev->wake, 1);
-                thread_reset_event((event_t *) dev->wake);
-            }
+            nuked_cqm_sleep(dev);
             continue;
         }
 
@@ -1406,6 +1420,7 @@ nuked_cqm_drv_close(void *priv)
 {
     nuked_cqm_drv_t *dev = (nuked_cqm_drv_t *) priv;
 
+    timer_disable(&dev->wake_timer);
     __atomic_store_n(&dev->run, 0, __ATOMIC_SEQ_CST);
     thread_set_event((event_t *) dev->wake);
     thread_wait((thread_t *) dev->worker);
@@ -1437,6 +1452,10 @@ nuked_cqm_drv_init(const device_t *info)
     dev->worker     = thread_create(nuked_cqm_worker, dev);
     if (dev->worker == NULL)
         fatal("NUKED CQM: cannot start the synthesis thread\n");
+
+    dev->wake_us = (NUKED_CQM_WAKE * 1000000.0) / (dev->is_48k ? FREQ_48000 : FREQ_49716);
+    timer_add(&dev->wake_timer, nuked_cqm_wake, dev, 0);
+    timer_on_auto(&dev->wake_timer, dev->wake_us);
 
     return dev;
 }

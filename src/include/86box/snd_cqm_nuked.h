@@ -132,6 +132,8 @@ typedef struct {
        only at the end of each buffer. Fields marked [w] are the worker's. */
     void          *worker;      /* thread_t */
     void          *wake;        /* event_t */
+    pc_timer_t     wake_timer;  /* wakes the worker as the clock moves */
+    double         wake_us;
     int            run;
     const int     *pos_global;  /* sound_pos_global or music_pos_global */
     /* After a reset, the new period not yet seen: set by the worker only
