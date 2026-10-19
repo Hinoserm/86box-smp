@@ -89,16 +89,54 @@ x86seg_set_accessed(uint32_t addr, uint16_t word4)
     if ((word4 & 0x0100) && is486 && !israpidcad)
         return;
 
+    /* Another processor running beside this one may be writing the
+       descriptor: the bit is set with a locked OR, the rest left as it
+       stands. */
+    if (cpu_mp_atomic) {
+        uint8_t *p = mem_atomic_ptr(addr + 5, 1);
+
+        if (cpu_state.abrt)
+            return;
+        if (p != NULL) {
+            (void) __atomic_fetch_or(p, 0x01, __ATOMIC_SEQ_CST);
+            mem_atomic_written(p, 1);
+            return;
+        }
+    }
     writememb(0, addr + 5, (uint8_t) ((word4 >> 8) | 0x01));
 }
 
 /* A TSS descriptor's Busy bit (the access byte's bit 1), set or cleared by
-   a task switch (19.1.2). Answers 0 on a fault. */
+   a task switch: "The processor tests and sets the Busy bit ... asserts
+   the LOCK# signal while testing and setting this bit" (19.1.2). Setting a
+   bit another processor set first is the busy task's #GP. Answers 0 on a
+   fault. */
 static int
 x86seg_tss_busy(uint32_t dt_base, uint16_t sel, int busy)
 {
     uint32_t off = (sel & 0xfff8) + 5;
     uint8_t  v;
+
+    if (cpu_mp_atomic) {
+        uint8_t *p = mem_atomic_ptr(dt_base + off, 1);
+
+        if (cpu_state.abrt)
+            return 0;
+        if (p != NULL) {
+            if (busy) {
+                v = __atomic_fetch_or(p, 0x02, __ATOMIC_SEQ_CST);
+                mem_atomic_written(p, 1);
+                if (v & 0x02) {
+                    x86gpf("taskswitch: TSS busy", (sel & 0xfffc) | task_ext);
+                    return 0;
+                }
+            } else {
+                (void) __atomic_fetch_and(p, (uint8_t) ~0x02, __ATOMIC_SEQ_CST);
+                mem_atomic_written(p, 1);
+            }
+            return 1;
+        }
+    }
 
     v = readmemb(dt_base, off);
     if (cpu_state.abrt)

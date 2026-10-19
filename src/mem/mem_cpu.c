@@ -649,8 +649,8 @@ mem_flush_write_page(uint32_t addr, UNUSED(uint32_t virt))
    reads the bus and gets floating high bits. So substitute a shared page of 0xFF,
    matching this file's own convention that an unmapped read returns 0xFF.
 
-   This keeps both macros usable as lvalues, which matters because several callers do
-   `rammap(x) |= ...` to set accessed/dirty bits. Those writes land in the scratch page
+   This keeps both macros usable as lvalues, which matters because the page walks set
+   accessed/dirty bits through them (mmu_set_ad). Those writes land in the scratch page
    and are discarded, which is correct for memory that is not there - and the page stays
    all-ones because the only writes are ORs of a few bits, so it cannot drift into
    handing back a bogus present entry later. */
@@ -688,6 +688,28 @@ pae_load_pdptes(void)
         pae_pdpte[i] = rammap64((cr3 & ~0x1f) + (i << 3));
 }
 
+/* A page walk's Accessed and Dirty bits, set on the entry exactly as the
+   walk checked it: "the processor uses locked cycles to set the Accessed
+   and Dirty bits" (Pentium Vol. 3, 19.1.1), so a change another processor
+   made in between is not written over; the walk then starts again.
+   Nothing is written when the bits are already set. Answers 0 when the
+   entry had changed. */
+static __inline int
+mmu_set_ad(uint32_t *entry, uint32_t seen, uint32_t bits)
+{
+    if ((seen & bits) == bits)
+        return 1;
+    return __atomic_compare_exchange_n(entry, &seen, seen | bits, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
+
+static __inline int
+mmu_set_ad64(uint64_t *entry, uint64_t seen, uint64_t bits)
+{
+    if ((seen & bits) == bits)
+        return 1;
+    return __atomic_compare_exchange_n(entry, &seen, seen | bits, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
+
 static __inline uint64_t
 mmutranslatereal_normal(uint32_t addr, int rw)
 {
@@ -695,10 +717,12 @@ mmutranslatereal_normal(uint32_t addr, int rw)
     uint32_t temp2;
     uint32_t temp3;
     uint32_t addr2;
+    uint32_t addr3;
 
     if (cpu_state.abrt)
         return 0xffffffffffffffffULL;
 
+walk:
     addr2 = ((cr3 & ~0xfff) + ((addr >> 20) & 0xffc));
     temp = temp2 = rammap(addr2);
     if (!(temp & 1)) {
@@ -728,7 +752,8 @@ mmutranslatereal_normal(uint32_t addr, int rw)
             return 0xffffffffffffffffULL;
         }
 
-        rammap(addr2) |= (rw ? 0x60 : 0x20);
+        if (!mmu_set_ad(&rammap(addr2), temp2, rw ? 0x60 : 0x20))
+            goto walk;
         mem_tlb_large(addr);
 
         uint64_t page = temp & ~0x3fffff;
@@ -737,7 +762,8 @@ mmutranslatereal_normal(uint32_t addr, int rw)
         return page + (addr & 0x3fffff);
     }
 
-    temp  = rammap((temp & ~0xfff) + ((addr >> 10) & 0xffc));
+    addr3 = (temp & ~0xfff) + ((addr >> 10) & 0xffc);
+    temp  = rammap(addr3);
     temp3 = temp & temp2;
     if (!(temp & 1) || ((CPL == 3) && !(temp3 & 4) && !cpl_override) || (rw && !(temp3 & 2) && (((CPL == 3) && !cpl_override) || ((is486 || isibm486) && (cr0 & WP_FLAG))))) {
         cr2 = addr;
@@ -751,8 +777,8 @@ mmutranslatereal_normal(uint32_t addr, int rw)
         return 0xffffffffffffffffULL;
     }
 
-    rammap(addr2) |= 0x20;
-    rammap((temp2 & ~0xfff) + ((addr >> 10) & 0xffc)) |= (rw ? 0x60 : 0x20);
+    if (!mmu_set_ad(&rammap(addr2), temp2, 0x20) || !mmu_set_ad(&rammap(addr3), temp, rw ? 0x60 : 0x20))
+        goto walk;
 
     return (uint64_t) ((temp & ~0xfff) + (addr & 0xfff));
 }
@@ -766,10 +792,13 @@ mmutranslatereal_pae(uint32_t addr, int rw)
     uint64_t temp4;
     uint64_t addr3;
     uint64_t addr4;
+    uint64_t seen3;
+    uint64_t seen4;
 
     if (cpu_state.abrt)
         return 0xffffffffffffffffULL;
 
+walk:
     temp = temp2 = pae_pdpte[(addr >> 30) & 3] & 0x000000ffffffffffULL;
     if (!(temp & 1)) {
         cr2 = addr;
@@ -784,7 +813,8 @@ mmutranslatereal_pae(uint32_t addr, int rw)
     }
 
     addr3 = (temp & ~0xfffULL) + ((addr >> 18) & 0xff8);
-    temp = temp4 = rammap64(addr3) & 0x000000ffffffffffULL;
+    seen3 = rammap64(addr3);
+    temp = temp4 = seen3 & 0x000000ffffffffffULL;
     temp3        = temp & temp2;
     if (!(temp & 1)) {
         cr2 = addr;
@@ -812,14 +842,16 @@ mmutranslatereal_pae(uint32_t addr, int rw)
 
             return 0xffffffffffffffffULL;
         }
-        rammap64(addr3) |= (rw ? 0x60 : 0x20);
+        if (!mmu_set_ad64(&rammap64(addr3), seen3, rw ? 0x60 : 0x20))
+            goto walk;
         mem_tlb_large(addr);
 
         return ((temp & ~0x1fffffULL) + (addr & 0x1fffffULL)) & 0x000000ffffffffffULL;
     }
 
     addr4 = (temp & ~0xfffULL) + ((addr >> 9) & 0xff8);
-    temp  = rammap64(addr4) & 0x000000ffffffffffULL;
+    seen4 = rammap64(addr4);
+    temp  = seen4 & 0x000000ffffffffffULL;
     temp3 = temp & temp4;
     if (!(temp & 1) || ((CPL == 3) && !(temp3 & 4) && !cpl_override) || (rw && !(temp3 & 2) && (((CPL == 3) && !cpl_override) || ((is486 || isibm486) && (cr0 & WP_FLAG))))) {
         cr2 = addr;
@@ -833,8 +865,8 @@ mmutranslatereal_pae(uint32_t addr, int rw)
         return 0xffffffffffffffffULL;
     }
 
-    rammap64(addr3) |= 0x20;
-    rammap64(addr4) |= (rw ? 0x60 : 0x20);
+    if (!mmu_set_ad64(&rammap64(addr3), seen3, 0x20) || !mmu_set_ad64(&rammap64(addr4), seen4, rw ? 0x60 : 0x20))
+        goto walk;
 
     return ((temp & ~0xfffULL) + ((uint64_t) (addr & 0xfff))) & 0x000000ffffffffffULL;
 }

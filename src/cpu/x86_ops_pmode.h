@@ -325,15 +325,29 @@ static int op0F00_common(uint32_t fetchdat, UNUSED(int ea32))
                 return 1;
             }
             /* A TSS already busy is the #GP LTR gives for one that is not
-               available (Pentium Vol. 3, LTR). */
-            if (access & 2) {
-                x86gpf(NULL, sel & 0xfffc);
-                return 1;
+               available (Pentium Vol. 3, LTR). The bit is tested and set
+               under LOCK# (19.1.2): with another processor running beside
+               this one, as one locked OR. */
+            {
+                uint8_t *p = cpu_mp_atomic ? mem_atomic_ptr(addr + 5, 1) : NULL;
+
+                if (cpu_state.abrt)
+                    return 1;
+                if (p != NULL) {
+                    access = __atomic_fetch_or(p, 0x02, __ATOMIC_SEQ_CST);
+                    mem_atomic_written(p, 1);
+                }
+                if (access & 2) {
+                    x86gpf(NULL, sel & 0xfffc);
+                    return 1;
+                }
+                if (p == NULL) {
+                    writememb(0, addr + 5, access | 2);
+                    if (cpu_state.abrt)
+                        return 1;
+                }
+                access |= 2;
             }
-            writememb(0, addr + 5, access | 2);
-            if (cpu_state.abrt)
-                return 1;
-            access |= 2;
             tr.seg     = sel;
             tr.limit   = limit;
             tr.access  = access;
