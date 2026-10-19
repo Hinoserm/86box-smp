@@ -46,14 +46,13 @@
    be done as a run at all. *host is element 0 in host memory. amask is
    0xffff for 16-bit addressing (the offset must not wrap) or 0xffffffff. */
 static inline uint32_t
-rep_fast_side(const x86seg *seg, uint32_t off, uint32_t esz, int down, uint32_t amask, int write, uint32_t n,
-              uint8_t **host)
+rep_fast_span(const x86seg *seg, uint32_t off, uint32_t esz, int down, uint32_t amask, int write, uint32_t n,
+              uint32_t *linp)
 {
     const uint64_t lo = seg->limit_low;
     const uint64_t hi = seg->limit_high;
     uint32_t       lin;
     uint32_t       room;
-    uintptr_t      e;
     uint64_t       k;
 
     /* As SEG_CHECK_*_REP and CHECK_*_REP would find each element: a
@@ -71,9 +70,6 @@ rep_fast_side(const x86seg *seg, uint32_t off, uint32_t esz, int down, uint32_t 
         return 0;
 
     lin = seg->base + off;
-    e   = write ? writelookup2[lin >> 12] : readlookup2[lin >> 12];
-    if (e == (uintptr_t) LOOKUP_INV)
-        return 0;
 
     /* Whole elements inside this page, starting with element 0. */
     if (!down)
@@ -100,6 +96,25 @@ rep_fast_side(const x86seg *seg, uint32_t off, uint32_t esz, int down, uint32_t 
             n = (uint32_t) k;
     }
 
+    *linp = lin;
+    return n;
+}
+
+/* The same, and only when the TLB maps this side straight to host memory:
+   *host is element 0 there. */
+static inline uint32_t
+rep_fast_side(const x86seg *seg, uint32_t off, uint32_t esz, int down, uint32_t amask, int write, uint32_t n,
+              uint8_t **host)
+{
+    uint32_t  lin;
+    uintptr_t e;
+
+    n = rep_fast_span(seg, off, esz, down, amask, write, n, &lin);
+    if (!n)
+        return 0;
+    e = write ? writelookup2[lin >> 12] : readlookup2[lin >> 12];
+    if (e == (uintptr_t) LOOKUP_INV)
+        return 0;
     *host = (uint8_t *) (e + (uintptr_t) lin);
     return n;
 }
@@ -163,6 +178,30 @@ rep_fast_movs(const x86seg *sseg, uint32_t soff, uint32_t doff, uint32_t esz, ui
     else
         rep_host_copy_elems(d, s, n, esz, down);
     return n;
+}
+
+/* MOVSD from host memory into device memory (the VGA window, a frame
+   buffer), element by element through the device's handler as the
+   per-element path goes, without the checks and the translation it makes
+   again for each (mem_rep_writel_device). Charges the cycles itself and
+   stops where that loop would; 0: take the per-element path. */
+static inline uint32_t
+rep_fast_movsl_device(const x86seg *sseg, uint32_t soff, uint32_t doff, uint32_t amask, uint32_t n, int per,
+                      int cycles_end)
+{
+    const int down = !!(cpu_state.flags & D_FLAG);
+    uint8_t  *s;
+    uint32_t  lin;
+
+    if (dr[7] & 0xff)
+        return 0;
+    n = rep_fast_side(sseg, soff, 4, down, amask, 0, n, &s);
+    if (!n)
+        return 0;
+    n = rep_fast_span(&cpu_state.seg_es, doff, 4, down, amask, 1, n, &lin);
+    if (!n)
+        return 0;
+    return mem_rep_writel_device(lin, s, n, down, per, cycles_end);
 }
 
 /* STOS. */

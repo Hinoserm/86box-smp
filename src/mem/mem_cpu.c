@@ -2201,6 +2201,57 @@ readmemll_no_mmut(uint32_t addr, uint32_t *a64)
 }
 
 /* Write a long to memory without MMU translation - results of previous MMU translation passed as array. */
+/* A run of REP MOVSD's doublewords into device memory (the VGA window, a
+   frame buffer): up to n, all on the linear page of lin and aligned, read
+   from host memory at src. Done only when the per-element path would send
+   each straight to the mapping's doubleword handler with nothing else to
+   decide: no TLB entry or code page for the page, its translation held
+   (no walk to make, so no fault to raise), the mapping taking doublewords.
+   Each element is charged per cycles as the per-element loop charges it,
+   and the run stops after the one that leaves cycles below cycles_end, or
+   one after which the access was aborted, as that loop does. Returns the
+   elements done; 0 leaves the instruction to the per-element path. */
+uint32_t
+mem_rep_writel_device(uint32_t lin, const uint8_t *src, uint32_t n, int down, int per, int cycles_end)
+{
+    const uint32_t vpage = lin >> 12;
+    mem_mapping_t *map;
+    uint32_t       phys;
+    uint32_t       i;
+
+    if ((lin & 3) || (writelookup2[vpage] != (uintptr_t) LOOKUP_INV) || (page_lookup[vpage] != NULL))
+        return 0;
+    if (cr0 >> 31) {
+        const int     e    = vpage & (MEM_MMIO_TLB - 1);
+        const uint8_t user = (CPL == 3);
+
+        if (cpl_override || (mem_mmio_tlb[e].gen != mem_mmio_tlb_gen) || (mem_mmio_tlb[e].vpage != vpage) ||
+            (mem_mmio_tlb[e].user != user) || !mem_mmio_tlb[e].write || (mem_mmio_tlb[e].phys > 0xfffff000ULL))
+            return 0;
+        phys = ((uint32_t) mem_mmio_tlb[e].phys | (lin & 0xfff)) & rammask;
+    } else
+        phys = lin & rammask;
+    map = write_mapping[phys >> MEM_GRANULARITY_BITS];
+    if ((map == NULL) || (map->write_l == NULL))
+        return 0;
+
+    for (i = 0; i < n;) {
+        const uint32_t off = down ? (0u - (i << 2)) : (i << 2);
+        const uint32_t val = mem_ld32((void *) (down ? (src - (i << 2)) : (src + (i << 2))));
+        const uint32_t a   = lin + off;
+
+        IDLE_NOTE(a, 4, 1, val);
+        GDBSTUB_MEM_ACCESS(a, GDBSTUB_MEM_WRITE, 4);
+        mem_logical_addr = a;
+        MAP_WRITE_L(map, phys + off, val);
+        i++;
+        cycles -= per;
+        if (cpu_state.abrt || (cycles < cycles_end))
+            break;
+    }
+    return i;
+}
+
 void
 writememll_no_mmut(uint32_t addr, uint32_t *a64, uint32_t val)
 {

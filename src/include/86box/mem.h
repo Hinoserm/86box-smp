@@ -499,6 +499,7 @@ extern uint16_t readmemwl_no_mmut(uint32_t addr, uint32_t *a64);
 extern void     writememwl_no_mmut(uint32_t addr, uint32_t *a64, uint16_t val);
 extern uint32_t readmemll_no_mmut(uint32_t addr, uint32_t *a64);
 extern void     writememll_no_mmut(uint32_t addr, uint32_t *a64, uint32_t val);
+extern uint32_t mem_rep_writel_device(uint32_t lin, const uint8_t *src, uint32_t n, int down, int per, int cycles_end);
 
 extern void do_mmutranslate(uint32_t addr, uint32_t *a64, int num, int write);
 

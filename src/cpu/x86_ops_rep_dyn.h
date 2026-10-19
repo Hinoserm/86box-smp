@@ -359,6 +359,23 @@ extern int rep_chunk_continue(void);
                         break;                                                                                    \
                     continue;                                                                                     \
                 }                                                                                                 \
+                const uint32_t drun = rep_fast_movsl_device(cpu_state.ea_seg, SRC_REG, DEST_REG, REP_AMASK_##size, \
+                                                            CNT_REG, is486 ? 3 : 4, cycles_end);                  \
+                if (drun) {                                                                                       \
+                    if (cpu_state.flags & D_FLAG) {                                                               \
+                        DEST_REG -= drun * 4;                                                                     \
+                        SRC_REG -= drun * 4;                                                                      \
+                    } else {                                                                                      \
+                        DEST_REG += drun * 4;                                                                     \
+                        SRC_REG += drun * 4;                                                                      \
+                    }                                                                                             \
+                    CNT_REG -= drun;                                                                              \
+                    if (cpu_state.abrt)                                                                           \
+                        break;                                                                                    \
+                    if ((cycles < cycles_end) && !REP_CHUNK_ON(cycles_end))                                       \
+                        break;                                                                                    \
+                    continue;                                                                                     \
+                }                                                                                                 \
             }                                                                                                     \
             uint32_t temp;                                                                                        \
                                                                                                                   \
