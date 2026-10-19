@@ -1810,6 +1810,9 @@ svga_conv_16to32(UNUSED(struct svga_t *svga), uint16_t color, uint8_t bpp)
     return (bpp == 15) ? video_15to32[color] : video_16to32[color];
 }
 
+static uint32_t svga_writel_run(uint32_t addr, const uint8_t *src, uint32_t n, int down, int per, int cycles_end,
+                                void *priv);
+
 int
 svga_init(const device_t *info, svga_t *svga, void *priv, int memsize,
           void (*recalctimings_ex)(struct svga_t *svga),
@@ -1880,6 +1883,8 @@ svga_init(const device_t *info, svga_t *svga, void *priv, int memsize,
                         svga_read, svga_readw, svga_readl,
                         svga_write, svga_writew, svga_writel,
                         NULL, MEM_MAPPING_EXTERNAL, svga);
+        svga->mapping.write_l_run    = svga_writel_run;
+        svga->mapping.write_l_run_of = svga_writel;
     /* The chances of ever seeing a C-BUS (S)VGA card are approximately zero, but you never know. */
     } else if ((info->flags & DEVICE_CBUS) || ((info->flags & machines[machine].bus_flags) & DEVICE_ISA16)) {
         svga->read = svga_read;
@@ -2633,6 +2638,31 @@ svga_writel_common(uint32_t addr, uint32_t val, uint8_t linear, void *priv)
 
     svga->changedvram[addr >> 12]   = svga->monitor->mon_changeframecount;
     *(uint32_t *) &svga->vram[addr] = val;
+}
+
+/* REP MOVSD into the window (mem_mapping_t write_l_run): in the plain
+   chained mode, each doubleword straight to the planes as svga_writel
+   does it, without a call through the mapping for each. */
+static uint32_t
+svga_writel_run(uint32_t addr, const uint8_t *src, uint32_t n, int down, int per, int cycles_end, void *priv)
+{
+    svga_t  *svga = (svga_t *) priv;
+    uint32_t i;
+
+    if (svga->fast || (addr & 3) || !svga_chain4_plain(svga))
+        return 0;
+    for (i = 0; i < n;) {
+        uint32_t val;
+
+        memcpy(&val, down ? (src - (i << 2)) : (src + (i << 2)), 4);
+        cycles -= svga->monitor->mon_video_timing_write_l;
+        svga_write_chain4(svga, down ? (addr - (i << 2)) : (addr + (i << 2)), val, 4, 0);
+        i++;
+        cycles -= per;
+        if (cycles < cycles_end)
+            break;
+    }
+    return i;
 }
 
 void

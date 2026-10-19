@@ -1560,6 +1560,8 @@ mem_mapping_set(mem_mapping_t *map,
     map->priv    = priv;
     map->next    = NULL;
     map->ap_local_write = NULL;
+    map->write_l_run    = NULL;
+    map->write_l_run_of = NULL;
 
     /*
        The ALi M6117 puts the RAM directly onto the internal 32-bit

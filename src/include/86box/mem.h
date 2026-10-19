@@ -263,6 +263,16 @@ typedef struct _mem_mapping_ {
        more for than memory (a command FIFO's pointers) answers no. */
     int (*ap_local_write)(uint32_t addr, void *priv);
 
+    /* Optional: a run of REP MOVSD's doublewords at addr, each element read
+       from host memory at src (going down from it when down), done as
+       write_l would do them one at a time, charging per cycles for each on
+       top and stopping after the one that leaves cycles below cycles_end;
+       returns how many it did, 0 to have them done one at a time. Used only
+       while write_l is still write_l_run_of. */
+    uint32_t (*write_l_run)(uint32_t addr, const uint8_t *src, uint32_t n, int down, int per, int cycles_end,
+                            void *priv);
+    void (*write_l_run_of)(uint32_t addr, uint32_t val, void *priv);
+
     /* There is never a needed to pass a pointer to the mapping itself, it is much preferable to
        prepare a structure with the requires data (usually, the base address and mask) instead. */
     void *priv; /* backpointer to device */

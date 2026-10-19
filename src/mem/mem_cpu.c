@@ -2235,6 +2235,18 @@ mem_rep_writel_device(uint32_t lin, const uint8_t *src, uint32_t n, int down, in
     if ((map == NULL) || (map->write_l == NULL))
         return 0;
 
+#ifndef CPU_AP_CORE
+    /* The device's own run, when nothing watches these addresses. */
+    if ((map->write_l_run != NULL) && (map->write_l_run_of == map->write_l) && !x86_idle_watch &&
+        !GDBSTUB_WATCHED(lin)) {
+        i = map->write_l_run(phys, src, n, down, per, cycles_end, map->priv);
+        if (i) {
+            mem_logical_addr = lin + (down ? (0u - ((i - 1) << 2)) : ((i - 1) << 2));
+            return i;
+        }
+    }
+#endif
+
     for (i = 0; i < n;) {
         const uint32_t off = down ? (0u - (i << 2)) : (i << 2);
         const uint32_t val = mem_ld32((void *) (down ? (src - (i << 2)) : (src + (i << 2))));
