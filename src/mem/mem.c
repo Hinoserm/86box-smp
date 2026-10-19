@@ -59,7 +59,6 @@ mem_mapping_t ram_split_mapping;
 mem_mapping_t bios_mapping;
 mem_mapping_t bios_high_mapping;
 
-page_t  *pages;       /* RAM page table */
 uint32_t pages_sz;    /* #pages in table */
 
 uint8_t *ram;  /* the virtual RAM */
@@ -84,11 +83,10 @@ int mem_a20_alt     = 0;
 int mem_a20_chipset = 0;
 int mem_a20_state   = 0;
 
-uint64_t *byte_dirty_mask;
-uint64_t *byte_code_present_mask;
-/* The masks cover RAM only; every page beyond it shares these. Nothing
-   writes there through the RAM handlers, so they only ever collect the
-   code-present bits of blocks run from ROM above RAM. */
+/* The masks cover RAM only; every page beyond it shares these, in every
+   copy of the page table. Nothing writes there through the RAM handlers,
+   so they only ever collect the code-present bits of blocks run from ROM
+   above RAM. */
 static uint64_t byte_dirty_mask_none[64];
 static uint64_t byte_code_present_mask_none[64];
 
@@ -104,8 +102,237 @@ mem_page_set_byte_masks(page_t *p, uint32_t page_nr)
     }
 }
 
-uint32_t purgable_page_list_head = 0;
-int      purgeable_page_count    = 0;
+/* Every copy of the page table. The table carries a code cache's
+   bookkeeping (blocks, purge list, code-present and dirty masks) beside
+   the machine's half of each entry (the memory behind it, its write
+   handlers), and each processor core has a code cache of its own, so it
+   keeps a table of its own (mem_cpu.c). Copy 0's is `pages`, which the
+   machine's code writes; the others follow its machine half
+   (mem_pages_mirror), and a write that dirties a page dirties it in each.
+   With one copy a write takes the path it always has. */
+static mem_page_copy_t mem_page_copies[MEM_PAGE_COPIES_MAX];
+int                    mem_page_copy_count;
+
+static void mem_pages_alloc_copy(int i);
+static void mem_pages_free_copy(int i);
+
+void
+mem_page_copy_register(const mem_page_copy_t *c)
+{
+    for (int i = 0; i < mem_page_copy_count; i++)
+        if (mem_page_copies[i].pages == c->pages)
+            return;
+
+    if (mem_page_copy_count >= MEM_PAGE_COPIES_MAX)
+        fatal("mem_page_copy_register: too many copies\n");
+
+    mem_page_copies[mem_page_copy_count++] = *c;
+
+    /* Joining a machine already built: its table now. */
+    if ((mem_page_copy_count > 1) && (pages != NULL) && (*c->pages == NULL)) {
+        mem_pages_alloc_copy(mem_page_copy_count - 1);
+        mem_pages_mirror(0, pages_sz, 1);
+    }
+}
+
+void
+mem_page_copy_unregister(page_t **copy_pages)
+{
+    for (int i = 1; i < mem_page_copy_count; i++) {
+        if (mem_page_copies[i].pages == copy_pages) {
+            mem_pages_free_copy(i);
+            mem_page_copies[i] = mem_page_copies[--mem_page_copy_count];
+            break;
+        }
+    }
+}
+
+/* Whether a core other than the one whose table is `mine` has compiled
+   code on page `idx`: a write there takes the tracked path in every core,
+   or the other core's code never sees it change. */
+int
+mem_page_code_in_other_copy(uint32_t idx, const page_t *mine)
+{
+    for (int i = 0; i < mem_page_copy_count; i++) {
+        const page_t *base = *mem_page_copies[i].pages;
+
+        if ((base == NULL) || (base == mine) || (idx >= pages_sz))
+            continue;
+        if (base[idx].block || base[idx].block_2)
+            return 1;
+    }
+    return 0;
+}
+
+/* Which copy a page entry is in. */
+static int
+mem_page_copy_of(const page_t *page)
+{
+    for (int i = 0; i < mem_page_copy_count; i++) {
+        const page_t *base = *mem_page_copies[i].pages;
+
+        if ((base != NULL) && (page >= base) && (page < (base + pages_sz)))
+            return i;
+    }
+    return 0;
+}
+
+/* Put a page on its own copy's list of pages to purge. */
+static __inline void
+mem_page_add_evict(page_t *page)
+{
+    if (mem_page_copy_count <= 1)
+        page_add_to_evict_list(page);
+    else
+        mem_page_copies[mem_page_copy_of(page)].add_to_evict_list(page);
+}
+
+#ifdef CODEGEN_CHAIN
+/* Whether a write with these masks reached compiled code on the page. */
+static __inline int
+mem_page_code_reached(const page_t *p, uint64_t mask, int byte_offset, uint64_t bm0, uint64_t bm1)
+{
+    if (!p->block && !p->block_2)
+        return 0;
+    return (p->code_present_mask & mask) || (p->byte_code_present_mask[byte_offset] & bm0) ||
+           (bm1 && (p->byte_code_present_mask[byte_offset + 1] & bm1));
+}
+
+/* A write changed bytes of the page: if it reached compiled code the
+   core whose table the entry is in has linked to, those links go
+   (codegen_page_code_hit), as only a link skips the dirty test a dispatch
+   makes. */
+static __inline void
+mem_page_code_written(const page_t *p, uint64_t mask, int byte_offset, uint64_t bm0, uint64_t bm1)
+{
+    if (!mem_page_code_reached(p, mask, byte_offset, bm0, bm1))
+        return;
+    if (mem_page_copy_count <= 1)
+        codegen_page_code_hit(p, mask, byte_offset, bm0, bm1);
+    else
+        mem_page_copies[mem_page_copy_of(p)].code_hit(p, mask, byte_offset, bm0, bm1);
+}
+#endif
+
+/* The same bits a write just set in one copy, set in the others. */
+static void
+mem_page_mark_others(const page_t *page, uint64_t mask, int byte_offset, uint64_t bm0, uint64_t bm1)
+{
+    const int      own = mem_page_copy_of(page);
+    const uint32_t idx = (uint32_t) (page - *mem_page_copies[own].pages);
+
+    for (int i = 0; i < mem_page_copy_count; i++) {
+        page_t *o;
+
+        if ((i == own) || (*mem_page_copies[i].pages == NULL))
+            continue;
+
+        o = &(*mem_page_copies[i].pages)[idx];
+        o->dirty_mask |= mask;
+        o->byte_dirty_mask[byte_offset] |= bm0;
+        if (bm1)
+            o->byte_dirty_mask[byte_offset + 1] |= bm1;
+        if (!page_in_evict_list(o) &&
+            ((o->code_present_mask & mask) || (o->byte_code_present_mask[byte_offset] & bm0) ||
+             (bm1 && (o->byte_code_present_mask[byte_offset + 1] & bm1))))
+            mem_page_copies[i].add_to_evict_list(o);
+#ifdef CODEGEN_CHAIN
+        if (mem_page_code_reached(o, mask, byte_offset, bm0, bm1))
+            mem_page_copies[i].code_hit(o, mask, byte_offset, bm0, bm1);
+#endif
+    }
+}
+
+/* Where copy 0's byte mask `mask` is, in a copy whose masks start at
+   `copy`: the same RAM page's, or the ones every page beyond RAM shares. */
+static uint64_t *
+mem_page_mask_in(uint64_t *mask, const uint64_t *base, uint64_t *copy)
+{
+    if ((base != NULL) && (mask >= base) && (mask < (base + ((size_t) (mem_size >> 2) * 64))))
+        return copy + (mask - base);
+    return mask;
+}
+
+/* Copy 0's machine half of entries [first, first + count) into the other
+   copies: the memory behind each, its write handlers and which RAM page's
+   byte masks it uses. reset_evict takes them off their purge lists, as
+   the machine's code does to copy 0 when it rebuilds entries. */
+void
+mem_pages_mirror(uint32_t first, uint32_t count, int reset_evict)
+{
+    for (int i = 1; i < mem_page_copy_count; i++) {
+        page_t   *d  = *mem_page_copies[i].pages;
+        uint64_t *bd = *mem_page_copies[i].byte_dirty_mask;
+        uint64_t *bc = *mem_page_copies[i].byte_code_present_mask;
+
+        if (d == NULL)
+            continue;
+
+        for (uint32_t c = first; (c < (first + count)) && (c < pages_sz); c++) {
+            d[c].mem     = pages[c].mem;
+            d[c].write_b = pages[c].write_b;
+            d[c].write_w = pages[c].write_w;
+            d[c].write_l = pages[c].write_l;
+            if (pages[c].byte_dirty_mask)
+                d[c].byte_dirty_mask = mem_page_mask_in(pages[c].byte_dirty_mask, byte_dirty_mask, bd);
+            if (pages[c].byte_code_present_mask)
+                d[c].byte_code_present_mask = mem_page_mask_in(pages[c].byte_code_present_mask,
+                                                               byte_code_present_mask, bc);
+            if (reset_evict)
+                d[c].evict_prev = EVICT_NOT_IN_LIST;
+        }
+    }
+}
+
+/* The copies other than 0 get tables of their own on every reset. */
+static void
+mem_pages_free_copy(int i)
+{
+    free(*mem_page_copies[i].pages);
+    free(*mem_page_copies[i].byte_dirty_mask);
+    free(*mem_page_copies[i].byte_code_present_mask);
+    *mem_page_copies[i].pages                  = NULL;
+    *mem_page_copies[i].byte_dirty_mask        = NULL;
+    *mem_page_copies[i].byte_code_present_mask = NULL;
+}
+
+static void
+mem_pages_free_copies(void)
+{
+    for (int i = 1; i < mem_page_copy_count; i++)
+        mem_pages_free_copy(i);
+}
+
+static void
+mem_pages_alloc_copy(int i)
+{
+    page_t *d;
+
+    *mem_page_copies[i].pages                  = (page_t *) calloc(pages_sz, sizeof(page_t));
+    *mem_page_copies[i].byte_dirty_mask        = calloc(1, ((size_t) mem_size * 1024) / 8);
+    *mem_page_copies[i].byte_code_present_mask = calloc(1, ((size_t) mem_size * 1024) / 8);
+    if ((*mem_page_copies[i].pages == NULL) || (*mem_page_copies[i].byte_dirty_mask == NULL) ||
+        (*mem_page_copies[i].byte_code_present_mask == NULL))
+        fatal("mem_pages_alloc_copy: out of memory\n");
+
+    /* Its own half: no blocks, off the purge list. */
+    d = *mem_page_copies[i].pages;
+    for (uint32_t c = 0; c < pages_sz; c++) {
+        d[c].block      = BLOCK_INVALID;
+        d[c].block_2    = BLOCK_INVALID;
+        d[c].head       = BLOCK_INVALID;
+        d[c].evict_prev = EVICT_NOT_IN_LIST;
+    }
+    mem_page_copies[i].reset_evict_list();
+}
+
+static void
+mem_pages_alloc_copies(void)
+{
+    for (int i = 1; i < mem_page_copy_count; i++)
+        mem_pages_alloc_copy(i);
+    mem_pages_mirror(0, pages_sz, 1);
+}
 
 /* What a processor sees, twice over: [0] outside SMM, [1] inside it (or
    with a Cyrix's SMAC set). The two differ only where the chipset decodes
@@ -496,53 +723,6 @@ mem_read_raml(uint32_t addr, UNUSED(void *priv))
     return *(uint32_t *) &ram[addr];
 }
 
-static inline int
-page_index(page_t *page)
-{
-    return ((uintptr_t) page - (uintptr_t) pages) / sizeof(page_t);
-}
-
-void
-page_add_to_evict_list(page_t *page)
-{
-    pages[purgable_page_list_head].evict_prev = page_index(page);
-    page->evict_next                          = purgable_page_list_head;
-    page->evict_prev                          = 0;
-    purgable_page_list_head                   = pages[purgable_page_list_head].evict_prev;
-    purgeable_page_count++;
-}
-
-void
-page_remove_from_evict_list(page_t *page)
-{
-    if (!page_in_evict_list(page))
-        fatal("page_remove_from_evict_list: not in evict list!\n");
-    if (page->evict_prev)
-        pages[page->evict_prev].evict_next = page->evict_next;
-    else
-        purgable_page_list_head = page->evict_next;
-    if (page->evict_next)
-        pages[page->evict_next].evict_prev = page->evict_prev;
-    page->evict_prev = EVICT_NOT_IN_LIST;
-    purgeable_page_count--;
-}
-
-#    ifdef CODEGEN_CHAIN
-/* A write changed compiled code on the page: if it reached a linked block,
-   that block's links go (codegen_page_code_hit), as only a link skips the
-   dirty test a dispatch makes. */
-static __inline void
-mem_page_code_written(const page_t *p, uint64_t mask, int byte_offset, uint64_t bm0, uint64_t bm1)
-{
-    if (!p->block && !p->block_2)
-        return;
-    if (!((p->code_present_mask & mask) || (p->byte_code_present_mask[byte_offset] & bm0) ||
-          (bm1 && (p->byte_code_present_mask[byte_offset + 1] & bm1))))
-        return;
-    codegen_page_code_hit(p, mask, byte_offset, bm0, bm1);
-}
-#    endif
-
 void
 mem_write_ramb_page(uint32_t addr, uint8_t val, page_t *page)
 {
@@ -561,13 +741,15 @@ mem_write_ramb_page(uint32_t addr, uint8_t val, page_t *page)
         page->mem[addr & 0xfff] = val;
         page->dirty_mask |= mask;
         if ((page->code_present_mask & mask) && !page_in_evict_list(page))
-            page_add_to_evict_list(page);
+            mem_page_add_evict(page);
         page->byte_dirty_mask[byte_offset] |= byte_mask;
         if ((page->byte_code_present_mask[byte_offset] & byte_mask) && !page_in_evict_list(page))
-            page_add_to_evict_list(page);
+            mem_page_add_evict(page);
 #    ifdef CODEGEN_CHAIN
         mem_page_code_written(page, mask, byte_offset, byte_mask, 0);
 #    endif
+        if (mem_page_copy_count > 1)
+            mem_page_mark_others(page, mask, byte_offset, byte_mask, 0);
     }
 }
 
@@ -585,27 +767,31 @@ mem_write_ramw_page(uint32_t addr, uint16_t val, page_t *page)
         uint64_t mask        = (uint64_t) 1 << ((addr >> PAGE_MASK_SHIFT) & PAGE_MASK_MASK);
         int      byte_offset = (addr >> PAGE_BYTE_MASK_SHIFT) & PAGE_BYTE_MASK_OFFSET_MASK;
         uint64_t byte_mask   = (uint64_t) 1 << (addr & PAGE_BYTE_MASK_MASK);
+        uint64_t byte_mask_2 = 0;
 
         if ((addr & 0xf) == 0xf)
             mask |= (mask << 1);
         *(uint16_t *) &page->mem[addr & 0xfff] = val;
         page->dirty_mask |= mask;
         if ((page->code_present_mask & mask) && !page_in_evict_list(page))
-            page_add_to_evict_list(page);
+            mem_page_add_evict(page);
         if ((addr & PAGE_BYTE_MASK_MASK) == PAGE_BYTE_MASK_MASK) {
+            byte_mask_2 = 1;
             page->byte_dirty_mask[byte_offset + 1] |= 1;
             if ((page->byte_code_present_mask[byte_offset + 1] & 1) && !page_in_evict_list(page))
-                page_add_to_evict_list(page);
+                mem_page_add_evict(page);
         } else
             byte_mask |= (byte_mask << 1);
 
         page->byte_dirty_mask[byte_offset] |= byte_mask;
 
         if ((page->byte_code_present_mask[byte_offset] & byte_mask) && !page_in_evict_list(page))
-            page_add_to_evict_list(page);
+            mem_page_add_evict(page);
 #    ifdef CODEGEN_CHAIN
-        mem_page_code_written(page, mask, byte_offset, byte_mask, ((addr & PAGE_BYTE_MASK_MASK) == PAGE_BYTE_MASK_MASK) ? 1 : 0);
+        mem_page_code_written(page, mask, byte_offset, byte_mask, byte_mask_2);
 #    endif
+        if (mem_page_copy_count > 1)
+            mem_page_mark_others(page, mask, byte_offset, byte_mask, byte_mask_2);
     }
 }
 
@@ -630,18 +816,20 @@ mem_write_raml_page(uint32_t addr, uint32_t val, page_t *page)
         page->dirty_mask |= mask;
         page->byte_dirty_mask[byte_offset] |= byte_mask;
         if (!page_in_evict_list(page) && ((page->code_present_mask & mask) || (page->byte_code_present_mask[byte_offset] & byte_mask)))
-            page_add_to_evict_list(page);
+            mem_page_add_evict(page);
         uint64_t byte_mask_2 = 0;
         if ((addr & PAGE_BYTE_MASK_MASK) > (PAGE_BYTE_MASK_MASK - 3)) {
             byte_mask_2 = 0xf >> (4 - (addr & 3));
 
             page->byte_dirty_mask[byte_offset + 1] |= byte_mask_2;
             if ((page->byte_code_present_mask[byte_offset + 1] & byte_mask_2) && !page_in_evict_list(page))
-                page_add_to_evict_list(page);
+                mem_page_add_evict(page);
         }
 #    ifdef CODEGEN_CHAIN
         mem_page_code_written(page, mask, byte_offset, byte_mask, byte_mask_2);
 #    endif
+        if (mem_page_copy_count > 1)
+            mem_page_mark_others(page, mask, byte_offset, byte_mask, byte_mask_2);
     }
 }
 
@@ -828,18 +1016,22 @@ mem_invalidate_range(uint32_t start_addr, uint32_t end_addr)
         if ((start_addr >> 12) >= pages_sz)
             break;
 
-        page = &pages[start_addr >> 12];
-        if (page) {
+        /* In every copy of the page table: each core's code there. */
+        for (int i = 0; i < mem_page_copy_count; i++) {
+            if (*mem_page_copies[i].pages == NULL)
+                continue;
+
+            page             = &(*mem_page_copies[i].pages)[start_addr >> 12];
             page->dirty_mask = 0xffffffffffffffffULL;
 
             if ((page->mem != page_ff) && page->byte_dirty_mask)
                 memset(page->byte_dirty_mask, 0xff, 64 * sizeof(uint64_t));
 
             if (!page_in_evict_list(page))
-                page_add_to_evict_list(page);
+                mem_page_copies[i].add_to_evict_list(page);
 #    ifdef CODEGEN_CHAIN
             if (page->block || page->block_2)
-                codegen_page_code_drop(page);
+                mem_page_copies[i].code_drop(page);
 #    endif
         }
     }
@@ -1446,6 +1638,8 @@ mem_reset(void)
 
     memset(page_ff, 0xff, sizeof(page_ff));
 
+    mem_pages_free_copies();
+
     if (byte_dirty_mask) {
         free(byte_dirty_mask);
         byte_dirty_mask = NULL;
@@ -1543,6 +1737,8 @@ mem_reset(void)
         mem_page_set_byte_masks(&pages[c], c);
     }
 
+    mem_pages_alloc_copies();
+
     memset(mem_exec_view, 0x00, sizeof(mem_exec_view));
     mem_cpu_reset();
     memset(_mem_wp, 0x00, sizeof(_mem_wp));
@@ -1594,8 +1790,8 @@ mem_reset(void)
 
     mem_a20_init();
 
-    purgable_page_list_head = 0;
-    purgeable_page_count    = 0;
+    for (int i = 0; i < mem_page_copy_count; i++)
+        mem_page_copies[i].reset_evict_list();
 }
 
 void
@@ -1606,6 +1802,7 @@ mem_init(void)
     pages     = NULL;
 
     mem_tlb_register(mem_tlb_default());
+    mem_cpu_register_pages();
 }
 
 static void
@@ -1722,6 +1919,8 @@ mem_remap_top_ex_common(int kb, uint32_t start, int mid)
         }
     }
 
+    mem_pages_mirror(0, pages_sz, 0);
+
     flushmmucache();
 }
 
@@ -1747,22 +1946,6 @@ void
 mem_remap_top_nomid(int kb)
 {
     mem_remap_top_ex_nomid(kb, (mem_size >= 1024) ? mem_size : 1024);
-}
-
-void
-mem_reset_page_blocks(void)
-{
-    if (pages == NULL)
-        return;
-
-    for (uint32_t c = 0; c < pages_sz; c++) {
-        pages[c].write_b = mem_write_ramb_page;
-        pages[c].write_w = mem_write_ramw_page;
-        pages[c].write_l = mem_write_raml_page;
-        pages[c].block   = BLOCK_INVALID;
-        pages[c].block_2 = BLOCK_INVALID;
-        pages[c].head    = BLOCK_INVALID;
-    }
 }
 
 void

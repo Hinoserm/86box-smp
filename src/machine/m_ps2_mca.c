@@ -1985,6 +1985,7 @@ mem_remap_top_ps2(int kb, uint32_t start, uint32_t phys_base)
         }
         mem_page_set_byte_masks(&pages[c], addr >> 12);
     }
+    mem_pages_mirror(start >> 12, (size << 10) >> 12, 0);
 
     flushmmucache();
 }

@@ -133,6 +133,7 @@ row_allocate(uint8_t row_id, uint8_t set)
         /* The RAM page behind it, as mem_remap_top() keys them. */
         mem_page_set_byte_masks(&pages[c], (rows[row_id].ram_base + ((offset << 12) & rows[row_id].ram_mask)) >> 12);
     }
+    mem_pages_mirror(rows[row_id].host_base >> 12, rows[row_id].host_size >> 12, 1);
 
     if (rows[row_id].host_base >= 0x00100000) {
         mem_set_mem_state_both(rows[row_id].host_base, rows[row_id].host_size,
@@ -266,6 +267,7 @@ row_init(const device_t *info)
         pages[c].evict_prev = EVICT_NOT_IN_LIST;
         mem_page_set_byte_masks(&pages[c], c);
     }
+    mem_pages_mirror(0, pages_sz, 1);
 
     /* Set all memory space above the default allocated area to external. */
     boundary = ((uint32_t) rows_default) * row_unit;

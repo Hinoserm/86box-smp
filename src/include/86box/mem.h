@@ -238,6 +238,28 @@ page_in_evict_list(page_t *page)
 void page_remove_from_evict_list(page_t *page);
 void page_add_to_evict_list(page_t *page);
 
+/* A processor core's own copy of the page table (mem.c): where it lives,
+   the byte masks its entries point into, how one of its pages goes on its
+   purge list, and what its code cache does when a write reaches its code
+   (codegen_page_code_hit/_drop; NULL without chains). */
+#define MEM_PAGE_COPIES_MAX 4
+typedef struct mem_page_copy_t {
+    page_t   **pages;
+    uint64_t **byte_dirty_mask;
+    uint64_t **byte_code_present_mask;
+    void     (*add_to_evict_list)(page_t *page);
+    void     (*reset_evict_list)(void);
+    void     (*code_hit)(const page_t *p, uint64_t mask, int byte_offset, uint64_t bm0, uint64_t bm1);
+    void     (*code_drop)(const page_t *p);
+} mem_page_copy_t;
+
+extern int  mem_page_copy_count;
+extern void mem_page_copy_register(const mem_page_copy_t *c);
+extern void mem_page_copy_unregister(page_t **copy_pages);
+extern int  mem_page_code_in_other_copy(uint32_t idx, const page_t *mine);
+extern void mem_pages_mirror(uint32_t first, uint32_t count, int reset_evict);
+extern void mem_cpu_register_pages(void);
+
 /* One processor's software TLB (mem_cpu.c): the lookup tables, the rings
    of entries live in them, and whether another set's flush has reached it. */
 #define MEM_TLB_STALE_WRITE 1

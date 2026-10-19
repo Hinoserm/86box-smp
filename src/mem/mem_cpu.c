@@ -7,9 +7,10 @@
  *          This file is part of the 86Box distribution.
  *
  *          Memory as one processor sees it: its TLB, its page walks, its
- *          reads and writes through the map. Everything here is that
- *          processor's own; the map, RAM and the page table it reaches
- *          are the machine's (mem.c).
+ *          reads and writes through the map, and its core's copy of the
+ *          page table. Everything here is that processor's own; the map
+ *          and RAM it reaches are the machine's (mem.c), which keeps the
+ *          machine's half of every copy of the page table the same.
  *
  * Authors: Sarah Walker, <https://pcem-emulator.co.uk/>
  *          Miran Grca, <mgrca8@gmail.com>
@@ -1140,7 +1141,8 @@ addwritelookup_bank(uint32_t virt, uint32_t phys)
        such a page must take the tracked page_lookup path, or self-modifying
        code in the second page never invalidates the spanning block. */
 #ifdef USE_DYNAREC
-    if (pages[phys >> 12].block || pages[phys >> 12].block_2 || (phys & ~0xfff) == recomp_page) {
+    if (pages[phys >> 12].block || pages[phys >> 12].block_2 || (phys & ~0xfff) == recomp_page ||
+        ((mem_page_copy_count > 1) && mem_page_code_in_other_copy(phys >> 12, pages))) {
 #else
     if (pages[phys >> 12].block || pages[phys >> 12].block_2) {
 #endif
@@ -2212,6 +2214,92 @@ mem_cpu_reset(void)
 {
     /* Reads of absent physical memory return floating high bits - see rammap() above. */
     memset(mem_unbacked_pt_page, 0xff, sizeof(mem_unbacked_pt_page));
+}
+
+/* This core's copy of the page table, and its code cache's bookkeeping in
+   it: the blocks on each page, the purge list threaded through it, and
+   the byte masks its entries point into. mem.c keeps the machine's half of
+   every entry the same in each copy. */
+page_t *pages;
+
+uint64_t *byte_dirty_mask;
+uint64_t *byte_code_present_mask;
+
+uint32_t purgable_page_list_head = 0;
+int      purgeable_page_count    = 0;
+
+static inline int
+page_index(page_t *page)
+{
+    return ((uintptr_t) page - (uintptr_t) pages) / sizeof(page_t);
+}
+
+void
+page_add_to_evict_list(page_t *page)
+{
+    pages[purgable_page_list_head].evict_prev = page_index(page);
+    page->evict_next                          = purgable_page_list_head;
+    page->evict_prev                          = 0;
+    purgable_page_list_head                   = pages[purgable_page_list_head].evict_prev;
+    purgeable_page_count++;
+}
+
+void
+page_remove_from_evict_list(page_t *page)
+{
+    if (!page_in_evict_list(page))
+        fatal("page_remove_from_evict_list: not in evict list!\n");
+    if (page->evict_prev)
+        pages[page->evict_prev].evict_next = page->evict_next;
+    else
+        purgable_page_list_head = page->evict_next;
+    if (page->evict_next)
+        pages[page->evict_next].evict_prev = page->evict_prev;
+    page->evict_prev = EVICT_NOT_IN_LIST;
+    purgeable_page_count--;
+}
+
+/* A fresh page table has nothing on its purge list. */
+static void
+mem_cpu_reset_evict_list(void)
+{
+    purgable_page_list_head = 0;
+    purgeable_page_count    = 0;
+}
+
+/* This core's table joins the copies mem.c keeps. */
+void
+mem_cpu_register_pages(void)
+{
+    static const mem_page_copy_t c = {
+        .pages                  = &pages,
+        .byte_dirty_mask        = &byte_dirty_mask,
+        .byte_code_present_mask = &byte_code_present_mask,
+        .add_to_evict_list      = page_add_to_evict_list,
+        .reset_evict_list       = mem_cpu_reset_evict_list,
+#ifdef CODEGEN_CHAIN
+        .code_hit               = codegen_page_code_hit,
+        .code_drop              = codegen_page_code_drop
+#endif
+    };
+
+    mem_page_copy_register(&c);
+}
+
+void
+mem_reset_page_blocks(void)
+{
+    if (pages == NULL)
+        return;
+
+    for (uint32_t c = 0; c < pages_sz; c++) {
+        pages[c].write_b = mem_write_ramb_page;
+        pages[c].write_w = mem_write_ramw_page;
+        pages[c].write_l = mem_write_raml_page;
+        pages[c].block   = BLOCK_INVALID;
+        pages[c].block_2 = BLOCK_INVALID;
+        pages[c].head    = BLOCK_INVALID;
+    }
 }
 
 /* Which view of the map this processor's accesses go through. The caller
