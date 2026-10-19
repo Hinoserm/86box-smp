@@ -90,8 +90,7 @@ char_pipe_disconnect(char_pipe_t *dev, int fds)
 
         /* A server keeps its instance and listens again. Disconnecting alone
            leaves it existing but not listening, so every later client gets
-           ERROR_PIPE_BUSY until the machine is restarted -- a client that opens
-           the pipe and immediately drops it is enough to wedge the port.
+           ERROR_PIPE_BUSY until the machine is restarted.
 
            Re-listening beats closing and recreating, which races the old
            instance's teardown; with FILE_FLAG_FIRST_PIPE_INSTANCE, losing that
@@ -176,13 +175,11 @@ char_pipe_connect(char_pipe_t *dev, int startup)
         if (CHAR_FD_VALID(dev->fd)) {
             char_pipe_log(dev->log, "Created new pipe: %s\n", dev->path);
 
-            /* An instance that has not been passed to ConnectNamedPipe is not
-               listening, and every client opening it gets ERROR_PIPE_BUSY even
-               though nothing is connected.
-
-               In PIPE_NOWAIT mode the call always returns FALSE: ERROR_PIPE_LISTENING
-               means it is now waiting for a client, ERROR_PIPE_CONNECTED means one
-               arrived in between. Both are success. */
+            /* A new instance takes a client before ConnectNamedPipe is called
+               on it; the call says whether one has arrived. In PIPE_NOWAIT mode
+               it always returns FALSE: ERROR_PIPE_LISTENING means it is waiting
+               for a client, ERROR_PIPE_CONNECTED means one arrived in between.
+               Both are success. */
             if (!ConnectNamedPipe(dev->fd, NULL)) {
                 DWORD listen_err = GetLastError();
                 if ((listen_err != ERROR_PIPE_LISTENING) && (listen_err != ERROR_PIPE_CONNECTED))
@@ -361,7 +358,9 @@ retry:
             char_pipe_log(dev->log, "ReadFile failed (%08X)\n", GetLastError());
             dev->connected = 0;
             char_pipe_disconnect(dev, 1);
-            if (!dev->block_connect && !connect)
+            /* A server listening again keeps its instance: creating one over
+               it would fail and lose the handle. */
+            if (!CHAR_FD_VALID(dev->fd) && !dev->block_connect && !connect)
 #else
     int     connect = !CHAR_FD_VALID(dev->fd_in) && !dev->block_connect_in;
     ssize_t ret     = 0;
