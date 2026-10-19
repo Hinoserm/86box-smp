@@ -144,14 +144,16 @@ extern uint64_t *codegen_link_group_word(const codeblock_t *block, uint64_t *val
 extern int codegen_chain_patch(uint8_t *stub, codeblock_t *target, uint64_t gen);
 
 /*Links into a block, kept exact (codegen_block.c):
-  - note: a link or indirect entry to `block` was just made;
+  - note: a link or indirect entry to `block` is about to be made, under
+    the generation `gen` read before its code was found clean; answers
+    the generation to make it under;
   - drop: every link into `block` goes (from anywhere);
   - drop_all: every link goes (`owner`: from the dispatcher's side, which
     also empties the link lists; else from anywhere, generations only);
   - revalidate_request: translations may have changed (all of them, or the
     linear page `lin` alone); the links are checked against the page
     tables at the loop's next look (codegen_links_revalidate).*/
-extern void codegen_links_note(codeblock_t *block);
+extern uint64_t codegen_links_note(codeblock_t *block, uint64_t gen);
 extern void codegen_links_drop(codeblock_t *block);
 extern void codegen_links_drop_all(int owner);
 extern void codegen_links_revalidate_request(int all, uint32_t lin);

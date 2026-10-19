@@ -467,12 +467,13 @@ codegen_ind_reset(void)
     }
 }
 
-void
-codegen_links_note(codeblock_t *block)
+uint64_t
+codegen_links_note(codeblock_t *block, uint64_t gen)
 {
-    const int      nr = get_block_nr(block);
-    const uint32_t pg = block->pc & ~0xfff;
-    const int32_t  g  = block->link_group;
+    const int      nr     = get_block_nr(block);
+    const uint32_t pg     = block->pc & ~0xfff;
+    const int32_t  g      = block->link_group;
+    const int      linked = !!(__atomic_load_n(&codegen_link_targets[nr >> 6], __ATOMIC_SEQ_CST) & (1ULL << (nr & 63)));
     uint64_t       pte;
     uint64_t       pte2;
 
@@ -492,7 +493,7 @@ codegen_links_note(codeblock_t *block)
     /* Already in the group its pages translate to now: it stays, and the
        links into the group made before hold (a group left empty would be
        released, and they with it). A held group is good again. */
-    if ((__atomic_load_n(&codegen_link_targets[nr >> 6], __ATOMIC_SEQ_CST) & (1ULL << (nr & 63))) && (g >= 0) &&
+    if (linked && (g >= 0) &&
         (codegen_lg[g].lin == pg) && (codegen_lg[g].spans == codegen_link_spans(block)) &&
         (codegen_lg[g].umask == (block->link_cpl3 ? ~0ULL : ~2ULL)) && (codegen_lg[g].pte == pte) &&
         (!codegen_link_spans(block) || (codegen_lg[g].pte2 == pte2))) {
@@ -500,7 +501,7 @@ codegen_links_note(codeblock_t *block)
         block->link_pte2 = pte2;
         if (codegen_lg[g].active < 0)
             codegen_lg_resume(g);
-        return;
+        return gen;
     }
 
     /* Otherwise out of its group first: it goes where its page translates
@@ -509,6 +510,18 @@ codegen_links_note(codeblock_t *block)
     block->link_pte  = pte;
     block->link_pte2 = pte2;
     codegen_link_bit_set(block, nr);
+
+    /* From the solo list into a group: the links and indirect entries made
+       while it was solo compare the solo word, which never changes, and
+       only the solo pass checked its pages for them; that pass no longer
+       sees it, and holding the group stops only the links made through the
+       group. They go, with a new generation, and this link is made under
+       that one -- unless something else moved it meanwhile, when it is
+       made under the old one and misses. */
+    if (linked && (g == CODEGEN_LG_SOLO) && (block->link_group >= 0) &&
+        (__atomic_fetch_add(&block->link_gen, 1, __ATOMIC_SEQ_CST) == gen))
+        gen++;
+    return gen;
 }
 
 /* From anywhere: the block's links miss from now on. A link the dispatcher
@@ -727,7 +740,7 @@ codegen_ind_fill(codeblock_t *block, uint64_t gen)
 {
     codegen_ind_t *e = &codegen_ind_cache[codegen_ind_hash(block->pc)];
 
-    codegen_links_note(block);
+    gen           = codegen_links_note(block, gen);
     e->pc         = block->pc;
     e->cs_base    = block->_cs;
     e->status     = CODEGEN_CHAIN_KEY();

@@ -814,8 +814,8 @@ exec386_dynarec_dyn(void)
 
             if (link_stub && (block->pc == link_pc) && (block->_cs == link_cs) && (codegen_chain_gen == link_gen) &&
                 block->head_mem_block && !(block->flags & CODEBLOCK_IN_DIRTY_LIST) && exec386_chain_still_clean(block)) {
-                codegen_links_note(block); /* into its group first */
-                (void) codegen_chain_patch(link_stub, block, target_gen);
+                /* Into its group first, which may move its generation. */
+                (void) codegen_chain_patch(link_stub, block, codegen_links_note(block, target_gen));
             }
             if (ind_fill && (block->pc == link_pc) && (block->_cs == link_cs) && (codegen_chain_gen == link_gen) &&
                 block->head_mem_block && !(block->flags & CODEBLOCK_IN_DIRTY_LIST) && exec386_chain_still_clean(block))
