@@ -864,6 +864,12 @@ plat_path_is_empty(char *path)
 void
 Settings::reject()
 {
+    /* In the slot-based layout, Cancel leaves the configuration as the
+       dialog found it, with what its Configure dialogs wrote undone. The
+       classic dialog leaves those, as it always has. */
+    if (slotLayout)
+        ini_restore(config_get_ini(), configurationSnapshot);
+
     if (plat_path_is_empty(usr_path))
         rmdir(usr_path);
 
