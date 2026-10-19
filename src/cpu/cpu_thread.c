@@ -325,11 +325,12 @@ cpu_thread_serve(int index)
     }
     r->discarded = 0;
 
-    /* A locked operation across a page or a 64-byte line, or on device
-       memory: the first processor stays stopped here, between its blocks,
-       and every other one parked, until the operation's end is posted, as
-       LOCK# holds the bus (Pentium Vol. 3, 19.1.1). This one's accesses
-       meanwhile (device memory's reads and writes) are served here. */
+    /* A locked operation no host atomic can take (mem_split_lock_take), or
+       on device memory: the first processor stays stopped here, between
+       its blocks, and every other one parked, until the operation's end is
+       posted, as LOCK# holds the bus (Pentium Vol. 3, 19.1.1). This one's
+       accesses meanwhile (device memory's reads and writes) are served
+       here. */
     if (r->kind == FWD_SPLIT_BEGIN) {
         const unsigned int others = CPU_AP_ALL & ~(1u << index);
 
@@ -879,10 +880,10 @@ cpu_ap_cpu_cpuid_apic_id_ebx(void)
     return cpu_thread_forward(FWD_CPUID_APICID, NULL, 0, 0);
 }
 
-/* A locked operation across a page or a 64-byte line
-   (mem_split_lock_take): the other processors are kept off the bus until
-   it is done -- held, from the first; stopped between its blocks with the
-   rest parked, from another (cpu_thread_serve). */
+/* A locked operation no host atomic can take (mem_split_lock_take): the
+   other processors are kept off the bus until it is done -- held, from the
+   first; stopped between its blocks with the rest parked, from another
+   (cpu_thread_serve). */
 void
 cpu_thread_split_begin(void)
 {

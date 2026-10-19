@@ -506,8 +506,8 @@ cpu_mp_release_others(void)
 #endif
 }
 
-/* A locked operation across a page or a 64-byte line
-   (mem_split_lock_take): the others kept off the bus. */
+/* A locked operation no host atomic can take (mem_split_lock_take): the
+   others kept off the bus. */
 void
 cpu_mp_split_begin(void)
 {

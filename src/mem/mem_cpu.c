@@ -2547,8 +2547,8 @@ int mem_atomic_split;
    processor must see whole, after the write translation (which may fault:
    cpu_state.abrt, NULL). "The integrity of the lock is not affected by the
    alignment of the memory field" (Pentium Vol. 3, 19.1.1): an operand
-   crossing a page or a line of MEM_ATOMIC_SPAN bytes is done by the split
-   path (mem_atomic_split). NULL for device memory and ROM: those get the
+   crossing a page, or one a host atomic may not take (MEM_ATOMIC_FITS), is
+   done by the split path (mem_atomic_split). NULL for device memory and ROM: those get the
    plain store. */
 uint8_t *
 mem_atomic_ptr(uint32_t addr, int size)
@@ -2602,9 +2602,9 @@ mem_atomic_ptr(uint32_t addr, int size)
     } else if (!mem_atomic_ram(a + size - 1))
         return NULL;
 
-    /* Across a line: the split path too. A host's locked operation across a
-       cache line is a bus lock, which some hosts slow deliberately. */
-    if (((addr & (MEM_ATOMIC_SPAN - 1)) + size) > MEM_ATOMIC_SPAN) {
+    /* One a host atomic may not take (across a line, or on ARM64 not
+       naturally aligned): the split path too. */
+    if (!MEM_ATOMIC_FITS(addr, size)) {
         mem_atomic_split = 1;
         return NULL;
     }

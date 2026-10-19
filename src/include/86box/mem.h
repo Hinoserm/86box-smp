@@ -573,10 +573,21 @@ extern void mem_mark_written_byte(page_t *page, uint32_t addr);
 
 /* A locked read-modify-write another processor sees whole (386_common.h):
    the host address of a plain-RAM operand, or NULL -- device memory, or
-   (mem_atomic_split) an operand in RAM crossing a page or a line of
-   MEM_ATOMIC_SPAN bytes, done instead under the split lock; and after one,
-   the bytes marked written for any code compiled from them. */
-#define MEM_ATOMIC_SPAN 64
+   (mem_atomic_split) an operand in RAM crossing a page or one a host
+   atomic may not take (MEM_ATOMIC_FITS), done instead under the split
+   lock; and after one, the bytes marked written for any code compiled
+   from them. On x86-64 a host atomic takes an operand inside a line of
+   MEM_ATOMIC_SPAN bytes: across one it is a bus lock some hosts slow on
+   purpose. On ARM64 an atomic across 16 bytes takes an alignment fault,
+   and one not naturally aligned does too on a host without LSE2: it takes
+   only a naturally aligned operand. */
+#if defined(__aarch64__) || defined(_M_ARM64)
+#    define MEM_ATOMIC_SPAN             16
+#    define MEM_ATOMIC_FITS(addr, size) (!((addr) & ((size) - 1)))
+#else
+#    define MEM_ATOMIC_SPAN             64
+#    define MEM_ATOMIC_FITS(addr, size) ((((addr) & (MEM_ATOMIC_SPAN - 1)) + (size)) <= MEM_ATOMIC_SPAN)
+#endif
 extern int      mem_atomic_split;
 extern uint8_t *mem_atomic_ptr(uint32_t addr, int size);
 extern void     mem_atomic_written(const uint8_t *p, int size);

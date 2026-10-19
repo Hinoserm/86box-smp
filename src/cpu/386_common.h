@@ -1075,12 +1075,12 @@ seteaq(uint64_t v)
    reloaded with what memory holds and `expr` worked out again until it
    lands -- a LOCK, or an XCHG, as the bus gives it. `var` must hold what
    the handler just read; after, it holds the value that was replaced.
-   Device memory gets the plain store; an operand in RAM crossing a page or
-   a line (MEM_ATOMIC_SPAN) is read again and stored under the split lock,
-   and never as a host split lock. The direct write entry (eal_w) serves
-   only an operand inside one line. Otherwise (no other processor running
+   Device memory gets the plain store; an operand in RAM crossing a page,
+   or one a host atomic may not take (MEM_ATOMIC_FITS), is read again and
+   stored under the split lock, and never as a host split lock. The direct
+   write entry (eal_w) serves only an operand a host atomic takes. Otherwise (no other processor running
    beside it, or a register operand) the plain store. */
-#    define RMW_IN_LINE(SIZE) ((((easeg + cpu_state.eaaddr) & (MEM_ATOMIC_SPAN - 1)) + (SIZE)) <= MEM_ATOMIC_SPAN)
+#    define RMW_IN_LINE(SIZE) MEM_ATOMIC_FITS(easeg + cpu_state.eaaddr, (SIZE))
 
 /* The operand read again, whole, for the split path. */
 #    define SPLIT_REREAD(SIZE) (((SIZE) == 1) ? (uint32_t) geteab() : ((SIZE) == 2) ? (uint32_t) geteaw() : (uint32_t) geteal())
