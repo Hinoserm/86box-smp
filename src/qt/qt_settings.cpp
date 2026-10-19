@@ -244,6 +244,7 @@ Settings::Settings(QWidget *parent)
 
     Settings::settings = this;
     configurationSnapshot = ini_clone(config_get_ini());
+    DriveImages::beginSession();
 
     Harddrives::busTrackClass = new SettingsBusTracking;
 
@@ -668,6 +669,8 @@ Settings::~Settings()
     Borrow::giveBackAll();
     delete ui;
     ini_close(configurationSnapshot);
+    /* Image renames and deletions not saved are dropped. */
+    DriveImages::discard();
     /* The device lists are read again the next time: ROMs may come or go
        in between. */
     Models::ClearDevices();
@@ -737,6 +740,10 @@ Settings::save(int soft)
         ini_section_clear(section);
         ini_delete_section_if_empty(config_get_ini(), section);
     }
+
+    /* The image manager's renames and deletions, with the configuration
+       they must not touch now saved. */
+    DriveImages::apply(this);
 }
 
 void
@@ -781,6 +788,10 @@ Settings::accept()
        placed cards on, that moves them. */
     if (!slotLayout && boardSlotsPlace(currentMachine()))
         changed |= SETTINGS_CHANGED | SETTINGS_REQUIRE_HARD_RESET;
+
+    /* Image renames and deletions are made when the settings are saved. */
+    if (DriveImages::hasChanges())
+        changed |= SETTINGS_CHANGED;
 
     /* The options shown inline, written as the Configure dialogs write them. */
     if (DeviceConfigPanel::applyAll(nullptr))

@@ -70,9 +70,18 @@ private:
     void drivesUnder(QTreeWidgetItem *parent, bool scsi, int bus);
 };
 
+/* The renames and deletions chosen in the image manager, made only when
+   the Settings are saved (apply()), and dropped on Cancel (discard()). */
+namespace DriveImages {
+void beginSession();
+bool hasChanges();
+void apply(QWidget *parent);
+void discard();
+}
+
 /* The disk images in the machine's folder, used or not: new ones made
    and existing ones added through the drive pages, unused ones renamed or
-   deleted. */
+   deleted when the Settings are saved. */
 class SettingsDriveImages : public QWidget {
     Q_OBJECT
 
@@ -91,6 +100,7 @@ private:
     QWidget           *buttonDelete;
 
     QString selected() const;
+    QString selectedShown() const;
     void    selectionChanged();
 };
 

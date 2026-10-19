@@ -72,6 +72,7 @@ extern "C" {
 #include <86box/cdrom.h>
 #include <86box/fdd.h>
 #include <86box/scsi_device.h>
+#include <86box/scsi_tape.h>
 #include <86box/mo.h>
 #include <86box/rdisk.h>
 #include <86box/hdc_ide.h>
@@ -1262,6 +1263,174 @@ SettingsOverview::refresh()
     rebuilding = false;
 }
 
+namespace DriveImages {
+/* A rename (to the new path) or a deletion (to empty) of an image file,
+   made only when the Settings are saved. */
+struct Change {
+    QString from;
+    QString to;
+};
+
+static QList<Change>           changes;
+static QHash<QString, QString> usedAtStart; /* what the machine used when the dialog opened */
+
+/* An image path as one file: without the wp:// or ioctl:// that a drive's
+   path may carry, taken in the machine's directory when relative, and the
+   file's canonical path where it exists. */
+static QString
+imageKey(const QString &path)
+{
+    QString name = path;
+
+    for (const QString &prefix : { QStringLiteral("wp://"), QStringLiteral("ioctl://") }) {
+        if (name.startsWith(prefix))
+            name = name.mid(prefix.length());
+    }
+    if (name.isEmpty())
+        return QString();
+
+    const QFileInfo info(QDir(QString::fromUtf8(usr_path)).absoluteFilePath(name));
+    return info.exists() ? info.canonicalFilePath() : info.absoluteFilePath();
+}
+
+static void
+use(QHash<QString, QString> &users, const QString &path, const QString &who)
+{
+    const QString key = imageKey(path);
+
+    if (!key.isEmpty())
+        users.insert(key, who);
+}
+
+/* The images the configuration in memory uses: the machine's as it runs,
+   or as just saved. */
+static QHash<QString, QString>
+configuredUses()
+{
+    QHash<QString, QString> users;
+
+    for (int i = 0; i < HDD_NUM; i++) {
+        if ((hdd[i].bus_type != HDD_BUS_DISABLED) && hdd[i].fn[0]) {
+            use(users, QString::fromUtf8(hdd[i].fn), QCoreApplication::translate("SettingsDriveImages", "Hard disk %1").arg(i + 1));
+            if (hdd[i].vhd_parent[0])
+                use(users, QString::fromUtf8(hdd[i].vhd_parent),
+                    QCoreApplication::translate("SettingsDriveImages", "Parent of hard disk %1").arg(i + 1));
+        }
+    }
+    for (int i = 0; i < FDD_NUM; i++)
+        use(users, QString::fromUtf8(drives[i].image_path), QCoreApplication::translate("SettingsDriveImages", "Floppy drive %1").arg(i + 1));
+    for (int i = 0; i < CDROM_NUM; i++)
+        use(users, QString::fromUtf8(cdrom[i].image_path), QCoreApplication::translate("SettingsDriveImages", "CD-ROM drive %1").arg(i + 1));
+    for (int i = 0; i < RDISK_NUM; i++)
+        use(users, QString::fromUtf8(rdisk_drives[i].image_path),
+            QCoreApplication::translate("SettingsDriveImages", "Removable disk drive %1").arg(i + 1));
+    for (int i = 0; i < MO_NUM; i++)
+        use(users, QString::fromUtf8(mo_drives[i].image_path), QCoreApplication::translate("SettingsDriveImages", "MO drive %1").arg(i + 1));
+    for (int i = 0; i < TAPE_NUM; i++)
+        use(users, QString::fromUtf8(tape_drives[i].image_path), QCoreApplication::translate("SettingsDriveImages", "Tape drive %1").arg(i + 1));
+
+    return users;
+}
+
+/* The parents of the differencing VHDs among files, and theirs: a parent
+   is used by its child, whether or not a drive has the child. */
+static void
+addVhdParents(QHash<QString, QString> &users, const QStringList &files)
+{
+    QStringList   todo = files;
+    QSet<QString> seen;
+
+    while (!todo.isEmpty()) {
+        const QString child = todo.takeFirst();
+        char          parent[MAX_IMAGE_PATH_LEN];
+
+        if (seen.contains(child) || !child.endsWith(QStringLiteral(".vhd"), Qt::CaseInsensitive))
+            continue;
+        seen.insert(child);
+        if (!hdd_image_vhd_parent(child.toUtf8().constData(), parent, sizeof(parent)))
+            continue;
+
+        const QString key = imageKey(QString::fromUtf8(parent));
+        if (key.isEmpty())
+            continue;
+        if (!users.contains(key))
+            users.insert(key, QCoreApplication::translate("SettingsDriveImages", "Parent of %1").arg(QFileInfo(child).fileName()));
+        todo.append(key);
+    }
+}
+
+static Change *
+changeFrom(const QString &from)
+{
+    for (auto &change : changes) {
+        if (change.from == from)
+            return &change;
+    }
+
+    return nullptr;
+}
+
+void
+beginSession()
+{
+    changes.clear();
+    usedAtStart = configuredUses();
+}
+
+bool
+hasChanges()
+{
+    return !changes.isEmpty();
+}
+
+void
+discard()
+{
+    changes.clear();
+}
+
+/* The renames and deletions, now that the Settings are saved; none of a
+   file that the machine used when the dialog opened, that it uses now,
+   or that is a parent of a differencing VHD. */
+void
+apply(QWidget *parent)
+{
+    if (changes.isEmpty())
+        return;
+
+    QHash<QString, QString> used = usedAtStart;
+    const auto              now  = configuredUses();
+    QStringList             files;
+
+    for (auto it = now.cbegin(); it != now.cend(); ++it)
+        used.insert(it.key(), it.value());
+    files = used.keys();
+    for (const auto &change : changes)
+        files.append(change.from);
+    QDirIterator it(QString::fromUtf8(usr_path), { QStringLiteral("*.vhd") }, QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext())
+        files.append(imageKey(it.next()));
+    addVhdParents(used, files);
+
+    QStringList problems;
+    for (const auto &change : changes) {
+        const QString name = QFileInfo(change.from).fileName();
+
+        if (used.contains(change.from))
+            problems.append(QCoreApplication::translate("SettingsDriveImages", "%1 is used (%2), and was left as it is.").arg(name, used.value(change.from)));
+        else if (change.to.isEmpty()) {
+            if (!QFile::remove(change.from))
+                problems.append(QCoreApplication::translate("SettingsDriveImages", "%1 could not be deleted.").arg(name));
+        } else if (QFileInfo::exists(change.to) || !QFile::rename(change.from, change.to))
+            problems.append(QCoreApplication::translate("SettingsDriveImages", "%1 could not be renamed to %2.").arg(name, QFileInfo(change.to).fileName()));
+    }
+    changes.clear();
+
+    if (!problems.isEmpty())
+        QMessageBox::warning(parent, QCoreApplication::translate("SettingsDriveImages", "Disk Images"), problems.join('\n'));
+}
+}
+
 SettingsDriveImages::SettingsDriveImages(SettingsHarddisks *harddisks, QWidget *parent)
     : QWidget(parent)
     , harddisks(harddisks)
@@ -1276,6 +1445,10 @@ SettingsDriveImages::SettingsDriveImages(SettingsHarddisks *harddisks, QWidget *
     list->setSortingEnabled(true);
     list->sortByColumn(0, Qt::AscendingOrder);
     layout->addWidget(list);
+
+    auto *note = new QLabel(tr("Images are renamed and deleted when the settings are saved with OK; Cancel leaves them as they are."), this);
+    note->setWordWrap(true);
+    layout->addWidget(note);
 
     auto *newDisk  = new QPushButton(tr("New hard disk..."), this);
     auto *existing = new QPushButton(tr("Add existing image..."), this);
@@ -1304,31 +1477,57 @@ SettingsDriveImages::SettingsDriveImages(SettingsHarddisks *harddisks, QWidget *
     });
     connect(folder, &QPushButton::clicked, this, []() { QDesktopServices::openUrl(QUrl::fromLocalFile(QString(usr_path))); });
     connect(rename, &QPushButton::clicked, this, [this]() {
-        const QString path = selected();
-        if (path.isEmpty())
+        const QString real  = selected();
+        const QString shown = selectedShown();
+        if (real.isEmpty())
             return;
-        const QFileInfo info(path);
+        const QFileInfo info(shown);
         bool            ok   = false;
         const QString   name = QInputDialog::getText(this, tr("Rename Image"), tr("New name:"), QLineEdit::Normal, info.fileName(), &ok);
         if (!ok || name.isEmpty() || (name == info.fileName()))
             return;
-        if (!QFile::rename(path, info.dir().filePath(name)))
-            QMessageBox::warning(this, tr("Rename Image"), tr("%1 could not be renamed.").arg(info.fileName()));
+
+        const QString target = info.dir().filePath(name);
+        bool          taken  = QFileInfo::exists(target) && (DriveImages::imageKey(target) != real);
+        for (const auto &change : DriveImages::changes)
+            taken |= (change.to == target);
+        if (taken) {
+            QMessageBox::warning(this, tr("Rename Image"), tr("There is already an image named %1.").arg(name));
+            return;
+        }
+
+        /* Renamed back to what it is: no change. */
+        const bool back = (DriveImages::imageKey(target) == real);
+        for (int i = 0; i < DriveImages::changes.size(); i++) {
+            if (DriveImages::changes[i].from == real) {
+                if (back)
+                    DriveImages::changes.removeAt(i);
+                else
+                    DriveImages::changes[i].to = target;
+                refresh();
+                return;
+            }
+        }
+        if (!back)
+            DriveImages::changes.append({ real, target });
         refresh();
     });
     connect(remove, &QPushButton::clicked, this, [this]() {
-        const QString path = selected();
-        if (path.isEmpty())
+        const QString real = selected();
+        if (real.isEmpty())
             return;
-        const QFileInfo info(path);
+        const QFileInfo info(selectedShown());
         QMessageBox     box(QMessageBox::Warning, tr("Delete Image"),
-                            tr("Delete %1? It is not used by any drive, and it cannot be brought back.").arg(info.fileName()),
+                            tr("Delete %1 when the settings are saved? Nothing uses it now, and once deleted it cannot be brought back.").arg(info.fileName()),
                             QMessageBox::Yes | QMessageBox::No, this);
         box.setDefaultButton(QMessageBox::No);
         if (box.exec() != QMessageBox::Yes)
             return;
-        if (!QFile::remove(path))
-            QMessageBox::warning(this, tr("Delete Image"), tr("%1 could not be deleted.").arg(info.fileName()));
+
+        if (auto *change = DriveImages::changeFrom(real))
+            change->to.clear();
+        else
+            DriveImages::changes.append({ real, QString() });
         refresh();
     });
     connect(list, &QTreeWidget::currentItemChanged, this, [this]() { selectionChanged(); });
@@ -1346,12 +1545,22 @@ SettingsDriveImages::showEvent(QShowEvent *event)
     QWidget::showEvent(event);
 }
 
+/* The selected image's file as it is now, when nothing uses it. */
 QString
 SettingsDriveImages::selected() const
 {
     auto *item = list->currentItem();
 
     return ((item != nullptr) && item->data(3, Qt::UserRole).toBool() == false) ? item->data(0, Qt::UserRole).toString() : QString();
+}
+
+/* The selected image's path as it will be, after a pending rename. */
+QString
+SettingsDriveImages::selectedShown() const
+{
+    auto *item = list->currentItem();
+
+    return (item != nullptr) ? item->data(0, Qt::UserRole + 1).toString() : QString();
 }
 
 /* Only an image nothing uses can be renamed or deleted. */
@@ -1372,17 +1581,14 @@ SettingsDriveImages::refresh()
     static const QStringList cdImage   = { "iso", "cue", "mds", "mdf", "chd", "nrg" };
     static const QStringList removable = { "zdi", "mdi", "rdi" };
 
-    /* Who uses what: the disks the Hard disks page holds now, and the
-       media in the other drives. */
-    QHash<QString, QString> users;
-    auto                    use = [&users](const QString &path, const QString &who) {
-        if (!path.isEmpty())
-            users.insert(QFileInfo(path).absoluteFilePath(), who);
-    };
+    /* Who uses what: the machine as it was when the dialog opened, the
+       disks the Hard disks page holds now, the media in the other drives,
+       and the parents of differencing VHDs. */
+    QHash<QString, QString> users = DriveImages::usedAtStart;
     if (auto *view = harddisks->findChild<QTreeView *>("treeView")) {
         auto *model = view->model();
         for (int r = 0; r < model->rowCount(); r++)
-            use(model->index(r, 1).data(Qt::UserRole).toString(), model->index(r, 0).data().toString());
+            DriveImages::use(users, model->index(r, 1).data(Qt::UserRole).toString(), model->index(r, 0).data().toString());
     }
     /* Floppy drives as the Drives page names them: numbered on their
        controller. */
@@ -1391,28 +1597,34 @@ SettingsDriveImages::refresh()
         int       number     = 0;
         const int controller = Cards::floppyControllerOf(floppies, i, &number);
         if (controller < 0)
-            use(QString(drives[i].image_path), tr("Floppy drive %1").arg((i & 3) + 1));
+            DriveImages::use(users, QString(drives[i].image_path), tr("Floppy drive %1").arg((i & 3) + 1));
         else if (controller == 0)
-            use(QString(drives[i].image_path), tr("Floppy drive %1").arg(number));
+            DriveImages::use(users, QString(drives[i].image_path), tr("Floppy drive %1").arg(number));
         else
-            use(QString(drives[i].image_path), tr("Floppy drive %1 (%2)").arg(number).arg(floppies[controller].name));
+            DriveImages::use(users, QString(drives[i].image_path), tr("Floppy drive %1 (%2)").arg(number).arg(floppies[controller].name));
     }
     for (int i = 0; i < CDROM_NUM; i++)
-        use(QString(cdrom[i].image_path), tr("CD-ROM drive %1").arg(i + 1));
+        DriveImages::use(users, QString(cdrom[i].image_path), tr("CD-ROM drive %1").arg(i + 1));
     for (int i = 0; i < RDISK_NUM; i++)
-        use(QString(rdisk_drives[i].image_path), tr("Removable disk drive %1").arg(i + 1));
+        DriveImages::use(users, QString(rdisk_drives[i].image_path), tr("Removable disk drive %1").arg(i + 1));
     for (int i = 0; i < MO_NUM; i++)
-        use(QString(mo_drives[i].image_path), tr("MO drive %1").arg(i + 1));
+        DriveImages::use(users, QString(mo_drives[i].image_path), tr("MO drive %1").arg(i + 1));
+    for (int i = 0; i < TAPE_NUM; i++)
+        DriveImages::use(users, QString(tape_drives[i].image_path), tr("Tape drive %1").arg(i + 1));
+
+    QStringList  files;
+    QDirIterator it(QString(usr_path), QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext())
+        files.append(DriveImages::imageKey(it.next()));
+    DriveImages::addVhdParents(users, users.keys() + files);
 
     const QString keep = selected();
     list->setSortingEnabled(false);
     list->clear();
 
-    QDirIterator it(QString(usr_path), QDir::Files, QDirIterator::Subdirectories);
-    while (it.hasNext()) {
-        const QString   path = it.next();
+    for (const QString &path : files) {
         const QFileInfo info(path);
-        const QString   ext  = info.suffix().toLower();
+        const QString   ext = info.suffix().toLower();
 
         QString kind;
         if (hardDisk.contains(ext))
@@ -1429,10 +1641,18 @@ SettingsDriveImages::refresh()
         else
             continue;
 
-        const QString who  = users.value(info.absoluteFilePath());
+        /* As it will be once the Settings are saved: a file to be deleted
+           is gone, one to be renamed has its new name. */
+        const auto *change = DriveImages::changeFrom(path);
+        if ((change != nullptr) && change->to.isEmpty())
+            continue;
+        const QString shown = (change != nullptr) ? change->to : path;
+
+        const QString who  = users.value(path);
         auto         *item = new QTreeWidgetItem(list);
-        item->setText(0, QDir(QString(usr_path)).relativeFilePath(path));
+        item->setText(0, QDir(QString(usr_path)).relativeFilePath(shown));
         item->setData(0, Qt::UserRole, path);
+        item->setData(0, Qt::UserRole + 1, shown);
         item->setText(1, kind);
         item->setText(2, QLocale().formattedDataSize(info.size()));
         item->setText(3, who.isEmpty() ? tr("(not used)") : who);

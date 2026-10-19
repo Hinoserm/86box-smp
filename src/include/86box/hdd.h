@@ -228,6 +228,7 @@ extern int      hdd_image_write_ex(uint8_t id, uint32_t sector, uint32_t count, 
 extern int      hdd_image_zero(uint8_t id, uint32_t sector, uint32_t count);
 extern int      hdd_image_zero_ex(uint8_t id, uint32_t sector, uint32_t count);
 extern uint32_t hdd_image_get_last_sector(uint8_t id);
+extern int      hdd_image_vhd_parent(const char *fn, char *parent, size_t len);
 extern uint32_t hdd_image_get_pos(uint8_t id);
 extern uint8_t  hdd_image_get_type(uint8_t id);
 extern void     hdd_image_unload(uint8_t id, int fn_preserve);

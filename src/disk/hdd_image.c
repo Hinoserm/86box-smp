@@ -613,6 +613,27 @@ hdd_image_read(uint8_t id, uint32_t sector, uint32_t count, uint8_t *buffer)
     return 0;
 }
 
+/* The parent of a differencing VHD, written to parent: 1 for one, 0 for
+   any other file and for a child whose parent cannot be opened. */
+int
+hdd_image_vhd_parent(const char *fn, char *parent, size_t len)
+{
+    int       error = 0;
+    int       ret   = 0;
+    MVHDMeta *vhd   = mvhd_open(fn, 1, &error);
+
+    if (vhd == NULL)
+        return 0;
+
+    if ((vhd->footer.disk_type == MVHD_TYPE_DIFF) && (vhd->parent != NULL) && vhd->parent->filename[0]) {
+        snprintf(parent, len, "%s", vhd->parent->filename);
+        ret = 1;
+    }
+
+    mvhd_close(vhd);
+    return ret;
+}
+
 uint32_t
 hdd_image_get_last_sector(uint8_t id)
 {
