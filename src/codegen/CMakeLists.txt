@@ -47,6 +47,13 @@ if(DYNAREC)
         codegen_reg.c
     )
 
+    # mingw-w64 reaches every global defined in another file through a .refptr
+    # pointer unless the small code model is asked for; the image is far below
+    # 2 GB.
+    if(MINGW AND (ARCH STREQUAL "x86_64"))
+        target_compile_options(dynarec PRIVATE -mcmodel=small)
+    endif()
+
     if(ARCH STREQUAL "x86_64")
         target_sources(dynarec PRIVATE
             codegen_backend_x86-64.c

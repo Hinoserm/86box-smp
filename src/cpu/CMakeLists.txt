@@ -42,6 +42,13 @@ add_library(cpu OBJECT
     i8080.c
 )
 
+# mingw-w64 reaches every global defined in another file through a .refptr
+# pointer unless the small code model is asked for; the image is far below
+# 2 GB.
+if(MINGW AND (ARCH STREQUAL "x86_64"))
+    target_compile_options(cpu PRIVATE -mcmodel=small)
+endif()
+
 # The REP string kernels' generic versions are the host baseline whatever
 # the build targets; the Zen 5 versions ask for AVX-512 themselves.
 if((ARCH STREQUAL "x86_64") AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
