@@ -1794,13 +1794,14 @@ codegen_check_flush(page_t *page, UNUSED(uint64_t mask), UNUSED(uint32_t phys_ad
        what was taken; a word read as clear is not taken, and a bit set
        after the read is left for the next look, as one set after the
        exchange would be. */
-    uint64_t any_byte = 0;
+    uint64_t byte_words = 0; /* which of byte_dirty[] are not zero */
 
     dirty = __atomic_exchange_n(&page->dirty_mask, 0, __ATOMIC_SEQ_CST);
     for (uint8_t c = 0; c < 64; c++) {
         byte_dirty[c] = __atomic_load_n(&page->byte_dirty_mask[c], __ATOMIC_RELAXED) ?
                             __atomic_exchange_n(&page->byte_dirty_mask[c], 0, __ATOMIC_SEQ_CST) : 0;
-        any_byte |= byte_dirty[c];
+        if (byte_dirty[c])
+            byte_words |= 1ULL << c;
     }
 
     while (block_nr) {
@@ -1837,7 +1838,10 @@ codegen_check_flush(page_t *page, UNUSED(uint64_t mask), UNUSED(uint32_t phys_ad
         remove_from_evict_list = 1;
     page->code_present_mask &= ~dirty;
 
-    for (uint8_t c = 0; any_byte && (c < 64); c++) {
+    while (byte_words) {
+        const int c = __builtin_ctzll(byte_words);
+
+        byte_words &= byte_words - 1;
         if (page->byte_code_present_mask[c] & byte_dirty[c])
             remove_from_evict_list = 0;
         page->byte_code_present_mask[c] &= ~byte_dirty[c];
