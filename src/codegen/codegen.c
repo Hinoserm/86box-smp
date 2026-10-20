@@ -35,6 +35,8 @@
    a constant PC after it, in a link if the block ends evenly (the recording
    loop decides, 386_dynarec.c); 0, as it always did. */
 int        codegen_end_link_ok;
+int        codegen_jump_continue;
+uint32_t   codegen_jump_continue_pc;
 static int codegen_is_near_indirect;
 int        codegen_end_link_pending; /* for codegen_ir_compile, after unrolling */
 static int codegen_is_near_branch;
@@ -1180,6 +1182,26 @@ generate_call:
             else
                 codegen_end_link_ok = 0;
 #endif
+            /* A direct JMP or CALL goes on into its target in the same block,
+               the registers held across it, if that is on the block's first
+               page (whose writes the block is checked against, as the page
+               after it), where the block has not been: never a loop through
+               the block's own code. A block for code rewritten byte by byte
+               keeps to its two chunks. */
+            if ((new_pc != -1) && (op_table == x86_dynarec_opcodes) &&
+                ((opcode == 0xe8) || (opcode == 0xe9) || (opcode == 0xeb)) &&
+                !(block->flags & CODEBLOCK_BYTE_MASK) && !cpu_end_block_after_ins &&
+                ((block->ins + 1) < MAX_INSTRUCTION_COUNT) &&
+                !(((cs + new_pc) ^ block->pc) & ~0xfff)) {
+                int seen = (new_pc == cpu_state.oldpc);
+
+                for (int c = 0; !seen && (c <= block->ins); c++)
+                    seen = (codegen_instructions[c].pc == new_pc);
+                if (!seen) {
+                    codegen_jump_continue    = 1;
+                    codegen_jump_continue_pc = cs + new_pc;
+                }
+            }
 
             codegen_endpc = (cs + cpu_state.pc) + 8;
 

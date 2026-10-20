@@ -99,6 +99,12 @@ typedef struct codeblock_t {
 #endif
 } codeblock_t;
 
+/*A direct JMP or CALL just compiled that the block goes on through, at
+  the PC it leaves for (codegen_generate_call): the recording loop keeps the
+  block open past it (386_dynarec.c).*/
+extern int      codegen_jump_continue;
+extern uint32_t codegen_jump_continue_pc;
+
 #ifdef CODEGEN_CHAIN
 /*Moved whenever compiled code is freed or every link goes
   (codegen_block.c).*/

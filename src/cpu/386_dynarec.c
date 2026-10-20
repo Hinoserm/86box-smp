@@ -1174,6 +1174,16 @@ exec386_dynarec_dyn(void)
 
                 if (x86_was_reset)
                     break;
+
+                /* A direct JMP or CALL compiled to go on into its target
+                   (codegen_jump_continue): the block stays open there, if
+                   that is where it went and nothing else ends the block. */
+                if (codegen_jump_continue) {
+                    codegen_jump_continue = 0;
+                    if (cpu_block_end && !cpu_state.abrt && ((cs + cpu_state.pc) == codegen_jump_continue_pc) && !new_ne &&
+                        !(cpu_state.flags & T_FLAG) && (trap != 2) && !cpu_end_block_after_ins)
+                        cpu_block_end = 0;
+                }
             }
 
 #    ifdef CODEGEN_CHAIN

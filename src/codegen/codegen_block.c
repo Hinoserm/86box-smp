@@ -1983,6 +1983,7 @@ codegen_block_start_recompile(codeblock_t *block)
     block->used   = 1; /* new: not the next thing the eviction sweep takes */
 
     block_recompile_listed = (block->page_mask != 0);
+    codegen_jump_continue  = 0;
     block->page_mask = block->page_mask2 = 0;
     block->ins                           = 0;
     block->entry_hot                     = 0;
