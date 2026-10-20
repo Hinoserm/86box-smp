@@ -2256,8 +2256,7 @@ imul_common(codeblock_t *block, ir_data_t *ir, uint32_t fetchdat, uint32_t op_32
     /*As on the interpreter path, the cycles so far are charged before IMUL
       can fault*/
     codegen_accumulate_flush(ir);
-    if (!codegen_flags_rebuild_known(ir, 0))
-        uop_CALL_FUNC(ir, jit_flags_rebuild);
+    call_flags_rebuild(ir, jit_flags_rebuild);
 
     if ((fetchdat & 0xc0) == 0xc0)
         src = size32 ? IREG_32(fetchdat & 7) : IREG_16(fetchdat & 7);
