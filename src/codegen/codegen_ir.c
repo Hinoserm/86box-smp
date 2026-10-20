@@ -166,6 +166,12 @@ codegen_ir_compile(ir_data_t *ir, codeblock_t *block)
                 uop_dest = &ir->uops[uop_dest->jump_list_next];
                 codegen_set_jump_dest(block, uop_dest->p);
             }
+            /* Its list is done with. The same field links a jump into its
+               destination's list: a uop that is a jump as well (UOP_JMP_DEST,
+               a Jcc's way on past its other exit) goes into its own
+               destination's list after this, and must not take the jumps
+               that came to it along. */
+            uop->jump_list_next = -1;
         }
 
         if ((uop->type & UOP_MASK) == UOP_INVALID)
