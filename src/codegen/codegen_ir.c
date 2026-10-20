@@ -99,6 +99,7 @@ uop_is_slow_exit(UNUSED(const uop_t *uop))
         case UOP_CMP_JNBE & UOP_MASK:
         case UOP_CMP_JNWITHIN & UOP_MASK:
         case UOP_CMP_IMM_JZ & UOP_MASK:
+        case UOP_CMP_IMM_JB & UOP_MASK:
             return 1;
         default:
             break;

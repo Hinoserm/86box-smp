@@ -28,6 +28,8 @@
 /* The memory routines keep the FP registers across their call into C: an
    access writes them back on its slow path only, and keeps them. */
 #define CODEGEN_BACKEND_SLOW_KEEPS_FP
+/* UOP_CMP_IMM_JB: an unsigned compare with a constant that leaves when below. */
+#define CODEGEN_BACKEND_HAS_CMP_IMM_JB
 /* The integer uops of the SETcc, BSWAP, BSF/BSR, CMPXCHG and multiply
    handlers: CMP_SET, TEST_SET, BSF, BSR, BSWAP, IMUL, IMUL_HI, IMUL_OV and
    MUL_HI. A backend without them leaves those instructions to the

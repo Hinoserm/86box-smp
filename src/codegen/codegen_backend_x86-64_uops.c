@@ -414,6 +414,25 @@ codegen_slow_exit(codeblock_t *block, uint32_t *taken, uint32_t *taken_2, void *
 }
 
 static int
+codegen_CMP_IMM_JB(codeblock_t *block, uop_t *uop)
+{
+    int src_reg = HOST_REG_GET(uop->src_reg_a_real);
+
+    host_x86_CMP32_REG_IMM(block, src_reg, uop->imm_data);
+    if (codegen_reg_slow_size())
+        codegen_slow_exit(block, host_x86_JB_long(block), NULL, uop->p);
+    else {
+        uint32_t *jump_p;
+
+        codegen_reg_emit_slow(block);
+        jump_p = host_x86_JB_long(block);
+        rel32_to(jump_p, uop->p);
+    }
+
+    return 0;
+}
+
+static int
 codegen_CMP_IMM_JZ(codeblock_t *block, uop_t *uop)
 {
     int src_reg  = HOST_REG_GET(uop->src_reg_a_real);
@@ -3780,6 +3799,9 @@ const uOpFn uop_handlers[UOP_MAX] = {
     [UOP_CMP_JB &
         UOP_MASK]
     = codegen_CMP_JB,
+    [UOP_CMP_IMM_JB &
+        UOP_MASK]
+    = codegen_CMP_IMM_JB,
     [UOP_CMP_JNBE &
         UOP_MASK]
     = codegen_CMP_JNBE,

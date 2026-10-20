@@ -99,6 +99,12 @@ CHECK_SEG_LIMITS(UNUSED(codeblock_t *block), ir_data_t *ir, x86seg *seg, int add
       constant. The upper one is left as CMP_JNWITHIN leaves it, an access
       wrapping past 4 GB not being caught there either.*/
     if (codegen_seg_flat64k(seg)) {
+#ifdef CODEGEN_BACKEND_HAS_CMP_IMM_JB
+        if (IREG_GET_SIZE(addr_reg) == IREG_SIZE_L) {
+            uop_CMP_IMM_JB(ir, addr_reg, 0x10000, rout);
+            return;
+        }
+#endif
         uop_MOV_IMM(ir, IREG_temp3, 0x10000);
         uop_CMP_JB(ir, addr_reg, IREG_temp3, rout);
         return;

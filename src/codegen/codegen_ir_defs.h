@@ -395,7 +395,10 @@
   then jump to ptr*/
 #define UOP_CMP_JNWITHIN (UOP_TYPE_PARAMS_REGS | UOP_TYPE_PARAMS_IMM | UOP_TYPE_PARAMS_POINTER | 0xcf | UOP_TYPE_ORDER_BARRIER)
 
-#define UOP_MAX     0xd0
+/*UOP_CMP_IMM_JB - if (src_reg_a < imm), unsigned, then jump to ptr*/
+#define UOP_CMP_IMM_JB (UOP_TYPE_PARAMS_REGS | UOP_TYPE_PARAMS_IMM | UOP_TYPE_PARAMS_POINTER | 0xd0 | UOP_TYPE_ORDER_BARRIER)
+
+#define UOP_MAX     0xd1
 
 #define UOP_INVALID 0xff
 
@@ -834,6 +837,7 @@ extern void codegen_fpu_guard_int_indefinite(ir_data_t *ir, uint32_t fetchdat, u
 #define uop_CALL_INSTRUCTION_FUNC(ir, p, imm)                    uop_gen_pointer_imm(UOP_CALL_INSTRUCTION_FUNC, ir, p, imm)
 
 #define uop_CMP_IMM_JZ(ir, src_reg, imm, p)                      uop_gen_reg_src_pointer_imm(UOP_CMP_IMM_JZ, ir, src_reg, p, imm)
+#define uop_CMP_IMM_JB(ir, src_reg, imm, p)                      uop_gen_reg_src_pointer_imm(UOP_CMP_IMM_JB, ir, src_reg, p, imm)
 
 #define uop_CMP_IMM_JNZ_DEST(ir, src_reg, imm)                   uop_gen_reg_src1_imm(UOP_CMP_IMM_JNZ_DEST, ir, src_reg, imm)
 #define uop_CMP_IMM_JZ_DEST(ir, src_reg, imm)                    uop_gen_reg_src1_imm(UOP_CMP_IMM_JZ_DEST, ir, src_reg, imm)
