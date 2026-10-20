@@ -596,6 +596,15 @@ host_arm64_BMI_(codeblock_t *block)
     codegen_addlong(block, OPCODE_B);
     return (uint32_t *) &block_write_data[block_pos - 4];
 }
+/*An unconditional branch whose destination is set later
+  (codegen_set_jump_dest)*/
+uint32_t *
+host_arm64_B_(codeblock_t *block)
+{
+    codegen_alloc(block, 4);
+    codegen_addlong(block, OPCODE_B);
+    return (uint32_t *) &block_write_data[block_pos - 4];
+}
 uint32_t *
 host_arm64_BNE_(codeblock_t *block)
 {

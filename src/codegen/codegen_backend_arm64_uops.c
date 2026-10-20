@@ -308,6 +308,15 @@ codegen_CMP_IMM_JNZ_DEST(codeblock_t *block, uop_t *uop)
 
     return 0;
 }
+/*A jump to a later uop of the block (uop_set_jump_dest)*/
+static int
+codegen_JMP_DEST(codeblock_t *block, uop_t *uop)
+{
+    uop->p = host_arm64_B_(block);
+
+    return 0;
+}
+
 /*Counts a short block's run (codegen_heat[imm]) in W17 through X16, the
   scratch registers, and branches on unless the count has run out*/
 static int
@@ -3876,6 +3885,9 @@ const uOpFn uop_handlers[UOP_MAX] = {
     [UOP_CMP_IMM_JNZ_DEST &
         UOP_MASK]
     = codegen_CMP_IMM_JNZ_DEST,
+    [UOP_JMP_DEST &
+        UOP_MASK]
+    = codegen_JMP_DEST,
     [UOP_HEAT_DEC_JNZ_DEST &
         UOP_MASK]
     = codegen_HEAT_DEC_JNZ_DEST,

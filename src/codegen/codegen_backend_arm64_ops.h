@@ -38,6 +38,7 @@ uint32_t *host_arm64_BLE_(codeblock_t *block);
 uint32_t *host_arm64_BLS_(codeblock_t *block);
 uint32_t *host_arm64_BLT_(codeblock_t *block);
 uint32_t *host_arm64_BMI_(codeblock_t *block);
+uint32_t *host_arm64_B_(codeblock_t *block);
 uint32_t *host_arm64_BNE_(codeblock_t *block);
 uint32_t *host_arm64_BPL_(codeblock_t *block);
 uint32_t *host_arm64_BVC_(codeblock_t *block);
