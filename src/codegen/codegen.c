@@ -36,6 +36,9 @@
    loop decides, 386_dynarec.c); 0, as it always did. */
 int        codegen_end_link_ok;
 int        codegen_jump_continue;
+#ifdef CODEGEN_CHAIN
+static int codegen_far_indirect;
+#endif
 uint32_t   codegen_jump_continue_pc;
 static int codegen_is_near_indirect;
 int        codegen_end_link_pending; /* for codegen_ir_compile, after unrolling */
@@ -997,6 +1000,18 @@ generate_call:
     codegen_is_near_indirect = (op_table == x86_dynarec_opcodes) &&
                                ((opcode == 0xc2) || (opcode == 0xc3) || (opcode == 0xe8) ||
                                 ((opcode == 0xff) && (((fetchdat & 0x38) == 0x10) || ((fetchdat & 0x38) == 0x20))));
+    /* A far CALL, JMP or RET in real or virtual-8086 mode: CS is loaded as
+       its selector times 16, with no descriptor, gate or task, so the
+       block it lands on is found by its linear PC and CS base as the
+       dispatcher would find it -- an indirect link, which checks both and
+       the key (the mode bits are among the status bits it must match). Not
+       INT or IRET, which change IF: an interrupt then waiting is the
+       dispatcher's to take. */
+    codegen_far_indirect = (op_table == x86_dynarec_opcodes) &&
+                           (!(cpu_cur_status & CPU_STATUS_PMODE) || (cpu_cur_status & CPU_STATUS_V86)) &&
+                           ((opcode == 0x9a) || (opcode == 0xea) || (opcode == 0xca) || (opcode == 0xcb) ||
+                            ((opcode == 0xff) && (((fetchdat & 0x38) == 0x18) || ((fetchdat & 0x38) == 0x28))));
+    codegen_is_near_indirect = codegen_is_near_indirect || codegen_far_indirect;
 #endif
 
     codegen_accumulate(ir, ACCREG_cycles, -codegen_block_cycles);
@@ -1298,6 +1313,12 @@ codegen_skip:
         uop_CALL_INSTRUCTION_FUNC(ir, op, fetchdat);
     if (in_lock && (cpu_mp_count > 1))
         uop_CALL_INSTRUCTION_FUNC(ir, cpu_fetch_ahead_after_op, 0);
+#ifdef CODEGEN_CHAIN
+    /* A far transfer the interpreter does (codegen_far_indirect) ends the
+       block on an indirect link, to the PC it stored */
+    if (codegen_far_indirect)
+        codegen_end_link_ok = 2;
+#endif
     /*An interpreted x87 or 0F instruction can undo what the block took as
       done (FNINIT, FRSTOR, FXRSTOR and FEMMS empty the tags and leave MMX
       mode, CLTS changes CR0): the next compiled FPU or MMX instruction
