@@ -64,7 +64,11 @@ host_reg_def_t codegen_host_reg_list[CODEGEN_HOST_REGS] = {
   them across funcion calls*/
     { REG_EAX, 0},
     { REG_EBX, 0},
-    { REG_EDX, 0}
+    { REG_EDX, 0},
+  /*R10 and R11 are volatile too: the memory routines and the ordered calls
+    save them, as EAX and EDX, and no other code the blocks reach uses them*/
+    { REG_R10, HOST_REG_FLAG_NO_BYTE},
+    { REG_R11, HOST_REG_FLAG_NO_BYTE}
 };
 
 /* The Windows x64 frame: the 32 bytes of home space a called function may
@@ -180,13 +184,15 @@ build_load_routine(codeblock_t *block, int size, int is_float, int ea_rule)
         *misaligned_offset = (uint8_t) ((uintptr_t) &block_write_data[block_pos] - (uintptr_t) misaligned_offset) - 1;
     host_x86_PUSH(block, REG_RAX);
     host_x86_PUSH(block, REG_RDX);
+    host_x86_PUSH(block, REG_R10);
+    host_x86_PUSH(block, REG_R11);
 #    if _WIN64
     /* The callee's 32 bytes, then the FP registers kept */
     host_x86_SUB64_REG_IMM(block, REG_RSP, 0x28 + ROUTINE_FP_SAVE + 8);
     routine_save_fp(block, 0x28);
     // host_x86_MOV32_REG_REG(block, REG_ECX, uop->imm_data);
 #    else
-    /* Align RSP to 16: entry RSP%16=8 (after CALL from JIT block), two PUSHes
+    /* Align RSP to 16: entry RSP%16=8 (after CALL from JIT block), four PUSHes
        leave it at 8; subtract 8 more to satisfy the SysV ABI before calling C,
        and room for the FP registers kept, a multiple of 16. */
     host_x86_SUB64_REG_IMM(block, REG_RSP, 0x8 + ROUTINE_FP_SAVE + 8);
@@ -217,6 +223,8 @@ build_load_routine(codeblock_t *block, int size, int is_float, int ea_rule)
     routine_restore_fp(block, 0);
     host_x86_ADD64_REG_IMM(block, REG_RSP, 0x8 + ROUTINE_FP_SAVE + 8);
 #    endif
+    host_x86_POP(block, REG_R11);
+    host_x86_POP(block, REG_R10);
     host_x86_POP(block, REG_RDX);
     host_x86_POP(block, REG_RAX);
     host_x86_MOVZX_REG_ABS_32_8(block, REG_ESI, &cpu_state.abrt);
@@ -282,6 +290,8 @@ build_store_routine(codeblock_t *block, int size, int is_float)
         *misaligned_offset = (uint8_t) ((uintptr_t) &block_write_data[block_pos] - (uintptr_t) misaligned_offset) - 1;
     host_x86_PUSH(block, REG_RAX);
     host_x86_PUSH(block, REG_RDX);
+    host_x86_PUSH(block, REG_R10);
+    host_x86_PUSH(block, REG_R11);
 #    if _WIN64
     host_x86_SUB64_REG_IMM(block, REG_RSP, 0x28 + ROUTINE_FP_SAVE + 8);
     routine_save_fp(block, 0x28);
@@ -318,6 +328,8 @@ build_store_routine(codeblock_t *block, int size, int is_float)
     routine_restore_fp(block, 0);
     host_x86_ADD64_REG_IMM(block, REG_RSP, 0x8 + ROUTINE_FP_SAVE + 8);
 #    endif
+    host_x86_POP(block, REG_R11);
+    host_x86_POP(block, REG_R10);
     host_x86_POP(block, REG_RDX);
     host_x86_POP(block, REG_RAX);
     host_x86_MOVZX_REG_ABS_32_8(block, REG_ESI, &cpu_state.abrt);

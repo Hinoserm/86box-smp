@@ -232,15 +232,17 @@ codegen_CALL_FUNC(codeblock_t *block, uop_t *uop)
     return 0;
 }
 
-/*An order barrier leaves the cached registers loaded, and EAX and EDX are
-  not preserved by the callee, so they are saved around the call. Two pushes
-  keep RSP 16-byte aligned; Windows also needs the 32-byte home area below
+/*An order barrier leaves the cached registers loaded, and EAX, EDX, R10 and
+  R11 are not preserved by the callee, so they are saved around the call.
+  Four pushes keep RSP 16-byte aligned; Windows also needs the 32-byte home area below
   them, so the callee does not overwrite the saved values.*/
 static int
 codegen_CALL_FUNC_ORDERED(codeblock_t *block, uop_t *uop)
 {
     host_x86_PUSH(block, REG_RAX);
     host_x86_PUSH(block, REG_RDX);
+    host_x86_PUSH(block, REG_R10);
+    host_x86_PUSH(block, REG_R11);
 #    if _WIN64
     host_x86_SUB64_REG_IMM(block, REG_RSP, 0x20);
 #    endif
@@ -248,6 +250,8 @@ codegen_CALL_FUNC_ORDERED(codeblock_t *block, uop_t *uop)
 #    if _WIN64
     host_x86_ADD64_REG_IMM(block, REG_RSP, 0x20);
 #    endif
+    host_x86_POP(block, REG_R11);
+    host_x86_POP(block, REG_R10);
     host_x86_POP(block, REG_RDX);
     host_x86_POP(block, REG_RAX);
 
@@ -265,6 +269,8 @@ codegen_CALL_FUNC_RESULT_ORDERED(codeblock_t *block, uop_t *uop)
 
     host_x86_PUSH(block, REG_RAX);
     host_x86_PUSH(block, REG_RDX);
+    host_x86_PUSH(block, REG_R10);
+    host_x86_PUSH(block, REG_R11);
 #    if _WIN64
     host_x86_SUB64_REG_IMM(block, REG_RSP, 0x20);
 #    endif
@@ -273,6 +279,8 @@ codegen_CALL_FUNC_RESULT_ORDERED(codeblock_t *block, uop_t *uop)
     host_x86_ADD64_REG_IMM(block, REG_RSP, 0x20);
 #    endif
     host_x86_MOV32_REG_REG(block, REG_ESI, REG_EAX);
+    host_x86_POP(block, REG_R11);
+    host_x86_POP(block, REG_R10);
     host_x86_POP(block, REG_RDX);
     host_x86_POP(block, REG_RAX);
     host_x86_MOV32_REG_REG(block, dest_reg, REG_ESI);
@@ -311,7 +319,7 @@ codegen_CALL_INSTRUCTION_FUNC(codeblock_t *block, uop_t *uop)
     return 0;
 }
 
-/*As codegen_CALL_INSTRUCTION_FUNC, with EAX and EDX kept on the stack
+/*As codegen_CALL_INSTRUCTION_FUNC, with EAX, EDX, R10 and R11 kept on the stack
   around the call as codegen_CALL_FUNC_ORDERED keeps them; the result is
   tested in ESI once they are back*/
 static int
@@ -319,6 +327,8 @@ codegen_CALL_INSTRUCTION_FUNC_ORDERED(codeblock_t *block, uop_t *uop)
 {
     host_x86_PUSH(block, REG_RAX);
     host_x86_PUSH(block, REG_RDX);
+    host_x86_PUSH(block, REG_R10);
+    host_x86_PUSH(block, REG_R11);
 #    if _WIN64
     host_x86_SUB64_REG_IMM(block, REG_RSP, 0x20);
     host_x86_MOV32_REG_IMM(block, REG_ECX, uop->imm_data);
@@ -330,6 +340,8 @@ codegen_CALL_INSTRUCTION_FUNC_ORDERED(codeblock_t *block, uop_t *uop)
     host_x86_ADD64_REG_IMM(block, REG_RSP, 0x20);
 #    endif
     host_x86_MOV32_REG_REG(block, REG_ESI, REG_EAX);
+    host_x86_POP(block, REG_R11);
+    host_x86_POP(block, REG_R10);
     host_x86_POP(block, REG_RDX);
     host_x86_POP(block, REG_RAX);
     host_x86_TEST32_REG(block, REG_ESI, REG_ESI);
