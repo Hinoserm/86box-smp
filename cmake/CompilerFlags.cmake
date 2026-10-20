@@ -18,12 +18,8 @@ add_compile_options(
     "$<$<COMPILE_LANGUAGE:C>:-Werror=old-style-definition>"
 )
 
-# The x86-64 target the build may assume. The default runs on any x86-64
-# machine; a local build can name its own CPU (e.g. znver5).
-set(X86_64_MARCH "x86-64" CACHE STRING "-march for x86-64 builds")
-
 if(ARCH STREQUAL "x86_64")
-    add_compile_options(-m64 "$<$<NOT:$<CONFIG:Optimized>>:-march=${X86_64_MARCH}>" -msse2 -mfpmath=sse -mstackrealign)
+    add_compile_options(-m64 "$<$<NOT:$<CONFIG:Optimized>>:-march=x86-64>" -msse2 -mfpmath=sse -mstackrealign)
 elseif(ARCH STREQUAL "arm64")
     if(APPLE)
         add_compile_options("$<$<NOT:$<CONFIG:Optimized>>:-march=armv8.5-a+simd>")
