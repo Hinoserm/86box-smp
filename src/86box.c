@@ -105,6 +105,11 @@
 #include <86box/version.h>
 #include <86box/gdbstub.h>
 #include <86box/automation.h>
+#ifdef USE_AUTOMATION
+#    define AUTOMATION_ACTIVE (automation_path[0] != '\0')
+#else
+#    define AUTOMATION_ACTIVE 0
+#endif
 #include <86box/machine_status.h>
 #include <86box/acpi.h>
 #include <86box/nv/vid_nv_rivatimer.h>
@@ -211,7 +216,6 @@ int      confirm_save                           = 1;              /* (G) enable 
 int      settings_layout                        = 0;              /* (G) Settings dialog: 0 classic, 1 slot-based preview */
 int      settings_advanced                      = 0;              /* (G) slot-based Settings: the Cards page's Advanced view */
 int      chd_precache_level                     = 0;              /* (G) CHD precache level */
-int      enable_discord                         = 0;              /* (C) enable Discord integration */
 int      pit_mode                               = -1;             /* (C) force setting PIT mode */
 int      fm_driver                              = 0;              /* (C) select FM sound driver */
 int      open_dir_usr_path                      = 0;              /* (G) default file open dialog directory
@@ -231,6 +235,7 @@ int      inhibit_multimedia_keys;                                 /* (G) Inhibit
 int      force_10ms;                                              /* (C) Force 10ms CPU frame intervals. */
 int      start_fast_forward;                                      /* (C) Start in fast-forward mode. */
 int      vmm_disabled                           = 0;              /* (G) disable built-in manager */
+int      discord_presence                       = 0;              /* (G) Discord status: off, name and hardware, hardware only, no details */
 char     vmm_path_cfg[1024]                     = { '\0' };       /* (G) VMs path (unless -E is used)*/
 
 int      other_ide_present = 0;                                   /* IDE controllers from non-IDE cards are
@@ -680,7 +685,11 @@ warning(const char *fmt, ...)
 
     do_pause(2);
 
-    ui_msgbox(MBX_WARNING, temp);
+    /* With an automation client, nobody may be there to dismiss the dialog,
+       and while it's up the machine and the socket are stuck (headless, for
+       good). The message is in the log; carry on. */
+    if (!AUTOMATION_ACTIVE)
+        ui_msgbox(MBX_WARNING, temp);
 
     fflush(stdlog);
     free(temp);
@@ -716,7 +725,11 @@ warning_ex(const char *fmt, va_list ap)
 
     do_pause(2);
 
-    ui_msgbox(MBX_WARNING, temp);
+    /* With an automation client, nobody may be there to dismiss the dialog,
+       and while it's up the machine and the socket are stuck (headless, for
+       good). The message is in the log; carry on. */
+    if (!AUTOMATION_ACTIVE)
+        ui_msgbox(MBX_WARNING, temp);
 
     fflush(stdlog);
     free(temp);

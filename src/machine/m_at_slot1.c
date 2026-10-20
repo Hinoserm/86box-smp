@@ -1346,31 +1346,6 @@ machine_at_p6i440e2_init(const machine_t *model)
 }
 
 /* i440BX */
-int
-machine_at_bf6_init(const machine_t *model)
-{
-    int ret;
-
-    ret = bios_load_linear("roms/machines/bf6/Beh_70.bin",
-                           0x000c0000, 262144, 0);
-
-    if (bios_only || !ret)
-        return ret;
-
-    machine_at_common_init(model);
-
-    machine_pci_init();
-    machine_pci_register_slots();
-
-    device_add(&i440bx_device);
-    device_add(&piix4e_device);
-    device_add_params(&w83977_device, (void *) (W83977EF | W83977_AMI | W83977_NO_NVR));
-    device_add(&sst_flash_39sf020_device);
-    spd_register(SPD_TYPE_SDRAM, 0x7, 256);
-
-    return ret;
-}
-
 static const device_config_t be6ii_config[] = {
     // clang-format off
     {
@@ -1533,6 +1508,31 @@ machine_at_be6ii_init(const machine_t *model)
     spd_register(SPD_TYPE_SDRAM, 0x7, 256);
     device_add(&w83782d_device); /* fans: Chassis, Power, CPU; temperatures: System, CPU, unused */
     hwm_values.temperatures[2] = 0;
+
+    return ret;
+}
+
+int
+machine_at_bf6_init(const machine_t *model)
+{
+    int ret;
+
+    ret = bios_load_linear("roms/machines/bf6/Beh_70.bin",
+                           0x000c0000, 262144, 0);
+
+    if (bios_only || !ret)
+        return ret;
+
+    machine_at_common_init(model);
+
+    machine_pci_init();
+    machine_pci_register_slots();
+
+    device_add(&i440bx_device);
+    device_add(&piix4e_device);
+    device_add_params(&w83977_device, (void *) (W83977EF | W83977_AMI | W83977_NO_NVR));
+    device_add(&sst_flash_39sf020_device);
+    spd_register(SPD_TYPE_SDRAM, 0x7, 256);
 
     return ret;
 }

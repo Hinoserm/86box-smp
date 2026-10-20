@@ -241,7 +241,6 @@ extern int      confirm_save;               /* (G) enable save confirmation */
 extern int      settings_layout;            /* (G) Settings dialog: 0 classic, 1 slot-based preview */
 extern int      settings_advanced;          /* (G) slot-based Settings: the Cards page's Advanced view */
 extern int      chd_precache_level;         /* (G) CHD precache level */
-extern int      enable_discord;             /* (C) enable Discord integration */
 extern int      force_10ms;                 /* (C) force 10ms CPU frame interval */
 extern int      start_fast_forward;         /* (C) start in fast-forward mode */
 extern int      jumpered_internal_ecp_dma;  /* (C) Jumpered internal EPC DMA */
@@ -268,6 +267,7 @@ extern int    fm_driver;                    /* (C) select FM sound driver */
 extern int    hook_enabled;                 /* (C) Keyboard hook is enabled */
 extern int    vmm_disabled;                 /* (G) disable built-in manager */
 extern char   vmm_path_cfg[1024];           /* (G) VMs path (unless -E is used) */
+extern int    discord_presence;             /* (G) Discord status: off, name and hardware, hardware only, no details */
 extern int    gdbstub_port;                 /* (C) The GDB stub port. */
 extern int    debug_console_port;           /* (C) The debug console listens here from start-up; 0 off. */
 /* (G) Where the debug console's TCP token goes. */

@@ -83,6 +83,16 @@ VMManagerPreferences::
 #else
     ui->deleteToTrashCheckBox->setVisible(false);
 #endif
+#ifdef DISCORD
+    ui->discordCheckBox->setChecked(discord_presence != 0);
+    ui->comboBoxDiscordPrivacy->setCurrentIndex(qMax(discord_presence - 1, 0));
+    ui->comboBoxDiscordPrivacy->setEnabled(ui->discordCheckBox->isChecked());
+    ui->labelDiscordPrivacy->setEnabled(ui->discordCheckBox->isChecked());
+    connect(ui->discordCheckBox, &QCheckBox::toggled, ui->comboBoxDiscordPrivacy, &QWidget::setEnabled);
+    connect(ui->discordCheckBox, &QCheckBox::toggled, ui->labelDiscordPrivacy, &QWidget::setEnabled);
+#else
+    ui->groupBoxDiscord->setVisible(false);
+#endif
 
     ui->settingsLayoutCheckBox->setChecked(settings_layout == 1);
 
@@ -134,6 +144,9 @@ VMManagerPreferences::accept()
     lang_id      = ui->comboBoxLanguage->currentData().toInt();
     color_scheme = (ui->radioButtonSystem->isChecked()) ? 0 : (ui->radioButtonLight->isChecked() ? 1 : 2);
     settings_layout = ui->settingsLayoutCheckBox->isChecked() ? 1 : 0;
+#ifdef DISCORD
+    discord_presence = ui->discordCheckBox->isChecked() ? (ui->comboBoxDiscordPrivacy->currentIndex() + 1) : 0;
+#endif
     config_save_global();
 
 #if EMU_BUILD_NUM != 0
