@@ -398,7 +398,10 @@
 /*UOP_CMP_IMM_JB - if (src_reg_a < imm), unsigned, then jump to ptr*/
 #define UOP_CMP_IMM_JB (UOP_TYPE_PARAMS_REGS | UOP_TYPE_PARAMS_IMM | UOP_TYPE_PARAMS_POINTER | 0xd0 | UOP_TYPE_ORDER_BARRIER)
 
-#define UOP_MAX     0xd1
+/*UOP_HEAT_DEC_JNZ_DEST - count down codegen_heat[imm], and jump to the destination unless it has run out*/
+#define UOP_HEAT_DEC_JNZ_DEST (UOP_TYPE_PARAMS_IMM | 0xd1 | UOP_TYPE_ORDER_BARRIER | UOP_TYPE_JUMP)
+
+#define UOP_MAX     0xd2
 
 #define UOP_INVALID 0xff
 
@@ -554,6 +557,17 @@ uop_gen_reg_src1_imm(uint32_t uop_type, ir_data_t *ir, int src_reg, uint32_t imm
     uop->type      = uop_type;
     uop->src_reg_a = codegen_reg_read(src_reg);
     uop->imm_data  = imm;
+
+    return ir->wr_pos - 1;
+}
+
+static inline int
+uop_gen_imm_jump(uint32_t uop_type, ir_data_t *ir, uint32_t imm)
+{
+    uop_t *uop = uop_alloc(ir, uop_type);
+
+    uop->type     = uop_type;
+    uop->imm_data = imm;
 
     return ir->wr_pos - 1;
 }
@@ -837,6 +851,7 @@ extern void codegen_fpu_guard_int_indefinite(ir_data_t *ir, uint32_t fetchdat, u
 #define uop_CALL_INSTRUCTION_FUNC(ir, p, imm)                    uop_gen_pointer_imm(UOP_CALL_INSTRUCTION_FUNC, ir, p, imm)
 
 #define uop_CMP_IMM_JZ(ir, src_reg, imm, p)                      uop_gen_reg_src_pointer_imm(UOP_CMP_IMM_JZ, ir, src_reg, p, imm)
+#define uop_HEAT_DEC_JNZ_DEST(ir, nr)                            uop_gen_imm_jump(UOP_HEAT_DEC_JNZ_DEST, ir, nr)
 #define uop_CMP_IMM_JB(ir, src_reg, imm, p)                      uop_gen_reg_src_pointer_imm(UOP_CMP_IMM_JB, ir, src_reg, p, imm)
 
 #define uop_CMP_IMM_JNZ_DEST(ir, src_reg, imm)                   uop_gen_reg_src1_imm(UOP_CMP_IMM_JNZ_DEST, ir, src_reg, imm)

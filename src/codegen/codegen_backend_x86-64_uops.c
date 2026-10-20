@@ -432,6 +432,19 @@ codegen_CMP_IMM_JB(codeblock_t *block, uop_t *uop)
     return 0;
 }
 
+/*Counts a short block's run (codegen_heat[imm]) in ECX, which no IR
+  register is in, and jumps on unless the count has run out*/
+static int
+codegen_HEAT_DEC_JNZ_DEST(codeblock_t *block, uop_t *uop)
+{
+    host_x86_MOV32_REG_ABS(block, REG_ECX, &codegen_heat[uop->imm_data]);
+    host_x86_SUB32_REG_IMM(block, REG_ECX, 1);
+    host_x86_MOV32_ABS_REG(block, &codegen_heat[uop->imm_data], REG_ECX);
+    uop->p = host_x86_JNZ_long(block);
+
+    return 0;
+}
+
 static int
 codegen_CMP_IMM_JZ(codeblock_t *block, uop_t *uop)
 {
@@ -3802,6 +3815,9 @@ const uOpFn uop_handlers[UOP_MAX] = {
     [UOP_CMP_IMM_JB &
         UOP_MASK]
     = codegen_CMP_IMM_JB,
+    [UOP_HEAT_DEC_JNZ_DEST &
+        UOP_MASK]
+    = codegen_HEAT_DEC_JNZ_DEST,
     [UOP_CMP_JNBE &
         UOP_MASK]
     = codegen_CMP_JNBE,

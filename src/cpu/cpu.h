@@ -475,6 +475,12 @@ typedef struct {
     void *chain_signal;
     int   chain_floor;
     int   chain_cycles;
+
+    /* The number of a short block that has run often enough to be compiled
+       again as a long one (UOP_HEAT_DEC_JNZ_DEST), for the dispatcher;
+       CODEGEN_PROMOTE_NONE otherwise. In cpu_state so that every backend
+       stores it as it stores the PC. */
+    uint32_t promote;
 } cpu_state_t;
 
 #define in_smm   cpu_state._in_smm

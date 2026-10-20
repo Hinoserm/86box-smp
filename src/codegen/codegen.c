@@ -673,6 +673,10 @@ codegen_fpu_rc_nearest(ir_data_t *ir)
 int
 codegen_can_continue(const codeblock_t *block, uint32_t pc)
 {
+#ifdef CODEGEN_BACKEND_HAS_HEAT
+    if (!block->tier)
+        return 0; /* compiled short until it is hot */
+#endif
     if ((block->flags & CODEBLOCK_BYTE_MASK) || cpu_end_block_after_ins ||
         ((block->ins + 1) >= MAX_INSTRUCTION_COUNT) || (((cs + pc) ^ block->pc) & ~0xfff))
         return 0;

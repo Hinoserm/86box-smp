@@ -71,6 +71,11 @@ typedef struct codeblock_t {
       entry_byte, the block leaving at once otherwise.*/
     uint8_t entry_hot;
     uint8_t entry_byte;
+    /*0: compiled short, ending at its first branch, with a count of its runs
+      that has it compiled again long once it is hot (codegen_heat); 1:
+      compiled long, going on through direct JMPs, CALLs and the Jccs taken
+      as it is recorded (codegen_can_continue).*/
+    uint8_t tier;
 
 #ifdef CODEGEN_CHAIN
     /*Where a linked block enters it (data[chain_entry]): past the part of
@@ -105,6 +110,11 @@ typedef struct codeblock_t {
 extern int      codegen_jump_continue;
 extern uint32_t codegen_jump_continue_pc;
 extern int      codegen_can_continue(const codeblock_t *block, uint32_t pc);
+/*Runs left before a short block is compiled again long, by block number;
+  counted down by the block itself as it is entered, by a link too.*/
+#define CODEGEN_HEAT          128
+#define CODEGEN_PROMOTE_NONE  0xffffffff
+extern uint32_t codegen_heat[];
 
 #ifdef CODEGEN_CHAIN
 /*Moved whenever compiled code is freed or every link goes

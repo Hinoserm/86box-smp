@@ -41,6 +41,7 @@ int      mmx_ebx_ecx_loaded;
 int      codegen_flags_changed = 0;
 int      codegen_fpu_entered   = 0;
 codegen_hot_t codegen_hot[CODEGEN_HOT_NR];
+uint32_t      codegen_heat[BLOCK_SIZE];
 
 /*The bytes where two versions of a block's code differ, as rewritten guest
   code (codegen_hot_byte).*/
@@ -1483,6 +1484,7 @@ codegen_reset(void)
 {
     int c;
 
+    cpu_state.promote = CODEGEN_PROMOTE_NONE;
 #ifdef CODEGEN_CHAIN
     codegen_links_drop_all(1);
 #endif
@@ -1912,6 +1914,7 @@ codegen_block_init(uint32_t phys_addr)
     block->status                        = cpu_cur_status;
     block->flips                         = 0;
     block->entry_hot                     = 0;
+    block->tier                          = 0;
 
     recomp_page = block->phys & ~0xfff;
     codeblock_tree_add(block);
@@ -2032,6 +2035,22 @@ codegen_block_start_recompile(codeblock_t *block)
     codegen_reg_reset();
     codegen_accumulate_reset();
     codegen_generate_reset();
+
+#ifdef CODEGEN_BACKEND_HAS_HEAT
+    /* Compiled short: it counts its runs, a link's too, and once hot leaves
+       for the dispatcher to compile it long, before anything of it runs. A
+       block kept to its two chunks never goes long (codegen_can_continue). */
+    if (!block->tier && !(block->flags & CODEBLOCK_BYTE_MASK)) {
+        int jump_uop;
+
+        codegen_heat[block_current] = CODEGEN_HEAT;
+        jump_uop = uop_HEAT_DEC_JNZ_DEST(ir_data, block_current);
+        uop_STORE_PTR_IMM(ir_data, &cpu_state.promote, block_current);
+        uop_STORE_PTR_IMM(ir_data, &cpu_state.pc, cpu_state.pc);
+        uop_JMP(ir_data, codegen_exit_rout);
+        uop_set_jump_dest(ir_data, jump_uop);
+    }
+#endif
 }
 
 void

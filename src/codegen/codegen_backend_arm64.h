@@ -29,6 +29,8 @@
    MUL_HI. A backend without them leaves those instructions to the
    interpreter. */
 #define CODEGEN_BACKEND_HAS_INT_UOPS
+/* UOP_HEAT_DEC_JNZ_DEST: short blocks count their runs, to be compiled long once hot. */
+#define CODEGEN_BACKEND_HAS_HEAT
 
 void host_arm64_BLR(codeblock_t *block, int addr_reg);
 void host_arm64_CBNZ(codeblock_t *block, int reg, uintptr_t dest);

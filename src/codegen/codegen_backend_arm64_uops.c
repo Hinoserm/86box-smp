@@ -308,6 +308,21 @@ codegen_CMP_IMM_JNZ_DEST(codeblock_t *block, uop_t *uop)
 
     return 0;
 }
+/*Counts a short block's run (codegen_heat[imm]) in W17 through X16, the
+  scratch registers, and branches on unless the count has run out*/
+static int
+codegen_HEAT_DEC_JNZ_DEST(codeblock_t *block, uop_t *uop)
+{
+    host_arm64_MOVX_IMM(block, REG_X16, (uint64_t) (uintptr_t) &codegen_heat[uop->imm_data]);
+    host_arm64_LDR_IMM_W(block, REG_W17, REG_X16, 0);
+    host_arm64_SUB_IMM(block, REG_W17, REG_W17, 1);
+    host_arm64_STR_IMM_W(block, REG_W17, REG_X16, 0);
+    host_arm64_CMP_IMM(block, REG_W17, 0);
+    uop->p = host_arm64_BNE_(block);
+
+    return 0;
+}
+
 static int
 codegen_CMP_IMM_JZ_DEST(codeblock_t *block, uop_t *uop)
 {
@@ -3861,6 +3876,9 @@ const uOpFn uop_handlers[UOP_MAX] = {
     [UOP_CMP_IMM_JNZ_DEST &
         UOP_MASK]
     = codegen_CMP_IMM_JNZ_DEST,
+    [UOP_HEAT_DEC_JNZ_DEST &
+        UOP_MASK]
+    = codegen_HEAT_DEC_JNZ_DEST,
     [UOP_CMP_IMM_JZ_DEST &
         UOP_MASK]
     = codegen_CMP_IMM_JZ_DEST,

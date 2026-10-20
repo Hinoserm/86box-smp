@@ -1027,6 +1027,18 @@ exec386_dynarec_dyn(void)
            again from what is there. One compiled without that guard,
            starting on a byte found since to be rewritten, is compiled
            again. */
+#    ifdef CODEGEN_BACKEND_HAS_HEAT
+        /* A short block that has run often enough left to be compiled
+           again long (UOP_HEAT_DEC_JNZ_DEST), before any of it ran. */
+        if (cpu_state.promote != CODEGEN_PROMOTE_NONE) {
+            if (valid_block && (block->flags & CODEBLOCK_WAS_RECOMPILED) && !block->tier &&
+                (cpu_state.promote == get_block_nr(block))) {
+                block->tier = 1;
+                block->flags &= ~CODEBLOCK_WAS_RECOMPILED;
+            }
+            cpu_state.promote = CODEGEN_PROMOTE_NONE;
+        }
+#    endif
         if (valid_block && (block->flags & CODEBLOCK_WAS_RECOMPILED)) {
             if (!block->entry_hot) {
                 if (hot)
