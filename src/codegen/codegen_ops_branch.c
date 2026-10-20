@@ -113,8 +113,15 @@ jcc_taken(int cc)
 static void
 jcc_continue_start(codeblock_t *block, uint8_t opcode, uint32_t dest_addr)
 {
-    jcc_cont.want = !jcc_dynamic.active && jcc_taken(opcode & 0xf) && codegen_can_continue(block, dest_addr);
+    const int taken = !jcc_dynamic.active && jcc_taken(opcode & 0xf);
+
+    jcc_cont.want = taken && codegen_can_continue(block, dest_addr, 1);
     jcc_cont.uop  = -1;
+#ifdef CODEGEN_BACKEND_HAS_HEAT
+    /* A short block would go on here once long: it counts its runs */
+    if (taken && !block->tier && !jcc_cont.want && codegen_can_continue(block, dest_addr, 0))
+        codegen_promotable = 1;
+#endif
 }
 
 static uint32_t

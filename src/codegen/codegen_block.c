@@ -42,6 +42,10 @@ int      codegen_flags_changed = 0;
 int      codegen_fpu_entered   = 0;
 codegen_hot_t codegen_hot[CODEGEN_HOT_NR];
 uint32_t      codegen_heat[BLOCK_SIZE];
+/*A short block being compiled stopped at a Jcc it would go on through once
+  long (codegen_ops_branch.c): only then does it count its runs.*/
+int        codegen_promotable;
+static int codegen_heat_first = -1, codegen_heat_end;
 
 /*The bytes where two versions of a block's code differ, as rewritten guest
   code (codegen_hot_byte).*/
@@ -2040,14 +2044,18 @@ codegen_block_start_recompile(codeblock_t *block)
     /* Compiled short: it counts its runs, a link's too, and once hot leaves
        for the dispatcher to compile it long, before anything of it runs. A
        block kept to its two chunks never goes long (codegen_can_continue). */
+    codegen_promotable = 0;
+    codegen_heat_first = -1;
     if (!block->tier && !(block->flags & CODEBLOCK_BYTE_MASK)) {
         int jump_uop;
 
         codegen_heat[block_current] = CODEGEN_HEAT;
+        codegen_heat_first          = ir_data->wr_pos;
         jump_uop = uop_HEAT_DEC_JNZ_DEST(ir_data, block_current);
         uop_STORE_PTR_IMM(ir_data, &cpu_state.promote, block_current);
         uop_STORE_PTR_IMM(ir_data, &cpu_state.pc, cpu_state.pc);
         uop_JMP(ir_data, codegen_exit_rout);
+        codegen_heat_end = ir_data->wr_pos;
         uop_set_jump_dest(ir_data, jump_uop);
     }
 #endif
@@ -2250,6 +2258,16 @@ codegen_block_end_recompile(codeblock_t *block)
        a link at its end, appended after loop unrolling (codegen_ir.c). */
     codegen_end_link_pending = codegen_end_link_ok;
     codegen_end_link_ok      = 0;
+#endif
+#ifdef CODEGEN_BACKEND_HAS_HEAT
+    /* A short block with no Jcc it would go on through once long gains
+       nothing from going long: it does not count its runs (the uops placed
+       for it at the start of the compile go, unassembled). */
+    if ((codegen_heat_first != -1) && !codegen_promotable) {
+        for (int c = codegen_heat_first; c < codegen_heat_end; c++)
+            ir_data->uops[c].type = UOP_INVALID;
+    }
+    codegen_heat_first = -1;
 #endif
     codegen_ir_compile(ir_data, block);
 

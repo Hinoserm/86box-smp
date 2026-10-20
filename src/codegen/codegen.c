@@ -669,13 +669,16 @@ codegen_fpu_rc_nearest(ir_data_t *ir)
    (whose writes the block is checked against, as the page after it), where
    the block has not been -- never a loop through its own code -- with room
    for another instruction. Not in a block kept to its two chunks for code
-   rewritten byte by byte, and not where STI's shadow ends the block. */
+   rewritten byte by byte, and not where STI's shadow ends the block. A
+   direct JMP or CALL goes on in any block; a Jcc taken as recorded only in
+   one compiled long (tier 1), the way it goes on being the way it went once
+   and the other way's code copied into every block it is reached from. */
 int
-codegen_can_continue(const codeblock_t *block, uint32_t pc)
+codegen_can_continue(const codeblock_t *block, uint32_t pc, int jcc)
 {
 #ifdef CODEGEN_BACKEND_HAS_HEAT
-    if (!block->tier)
-        return 0; /* compiled short until it is hot */
+    if (jcc && !block->tier)
+        return 0; /* a short block until it is hot */
 #endif
     if ((block->flags & CODEBLOCK_BYTE_MASK) || cpu_end_block_after_ins ||
         ((block->ins + 1) >= MAX_INSTRUCTION_COUNT) || (((cs + pc) ^ block->pc) & ~0xfff))
@@ -1209,7 +1212,7 @@ generate_call:
                (codegen_can_continue), the registers held across it. */
             if ((new_pc != -1) && (op_table == x86_dynarec_opcodes) &&
                 ((opcode == 0xe8) || (opcode == 0xe9) || (opcode == 0xeb)) &&
-                codegen_can_continue(block, new_pc)) {
+                codegen_can_continue(block, new_pc, 0)) {
                 codegen_jump_continue    = 1;
                 codegen_jump_continue_pc = cs + new_pc;
             }
