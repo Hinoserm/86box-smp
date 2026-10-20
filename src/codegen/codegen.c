@@ -664,6 +664,25 @@ codegen_fpu_rc_nearest(ir_data_t *ir)
     return 1;
 }
 
+/* Whether the block being compiled may go on at pc (from CS) after the
+   instruction being compiled, which leaves for it: on the block's first page
+   (whose writes the block is checked against, as the page after it), where
+   the block has not been -- never a loop through its own code -- with room
+   for another instruction. Not in a block kept to its two chunks for code
+   rewritten byte by byte, and not where STI's shadow ends the block. */
+int
+codegen_can_continue(const codeblock_t *block, uint32_t pc)
+{
+    if ((block->flags & CODEBLOCK_BYTE_MASK) || cpu_end_block_after_ins ||
+        ((block->ins + 1) >= MAX_INSTRUCTION_COUNT) || (((cs + pc) ^ block->pc) & ~0xfff))
+        return 0;
+    for (int c = 0; c <= block->ins; c++) {
+        if (codegen_instructions[c].pc == pc)
+            return 0;
+    }
+    return 1;
+}
+
 void
 codegen_generate_call(uint8_t opcode, OpFn op, uint32_t fetchdat, uint32_t new_pc, uint32_t old_pc)
 {
@@ -1182,25 +1201,13 @@ generate_call:
             else
                 codegen_end_link_ok = 0;
 #endif
-            /* A direct JMP or CALL goes on into its target in the same block,
-               the registers held across it, if that is on the block's first
-               page (whose writes the block is checked against, as the page
-               after it), where the block has not been: never a loop through
-               the block's own code. A block for code rewritten byte by byte
-               keeps to its two chunks. */
+            /* A direct JMP or CALL goes on into its target in the same block
+               (codegen_can_continue), the registers held across it. */
             if ((new_pc != -1) && (op_table == x86_dynarec_opcodes) &&
                 ((opcode == 0xe8) || (opcode == 0xe9) || (opcode == 0xeb)) &&
-                !(block->flags & CODEBLOCK_BYTE_MASK) && !cpu_end_block_after_ins &&
-                ((block->ins + 1) < MAX_INSTRUCTION_COUNT) &&
-                !(((cs + new_pc) ^ block->pc) & ~0xfff)) {
-                int seen = (new_pc == cpu_state.oldpc);
-
-                for (int c = 0; !seen && (c <= block->ins); c++)
-                    seen = (codegen_instructions[c].pc == new_pc);
-                if (!seen) {
-                    codegen_jump_continue    = 1;
-                    codegen_jump_continue_pc = cs + new_pc;
-                }
+                codegen_can_continue(block, new_pc)) {
+                codegen_jump_continue    = 1;
+                codegen_jump_continue_pc = cs + new_pc;
             }
 
             codegen_endpc = (cs + cpu_state.pc) + 8;

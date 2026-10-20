@@ -104,6 +104,7 @@ typedef struct codeblock_t {
   block open past it (386_dynarec.c).*/
 extern int      codegen_jump_continue;
 extern uint32_t codegen_jump_continue_pc;
+extern int      codegen_can_continue(const codeblock_t *block, uint32_t pc);
 
 #ifdef CODEGEN_CHAIN
 /*Moved whenever compiled code is freed or every link goes

@@ -64,9 +64,91 @@ jcc_dynamic_end(codeblock_t *block, uint32_t op_pc, int unrolled)
     jcc_dynamic.active = 0;
 }
 
+/* A Jcc the guest takes as the block is recorded, its target one the block
+   can go on at (codegen_can_continue): compiled the other way round, the
+   block goes on at the target, the registers held, and leaves for the
+   instruction after the Jcc when the condition does not hold. jcc_exit()
+   makes the taken path jump over that exit; jcc_continue_end() puts the
+   exit after the handler's code, where the not-taken path arrives. */
+static struct {
+    int want;
+    int uop; /* the taken path's jump past the exit, or -1 */
+} jcc_cont = { 0, -1 };
+
+/* Whether the condition (the low nibble of the opcode) holds now. */
+static int
+jcc_taken(int cc)
+{
+    int t;
+
+    switch (cc >> 1) {
+        case 0:
+            t = !!VF_SET();
+            break;
+        case 1:
+            t = !!CF_SET();
+            break;
+        case 2:
+            t = !!ZF_SET();
+            break;
+        case 3:
+            t = !!CF_SET() || !!ZF_SET();
+            break;
+        case 4:
+            t = !!NF_SET();
+            break;
+        case 5:
+            t = !!PF_SET();
+            break;
+        case 6:
+            t = (!!NF_SET()) != (!!VF_SET());
+            break;
+        default:
+            t = !!ZF_SET() || ((!!NF_SET()) != (!!VF_SET()));
+            break;
+    }
+    return (cc & 1) ? !t : t;
+}
+
+static void
+jcc_continue_start(codeblock_t *block, uint8_t opcode, uint32_t dest_addr)
+{
+    jcc_cont.want = !jcc_dynamic.active && jcc_taken(opcode & 0xf) && codegen_can_continue(block, dest_addr);
+    jcc_cont.uop  = -1;
+}
+
+static uint32_t
+jcc_continue_end(ir_data_t *ir, int unrolled, uint32_t dest_addr, uint32_t next_pc)
+{
+    const int uop = jcc_cont.uop;
+
+    jcc_cont.want = 0;
+    jcc_cont.uop  = -1;
+    if (unrolled)
+        return dest_addr;
+    if (uop == -1)
+        return next_pc;
+    /* The condition does not hold: out to the instruction after the Jcc,
+       its PC stored past the register allocation, which goes on with the
+       taken path's, as that path never runs this */
+    uop_STORE_PTR_IMM(ir, &cpu_state.pc, next_pc);
+    uop_JMP_EXIT_OR_LINK(ir);
+    uop_set_jump_dest(ir, uop);
+    codegen_jump_continue    = 1;
+    codegen_jump_continue_pc = cs + dest_addr;
+    return dest_addr;
+}
+
 static void
 jcc_exit(ir_data_t *ir, uint32_t dest_addr)
 {
+    if (jcc_cont.want && (jcc_cont.uop == -1) && !jcc_dynamic.active) {
+        /* Taken: past the exit, to where the block goes on (an order
+           barrier: the registers are written back but stay loaded, as the
+           other path leaves them) */
+        jcc_cont.uop = uop_JMP_DEST(ir);
+        return;
+    }
     if (!jcc_dynamic.active) {
         uop_MOV_IMM(ir, IREG_pc, dest_addr);
         uop_JMP_EXIT_OR_LINK(ir);
@@ -988,7 +1070,7 @@ ropJNLE_common(codeblock_t *block, ir_data_t *ir, uint32_t dest_addr, uint32_t n
 #define ropJ(cond)                                                      \
     uint32_t ropJ##cond##_8(codeblock_t *block,                         \
                             ir_data_t *ir,                              \
-                            UNUSED(uint8_t opcode),                     \
+                            uint8_t opcode,                             \
                             UNUSED(uint32_t fetchdat),                  \
                             uint32_t op_32,                             \
                             uint32_t op_pc)                             \
@@ -1001,14 +1083,15 @@ ropJNLE_common(codeblock_t *block, ir_data_t *ir, uint32_t dest_addr, uint32_t n
             dest_addr &= 0xffff;                                        \
         jcc_dynamic_start(block, op_pc, 1, op_pc + 1,                   \
                           !(op_32 & 0x100));                            \
+        jcc_continue_start(block, opcode, dest_addr);                   \
         ret = ropJ##cond##_common(block, ir, dest_addr, op_pc + 1);     \
         jcc_dynamic_end(block, op_pc, ret);                             \
                                                                         \
-        return ret ? dest_addr : (op_pc + 1);                           \
+        return jcc_continue_end(ir, ret, dest_addr, op_pc + 1);         \
     }                                                                   \
     uint32_t ropJ##cond##_16(codeblock_t *block,                        \
                              ir_data_t *ir,                             \
-                             UNUSED(uint8_t opcode),                    \
+                             uint8_t opcode,                            \
                              UNUSED(uint32_t fetchdat),                 \
                              UNUSED(uint32_t op_32),                    \
                              uint32_t op_pc)                            \
@@ -1018,14 +1101,15 @@ ropJNLE_common(codeblock_t *block, ir_data_t *ir, uint32_t dest_addr, uint32_t n
         int      ret;                                                   \
                                                                         \
         jcc_dynamic_start(block, op_pc, 2, op_pc + 2, 1);               \
+        jcc_continue_start(block, opcode, dest_addr);                   \
         ret = ropJ##cond##_common(block, ir, dest_addr, op_pc + 2);     \
         jcc_dynamic_end(block, op_pc, ret);                             \
                                                                         \
-        return ret ? dest_addr : (op_pc + 2);                           \
+        return jcc_continue_end(ir, ret, dest_addr, op_pc + 2);         \
     }                                                                   \
     uint32_t ropJ##cond##_32(codeblock_t *block,                        \
                              ir_data_t *ir,                             \
-                             UNUSED(uint8_t opcode),                    \
+                             uint8_t opcode,                            \
                              UNUSED(uint32_t fetchdat),                 \
                              UNUSED(uint32_t op_32),                    \
                              uint32_t op_pc)                            \
@@ -1035,10 +1119,11 @@ ropJNLE_common(codeblock_t *block, ir_data_t *ir, uint32_t dest_addr, uint32_t n
         int      ret;                                                   \
                                                                         \
         jcc_dynamic_start(block, op_pc, 4, op_pc + 4, 0);               \
+        jcc_continue_start(block, opcode, dest_addr);                   \
         ret = ropJ##cond##_common(block, ir, dest_addr, op_pc + 4);     \
         jcc_dynamic_end(block, op_pc, ret);                             \
                                                                         \
-        return ret ? dest_addr : (op_pc + 4);                           \
+        return jcc_continue_end(ir, ret, dest_addr, op_pc + 4);         \
     }
 
 // clang-format off
