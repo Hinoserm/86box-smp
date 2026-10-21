@@ -31,6 +31,7 @@ jobs:
   check:
     name: Check for changes
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       build: ${{ steps.check.outputs.build }}
     env:
@@ -70,6 +71,7 @@ jobs:
     needs: check
     if: needs.check.outputs.build == 'true'
     runs-on: windows-2022
+    timeout-minutes: 150
     env:
       GH_TOKEN: ${{ github.token }}
     defaults:
@@ -107,18 +109,24 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       # build.sh packs the Ghostscript DLL of the official installation in
-      # Program Files, as upstream's build machines have it.
-      - name: Install Ghostscript
+      # Program Files, as upstream's build machines have it. Only that DLL is
+      # used, so it is unpacked from the official installer to where the
+      # installer puts it; running the installer hung the step.
+      - name: Unpack Ghostscript
         shell: pwsh
+        timeout-minutes: 10
         run: |
           $setup = "$env:RUNNER_TEMP\gs10080w64.exe"
           Invoke-WebRequest https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10080/gs10080w64.exe -OutFile $setup
           if ((Get-FileHash $setup -Algorithm SHA256).Hash -ne '52A91B8BF09298788D7A57B9206127026C23EACD75405F0A131E26DC381DCE50') {
             throw "the Ghostscript download is not the one expected"
           }
-          $p = Start-Process -Wait -PassThru $setup -ArgumentList '/S'
-          if ($p.ExitCode -ne 0) { throw "Ghostscript's setup exited with $($p.ExitCode)" }
-          if (-not (Test-Path "$env:ProgramFiles\gs\gs10.08.0\bin\gsdll64.dll")) { throw "Ghostscript did not install gsdll64.dll" }
+          $bin = "$env:ProgramFiles\gs\gs10.08.0\bin"
+          & "$env:ProgramFiles\7-Zip\7z.exe" e -y "-o$bin" $setup 'bin\gsdll64.dll'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ((Get-FileHash "$bin\gsdll64.dll" -Algorithm SHA256).Hash -ne 'A134ED0D3AF749BDAB93C66029180E676D36D9CC624C192EA287F73C891FB0AF') {
+            throw "gsdll64.dll is not the one expected"
+          }
 
       # Upstream's release build, as its Jenkinsfile runs it for a Regular
       # Windows x64 build: librashader linked in, mdsx, libaaruformat and the
@@ -126,6 +134,7 @@ jobs:
       # fetches mdsx (and assets, for release builds only) from the owner of
       # the origin remote, which is upstream's for these.
       - name: Build with upstream's build script
+        timeout-minutes: 100
         run: |
           git config --global --add safe.directory "$(pwd)"
           git remote set-url origin https://github.com/86Box/86Box.git
@@ -179,6 +188,7 @@ jobs:
       # A version of our own, not the runner image's, which changes under us.
       - name: Install Inno Setup
         shell: pwsh
+        timeout-minutes: 10
         run: |
           $setup = "$env:RUNNER_TEMP\innosetup.exe"
           Invoke-WebRequest https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe -OutFile $setup
@@ -204,6 +214,7 @@ jobs:
 
       - name: Test the installer
         shell: pwsh
+        timeout-minutes: 20
         run: |
           $dir = "$env:RUNNER_TEMP\smoke"
           $log = "$env:RUNNER_TEMP\setup.log"
