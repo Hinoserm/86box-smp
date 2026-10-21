@@ -87,7 +87,7 @@ const
 var
   DownloadPage: TDownloadWizardPage;
   ExtractPage:  TExtractionWizardPage;
-  RomsSha:      String;  { the commit unpacked in {tmp}, once there is one }
+  RomsSha:      String;  { the commit unpacked in the temporary folder, once there is one }
   RomsDone:     Boolean; { install it }
 
 function RomsFetched: Boolean;

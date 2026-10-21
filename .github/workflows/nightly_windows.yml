@@ -140,12 +140,23 @@ jobs:
           New-Item -ItemType Directory -Force out | Out-Null
           Compress-Archive -Path build\artifacts\* -DestinationPath "out\${{ steps.name.outputs.base }}.zip" -CompressionLevel Optimal
 
+      # A version of our own, not the runner image's, which changes under us.
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $setup = "$env:RUNNER_TEMP\innosetup.exe"
+          Invoke-WebRequest https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe -OutFile $setup
+          if ((Get-FileHash $setup -Algorithm SHA256).Hash -ne '0362A383ED217D4C4239B5933866DD96D3EB2102737DA92F80F6057A4B40DF2F') {
+            throw "the Inno Setup download is not the one expected"
+          }
+          $p = Start-Process -Wait -PassThru $setup `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/CURRENTUSER', "/DIR=`"$env:RUNNER_TEMP\inno`""
+          if ($p.ExitCode -ne 0) { throw "Inno Setup's setup exited with $($p.ExitCode)" }
+
       - name: Build the installer
         shell: pwsh
         run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) { throw "Inno Setup 6 is not on this runner" }
-          & $iscc /Qp `
+          & "$env:RUNNER_TEMP\inno\ISCC.exe" /Qp `
             "/DAppVer=${{ steps.name.outputs.ver }}" `
             "/DBuildDate=${{ steps.name.outputs.date }}" `
             "/DGitHash=${{ steps.name.outputs.hash }}" `
