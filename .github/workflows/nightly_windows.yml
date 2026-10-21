@@ -215,8 +215,8 @@ jobs:
             echo
             echo "These builds are not run through the CPU and game test suites before they are published."
             echo
-            echo "- \`${{ steps.name.outputs.base }}-setup.exe\`: installer. It downloads the latest ROMs from [Hinoserm/roms](https://github.com/Hinoserm/roms) as it installs, and skips the download when they have not changed."
-            echo "- \`${{ steps.name.outputs.base }}.zip\`: the build alone. Put the ROMs from [Hinoserm/roms](https://github.com/Hinoserm/roms) in a \`roms\` folder next to \`86Box.exe\`."
+            echo "- \`${{ steps.name.outputs.base }}-setup.exe\`: installer. It downloads the latest ROMs from [Hinoserm/86box-roms](https://github.com/Hinoserm/86box-roms) as it installs, and skips the download when they have not changed."
+            echo "- \`${{ steps.name.outputs.base }}.zip\`: the build alone. Put the ROMs from [Hinoserm/86box-roms](https://github.com/Hinoserm/86box-roms) in a \`roms\` folder next to \`86Box.exe\`."
             echo "- \`SHA256SUMS.txt\`: checksums of both."
             if [ -n "$prev" ] && [ "$prev" != "$GITHUB_SHA" ]; then
               echo

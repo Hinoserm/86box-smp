@@ -16,7 +16,7 @@
   #error Build with the nightly workflow, which defines AppVer and the rest
 #endif
 
-#define RomsRepo "Hinoserm/roms"
+#define RomsRepo "Hinoserm/86box-roms"
 
 [Setup]
 AppId={{68E014D9-4FBC-41D0-A14F-3AFDDAE3916D}
@@ -88,6 +88,7 @@ var
   DownloadPage: TDownloadWizardPage;
   ExtractPage:  TExtractionWizardPage;
   RomsSha:      String;  { the commit unpacked in the temporary folder, once there is one }
+  RomsDir:      String;  { the folder it is in }
   RomsDone:     Boolean; { install it }
 
 function RomsFetched: Boolean;
@@ -95,10 +96,31 @@ begin
   Result := RomsDone;
 end;
 
-{ GitHub names the archive's one top folder after the repository and commit. }
 function RomsSourceDir(Param: String): String;
 begin
-  Result := ExpandConstant('{tmp}\romsx\roms-') + RomsSha;
+  Result := RomsDir;
+end;
+
+{ The archive holds one folder, which GitHub names after the repository and
+  the commit; it is taken as found, so a renamed repository still works. }
+function UnpackedRomsDir: String;
+var
+  FindRec: TFindRec;
+  Dir:     String;
+begin
+  Result := '';
+  Dir := ExpandConstant('{tmp}\romsx\');
+  if FindFirst(Dir + '*', FindRec) then
+    try
+      repeat
+        if ((FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0) and (FindRec.Name <> '.') and (FindRec.Name <> '..') then begin
+          Result := Dir + FindRec.Name;
+          Exit;
+        end;
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
 end;
 
 { The newest commit of the ROM repository: the first "sha" in the API's reply
@@ -172,6 +194,7 @@ begin
   if not Downloaded then
     Exit;
 
+  DelTree(ExpandConstant('{tmp}\romsx'), True, True, True);
   ExtractPage.Clear;
   ExtractPage.Add(ExpandConstant('{tmp}\roms.zip'), ExpandConstant('{tmp}\romsx'), True);
   ExtractPage.Show;
@@ -179,7 +202,8 @@ begin
     try
       ExtractPage.Extract;
       RomsSha := Sha;
-      RomsDone := DirExists(RomsSourceDir(''));
+      RomsDir := UnpackedRomsDir;
+      RomsDone := (RomsDir <> '') and DirExists(RomsDir + '\machines');
       if not RomsDone then
         SuppressibleMsgBox('The ROM archive did not hold the folder expected. ' +
           '86Box-smp will be installed without the ROMs.', mbError, MB_OK, IDOK);
@@ -223,7 +247,7 @@ begin
     Exit;
   end;
   { Back and Next again: the commit unpacked already will do. }
-  if (Sha = RomsSha) and DirExists(RomsSourceDir('')) then
+  if (Sha = RomsSha) and (RomsDir <> '') and DirExists(RomsDir) then
     RomsDone := True
   else
     FetchRoms(Sha);
