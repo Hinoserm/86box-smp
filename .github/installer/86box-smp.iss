@@ -4,7 +4,8 @@
 ;   AppVer     the 86Box version from CMakeLists.txt, e.g. 7.0
 ;   BuildDate  the build date, yyyymmdd
 ;   GitHash    the commit, abbreviated
-;   SrcDir     the cmake --install tree
+;   SrcDir     the package: what upstream's build script packs, with the assets
+;              and GhostPCL
 ;   OutDir     where to write the installer
 ;   OutName    the installer's file name, without .exe
 ;

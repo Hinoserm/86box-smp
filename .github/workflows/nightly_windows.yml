@@ -1,8 +1,9 @@
 name: Nightly (Windows)
 
 # Builds master for Windows x64 each night, when it has changed, and on
-# demand, and publishes it as the "nightly" prerelease: a zip of the build
-# like upstream's, and an installer that also fetches the latest ROMs.
+# demand, and publishes it as the "nightly" prerelease: a zip like upstream's
+# Windows downloads, made by upstream's own build script, with the assets and
+# GhostPCL added, and an installer of the same that also fetches the ROMs.
 #
 # This is the only workflow this repository runs. Each run switches off any
 # other one, upstream's included, so an upstream merge cannot bring them back.
@@ -76,30 +77,17 @@ jobs:
         shell: msys2 {0}
 
     steps:
+      # build.sh installs the packages it needs, from .ci/dependencies_msys.txt,
+      # and, under CI, empties pacman's package cache after, so there is none
+      # to keep.
       - name: Prepare MSYS2 environment
         uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 #v2.32.0
         with:
           release: true
           update: true
+          cache: false
           msystem: UCRT64
-          pacboy: >-
-            ninja:p
-            cmake:p
-            gcc:p
-            pkgconf:p
-            freetype:p
-            sdl3:p
-            zlib:p
-            libpng:p
-            openal:p
-            rtmidi:p
-            libslirp:p
-            fluidsynth:p
-            libserialport:p
-            qt5-static:p
-            vulkan-headers:p
-            llvm-openmp:p
-            zstd:p
+          install: git
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -114,31 +102,79 @@ jobs:
           {
             echo "ver=$ver"
             echo "date=$date"
-            echo "year=${date:0:4}"
             echo "hash=$hash"
             echo "base=86Box-smp-Windows-64-$date-$hash"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Configure CMake
-        run: >-
-          cmake -S . -B build --preset regular
-          -D QT=on
-          -D BUILD_TYPE=alpha
-          -D "EMU_BUILD=nightly ${{ steps.name.outputs.date }}"
-          -D EMU_GIT_HASH=${{ steps.name.outputs.hash }}
-          -D EMU_COPYRIGHT_YEAR=${{ steps.name.outputs.year }}
+      # build.sh packs the Ghostscript DLL of the official installation in
+      # Program Files, as upstream's build machines have it.
+      - name: Install Ghostscript
+        shell: pwsh
+        run: |
+          $setup = "$env:RUNNER_TEMP\gs10080w64.exe"
+          Invoke-WebRequest https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10080/gs10080w64.exe -OutFile $setup
+          if ((Get-FileHash $setup -Algorithm SHA256).Hash -ne '52A91B8BF09298788D7A57B9206127026C23EACD75405F0A131E26DC381DCE50') {
+            throw "the Ghostscript download is not the one expected"
+          }
+          $p = Start-Process -Wait -PassThru $setup -ArgumentList '/S'
+          if ($p.ExitCode -ne 0) { throw "Ghostscript's setup exited with $($p.ExitCode)" }
+          if (-not (Test-Path "$env:ProgramFiles\gs\gs10.08.0\bin\gsdll64.dll")) { throw "Ghostscript did not install gsdll64.dll" }
 
-      - name: Build
-        run: cmake --build build
+      # Upstream's release build, as its Jenkinsfile runs it for a Regular
+      # Windows x64 build: librashader linked in, mdsx, libaaruformat and the
+      # Ghostscript DLL beside the stripped exe, in archive_tmp. build.sh
+      # fetches mdsx (and assets, for release builds only) from the owner of
+      # the origin remote, which is upstream's for these.
+      - name: Build with upstream's build script
+        run: |
+          git config --global --add safe.directory "$(pwd)"
+          git remote set-url origin https://github.com/86Box/86Box.git
+          .ci/build.sh -n -b "${{ steps.name.outputs.base }}" 64 -t --preset=regular -D CMAKE_BUILD_TYPE=Release \
+            -D DYNAREC=ON -D QT=ON -D BUILD_TYPE=alpha -D "EMU_BUILD=nightly ${{ steps.name.outputs.date }}"
 
-      - name: Install into the package tree
-        run: cmake --install build
+      # Upstream adds the assets (drive sounds, fonts) to release builds
+      # only; these builds are for trying out, so they get them too.
+      - name: Add the assets
+        run: |
+          git clone --depth 1 https://github.com/86Box/assets.git archive_tmp/assets
+          rm -rf archive_tmp/assets/.git archive_tmp/assets/.github archive_tmp/assets/.gitignore
+          find archive_tmp/assets -maxdepth 1 -type f -delete
+
+      # 86Box's PCL printer converts with GhostPCL, which upstream does not pack.
+      - name: Add GhostPCL
+        shell: pwsh
+        run: |
+          $zip = "$env:RUNNER_TEMP\ghostpcl.zip"
+          Invoke-WebRequest https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10080/ghostpcl-10.08.0-win64.zip -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne 'E3950C0B21ED687F0609AC5A6EC0DA57ECB5160FB2F68832E3E9309A0B3491C7') {
+            throw "the GhostPCL download is not the one expected"
+          }
+          Expand-Archive $zip "$env:RUNNER_TEMP\ghostpcl"
+          Copy-Item "$env:RUNNER_TEMP\ghostpcl\ghostpcl-10.08.0-win64\gpcl6dll64.dll" archive_tmp\
+
+      - name: Check the package
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse -Depth 1 archive_tmp | Format-Table -AutoSize Length, FullName
+          foreach ($p in '86Box.exe', 'gsdll64.dll', 'gpcl6dll64.dll', 'mdsx.dll', 'libaaruformat.dll', 'assets\sounds', 'assets\fonts') {
+            if (-not (Test-Path "archive_tmp\$p")) { throw "the package has no $p" }
+          }
+          # librashader is linked into the exe; CMake fails when it cannot find it.
+          $cache = Get-Content build\CMakeCache.txt
+          foreach ($v in 'LIBRASHADER', 'LIBRASHADER_STATIC') {
+            if (-not ($cache -match "^${v}:[A-Z]+=ON$")) { throw "the build was not made with $v on" }
+          }
+          if (-not ($cache -match '^LIBRASHADER_STATIC_LIB:FILEPATH=.*liblibrashader_capi\.a$')) { throw "the build did not link librashader" }
 
       - name: Package the zip
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
-          Compress-Archive -Path build\artifacts\* -DestinationPath "out\${{ steps.name.outputs.base }}.zip" -CompressionLevel Optimal
+          Push-Location archive_tmp
+          & "$env:ProgramFiles\7-Zip\7z.exe" a -y "$env:GITHUB_WORKSPACE\out\${{ steps.name.outputs.base }}.zip" *
+          $code = $LASTEXITCODE
+          Pop-Location
+          if ($code -ne 0) { exit $code }
 
       # A version of our own, not the runner image's, which changes under us.
       - name: Install Inno Setup
@@ -160,7 +196,7 @@ jobs:
             "/DAppVer=${{ steps.name.outputs.ver }}" `
             "/DBuildDate=${{ steps.name.outputs.date }}" `
             "/DGitHash=${{ steps.name.outputs.hash }}" `
-            "/DSrcDir=$env:GITHUB_WORKSPACE\build\artifacts" `
+            "/DSrcDir=$env:GITHUB_WORKSPACE\archive_tmp" `
             "/DOutDir=$env:GITHUB_WORKSPACE\out" `
             "/DOutName=${{ steps.name.outputs.base }}-setup" `
             .github\installer\86box-smp.iss
@@ -175,7 +211,8 @@ jobs:
             -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/DIR=`"$dir`"", "/LOG=`"$log`""
           Get-Content $log
           if ($setup.ExitCode -ne 0) { throw "setup exited with $($setup.ExitCode)" }
-          foreach ($p in '86Box.exe', 'COPYING', 'roms\roms.version', 'roms\machines') {
+          foreach ($p in '86Box.exe', 'COPYING', 'gsdll64.dll', 'gpcl6dll64.dll', 'mdsx.dll', 'libaaruformat.dll',
+                         'assets\sounds', 'assets\fonts', 'roms\roms.version', 'roms\machines') {
             if (-not (Test-Path "$dir\$p")) { throw "setup did not install $p" }
           }
           if (Test-Path "$dir\roms\.github") { throw "setup installed the ROM repository's .github" }
@@ -211,13 +248,17 @@ jobs:
           repo=$GITHUB_REPOSITORY
           prev=$(gh api "repos/$repo/commits/nightly" --jq .sha 2>/dev/null) || prev=
           {
-            echo "Nightly Windows x64 build of master at ${GITHUB_SHA:0:9}, made by GitHub Actions."
+            echo "Nightly Windows x64 build of master at ${GITHUB_SHA:0:9}, made by GitHub Actions with upstream's release build script."
             echo
             echo "These builds are not run through the CPU and game test suites before they are published."
             echo
-            echo "- \`${{ steps.name.outputs.base }}-setup.exe\`: installer. It downloads the latest ROMs from [Hinoserm/86box-roms](https://github.com/Hinoserm/86box-roms) as it installs, and skips the download when they have not changed."
-            echo "- \`${{ steps.name.outputs.base }}.zip\`: the build alone. Put the ROMs from [Hinoserm/86box-roms](https://github.com/Hinoserm/86box-roms) in a \`roms\` folder next to \`86Box.exe\`."
+            echo "- \`${{ steps.name.outputs.base }}-setup.exe\`: installer, ready to run. It downloads the latest ROMs from [Hinoserm/86box-roms](https://github.com/Hinoserm/86box-roms) as it installs, and skips the download when they have not changed."
+            echo "- \`${{ steps.name.outputs.base }}.zip\`: the same build without an installer. Put the ROMs from [Hinoserm/86box-roms](https://github.com/Hinoserm/86box-roms) in a \`roms\` folder next to \`86Box.exe\`."
             echo "- \`SHA256SUMS.txt\`: checksums of both."
+            echo
+            echo "Both hold everything upstream's own Windows builds do: video shaders (librashader), MDS/MDX and Aaru images (mdsx, libaaruformat), and printing to PDF (Ghostscript); and more: PCL printing (GhostPCL) and the drive sounds and fonts of [86Box/assets](https://github.com/86Box/assets)."
+            echo
+            echo "Windows 10 or later, x64. Networking through a host adapter (pcap) needs [Npcap](https://npcap.com/), which may not be redistributed. Ghostscript and GhostPCL are Artifex's official 10.08.0 builds, under the AGPL; their source is at [ArtifexSoftware/ghostpdl](https://github.com/ArtifexSoftware/ghostpdl)."
             if [ -n "$prev" ] && [ "$prev" != "$GITHUB_SHA" ]; then
               echo
               echo "Changes since the previous nightly (${prev:0:9}):"
