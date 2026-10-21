@@ -1,0 +1,223 @@
+name: Nightly (Windows)
+
+# Builds master for Windows x64 each night, when it has changed, and on
+# demand, and publishes it as the "nightly" prerelease: a zip of the build
+# like upstream's, and an installer that also fetches the latest ROMs.
+#
+# This is the only workflow this repository runs. Each run switches off any
+# other one, upstream's included, so an upstream merge cannot bring them back.
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish as the nightly release (off: build and test only)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: nightly-windows
+  cancel-in-progress: true
+
+jobs:
+
+  check:
+    name: Check for changes
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Switch off the other workflows
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows" --paginate \
+            --jq '.workflows[] | select(.state == "active")
+                  | select(.path | startswith(".github/workflows/"))
+                  | select(.path != ".github/workflows/nightly_windows.yml")
+                  | "\(.id) \(.path)"' |
+          while read -r id path; do
+            echo "Switching off $path"
+            gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/$id/disable"
+          done
+
+      - name: Decide whether to build
+        id: check
+        run: |
+          build=true
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            nightly=$(gh api "repos/$GITHUB_REPOSITORY/commits/nightly" --jq .sha 2>/dev/null) || nightly=
+            failed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/nightly_windows.yml/runs?head_sha=$GITHUB_SHA&status=failure" --jq .total_count)
+            if [ "$nightly" = "$GITHUB_SHA" ]; then
+              echo "The nightly release is $GITHUB_SHA already."
+              build=false
+            elif [ "$failed" != 0 ]; then
+              echo "$GITHUB_SHA failed to build before; it is not tried again."
+              build=false
+            fi
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Build, package and publish
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: windows-2022
+    env:
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Prepare MSYS2 environment
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 #v2.32.0
+        with:
+          release: true
+          update: true
+          msystem: UCRT64
+          pacboy: >-
+            ninja:p
+            cmake:p
+            gcc:p
+            pkgconf:p
+            freetype:p
+            sdl3:p
+            zlib:p
+            libpng:p
+            openal:p
+            rtmidi:p
+            libslirp:p
+            fluidsynth:p
+            libserialport:p
+            qt5-static:p
+            vulkan-headers:p
+            llvm-openmp:p
+            zstd:p
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Name the build
+        id: name
+        run: |
+          ver=$(sed -n 's/^ *VERSION \([0-9][0-9.]*\).*/\1/p' CMakeLists.txt | head -n 1)
+          date=$(date -u +%Y%m%d)
+          hash=${GITHUB_SHA:0:9}
+          test -n "$ver"
+          {
+            echo "ver=$ver"
+            echo "date=$date"
+            echo "year=${date:0:4}"
+            echo "hash=$hash"
+            echo "base=86Box-smp-Windows-64-$date-$hash"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Configure CMake
+        run: >-
+          cmake -S . -B build --preset regular
+          -D QT=on
+          -D BUILD_TYPE=alpha
+          -D "EMU_BUILD=nightly ${{ steps.name.outputs.date }}"
+          -D EMU_GIT_HASH=${{ steps.name.outputs.hash }}
+          -D EMU_COPYRIGHT_YEAR=${{ steps.name.outputs.year }}
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Install into the package tree
+        run: cmake --install build
+
+      - name: Package the zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          Compress-Archive -Path build\artifacts\* -DestinationPath "out\${{ steps.name.outputs.base }}.zip" -CompressionLevel Optimal
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Inno Setup 6 is not on this runner" }
+          & $iscc /Qp `
+            "/DAppVer=${{ steps.name.outputs.ver }}" `
+            "/DBuildDate=${{ steps.name.outputs.date }}" `
+            "/DGitHash=${{ steps.name.outputs.hash }}" `
+            "/DSrcDir=$env:GITHUB_WORKSPACE\build\artifacts" `
+            "/DOutDir=$env:GITHUB_WORKSPACE\out" `
+            "/DOutName=${{ steps.name.outputs.base }}-setup" `
+            .github\installer\86box-smp.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Test the installer
+        shell: pwsh
+        run: |
+          $dir = "$env:RUNNER_TEMP\smoke"
+          $log = "$env:RUNNER_TEMP\setup.log"
+          $setup = Start-Process -Wait -PassThru "out\${{ steps.name.outputs.base }}-setup.exe" `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/DIR=`"$dir`"", "/LOG=`"$log`""
+          Get-Content $log
+          if ($setup.ExitCode -ne 0) { throw "setup exited with $($setup.ExitCode)" }
+          foreach ($p in '86Box.exe', 'COPYING', 'roms\roms.version', 'roms\machines') {
+            if (-not (Test-Path "$dir\$p")) { throw "setup did not install $p" }
+          }
+          if (Test-Path "$dir\roms\.github") { throw "setup installed the ROM repository's .github" }
+          Write-Host "ROMs: $(Get-Content "$dir\roms\roms.version")"
+          # The uninstaller hands over to a copy of itself and returns at once.
+          Start-Process -Wait "$dir\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+          $deadline = (Get-Date).AddMinutes(5)
+          while (Test-Path "$dir\86Box.exe") {
+            if ((Get-Date) -gt $deadline) { throw "uninstall did not finish" }
+            Start-Sleep -Seconds 2
+          }
+          if (Test-Path "$dir\roms") { throw "uninstall left the ROMs" }
+
+      - name: Write checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem out -File | Sort-Object Name | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()) *$($_.Name)"
+          } | Set-Content -Encoding ascii out\SHA256SUMS.txt
+          Get-Content out\SHA256SUMS.txt
+
+      - name: Keep the files with the run
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.name.outputs.base }}
+          path: out/*
+          retention-days: 7
+
+      - name: Publish the nightly release
+        if: github.event_name == 'schedule' || inputs.publish
+        shell: bash
+        run: |
+          repo=$GITHUB_REPOSITORY
+          prev=$(gh api "repos/$repo/commits/nightly" --jq .sha 2>/dev/null) || prev=
+          {
+            echo "Nightly Windows x64 build of master at ${GITHUB_SHA:0:9}, made by GitHub Actions."
+            echo
+            echo "These builds are not run through the CPU and game test suites before they are published."
+            echo
+            echo "- \`${{ steps.name.outputs.base }}-setup.exe\`: installer. It downloads the latest ROMs from [Hinoserm/roms](https://github.com/Hinoserm/roms) as it installs, and skips the download when they have not changed."
+            echo "- \`${{ steps.name.outputs.base }}.zip\`: the build alone. Put the ROMs from [Hinoserm/roms](https://github.com/Hinoserm/roms) in a \`roms\` folder next to \`86Box.exe\`."
+            echo "- \`SHA256SUMS.txt\`: checksums of both."
+            if [ -n "$prev" ] && [ "$prev" != "$GITHUB_SHA" ]; then
+              echo
+              echo "Changes since the previous nightly (${prev:0:9}):"
+              echo
+              gh api "repos/$repo/compare/$prev...$GITHUB_SHA" \
+                --jq '.commits | reverse | .[] | "- \(.sha[0:9]) \(.commit.message | split("\n")[0])"' \
+                || echo "- (the list of changes could not be made)"
+            fi
+          } > notes.md
+          gh release delete nightly --repo "$repo" --yes --cleanup-tag || true
+          gh api -X DELETE "repos/$repo/git/refs/tags/nightly" 2>/dev/null || true
+          gh release create nightly --repo "$repo" --target "$GITHUB_SHA" --prerelease \
+            --title "Nightly ${{ steps.name.outputs.date }} (${{ steps.name.outputs.hash }})" \
+            --notes-file notes.md out/*
