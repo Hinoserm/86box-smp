@@ -39,6 +39,7 @@
 #include <QScreen>
 #include <QTimer>
 #include <QTreeWidgetItemIterator>
+#include <QVector>
 #include <QFrame>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -1551,7 +1552,7 @@ layout(const QList<Card> &cards)
     const int        mach = Settings::settings->currentMachine();
     const machine_t *m    = &machines[mach];
     QList<Node>      nodes;
-    QList<bool>      placed(cards.size(), false);
+    QVector<bool>    placed(cards.size(), false); /* QList has no (size, value) constructor in Qt 5 */
 
     auto add = [&nodes](Node::Kind kind, int parent, const QString &label, const QString &bus = QString(), int pciType = -1) {
         nodes.append({ kind, parent, label, bus, pciType, -1 });
