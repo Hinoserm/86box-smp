@@ -31,7 +31,6 @@ jobs:
   check:
     name: Check for changes
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     outputs:
       build: ${{ steps.check.outputs.build }}
     env:
@@ -55,12 +54,14 @@ jobs:
           build=true
           if [ "$GITHUB_EVENT_NAME" = schedule ]; then
             nightly=$(gh api "repos/$GITHUB_REPOSITORY/commits/nightly" --jq .sha 2>/dev/null) || nightly=
-            failed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/nightly_windows.yml/runs?head_sha=$GITHUB_SHA&status=failure" --jq .total_count)
+            failed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/nightly_windows.yml/runs?head_sha=$GITHUB_SHA&status=failure" --jq .total_count) || failed=0
             if [ "$nightly" = "$GITHUB_SHA" ]; then
               echo "The nightly release is $GITHUB_SHA already."
               build=false
-            elif [ "$failed" != 0 ]; then
-              echo "$GITHUB_SHA failed to build before; it is not tried again."
+            elif [ "$failed" -ge 2 ]; then
+              # Once more after a failure, which may have been the runner's or
+              # the network's; not night after night for a commit that fails.
+              echo "$GITHUB_SHA failed to build twice; it is not tried again."
               build=false
             fi
           fi
@@ -71,7 +72,6 @@ jobs:
     needs: check
     if: needs.check.outputs.build == 'true'
     runs-on: windows-2022
-    timeout-minutes: 150
     env:
       GH_TOKEN: ${{ github.token }}
     defaults:
@@ -114,7 +114,6 @@ jobs:
       # installer puts it; running the installer hung the step.
       - name: Unpack Ghostscript
         shell: pwsh
-        timeout-minutes: 10
         run: |
           $setup = "$env:RUNNER_TEMP\gs10080w64.exe"
           Invoke-WebRequest https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10080/gs10080w64.exe -OutFile $setup
@@ -134,7 +133,6 @@ jobs:
       # fetches mdsx (and assets, for release builds only) from the owner of
       # the origin remote, which is upstream's for these.
       - name: Build with upstream's build script
-        timeout-minutes: 100
         run: |
           git config --global --add safe.directory "$(pwd)"
           git remote set-url origin https://github.com/86Box/86Box.git
@@ -186,9 +184,12 @@ jobs:
           if ($code -ne 0) { exit $code }
 
       # A version of our own, not the runner image's, which changes under us.
+      # The steps that run an installer have a limit, far above the minute
+      # they take, for an installer that never returns (as Ghostscript's
+      # did); the rest have GitHub's six hours, so a slow runner only waits.
       - name: Install Inno Setup
         shell: pwsh
-        timeout-minutes: 10
+        timeout-minutes: 30
         run: |
           $setup = "$env:RUNNER_TEMP\innosetup.exe"
           Invoke-WebRequest https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe -OutFile $setup
@@ -214,7 +215,7 @@ jobs:
 
       - name: Test the installer
         shell: pwsh
-        timeout-minutes: 20
+        timeout-minutes: 30
         run: |
           $dir = "$env:RUNNER_TEMP\smoke"
           $log = "$env:RUNNER_TEMP\setup.log"
