@@ -67,7 +67,7 @@ Type: filesandordirs; Name: "{app}\roms"; Components: roms; Check: RomsFetched
 [Files]
 Source: "{#SrcDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: main
 Source: "..\..\COPYING"; DestDir: "{app}"; Flags: ignoreversion; Components: main
-Source: "{code:RomsSourceDir}\*"; DestDir: "{app}\roms"; Excludes: "\.github"; Flags: external ignoreversion recursesubdirs createallsubdirs; Components: roms; Check: RomsFetched
+Source: "{code:RomsSourceDir}\*"; DestDir: "{app}\roms"; Excludes: "\.github\*"; Flags: external ignoreversion recursesubdirs; Components: roms; Check: RomsFetched
 
 [Icons]
 Name: "{autoprograms}\86Box-smp"; Filename: "{app}\86Box.exe"
