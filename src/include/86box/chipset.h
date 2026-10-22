@@ -155,6 +155,7 @@ extern void           ioapic_set_mmio_base(void *ioapic, uint32_t base);
 extern void           ioapic_set_host_decode(void *ioapic, uint32_t lo, uint32_t hi, int open);
 extern int            ioapic_apic_path_active(const void *ioapic);
 extern void           ioapic_set_intr_masked(void *ioapic, int masked);
+extern void           ioapic_set_window_enabled(void *ioapic, int enabled);
 extern const device_t ioapic_validated_up_device;
 extern const device_t validated_up_apic_board_device;
 extern const device_t integrated_cpu_lapic_device;
@@ -190,6 +191,14 @@ typedef struct ioapic_legacy_irq_routing_t {
 /* Packed into device_t.local so boards can seed topology without new config keys. */
 #define IOAPIC_TOPOLOGY_LAPIC_SLOTS(slots) \
     (((uintptr_t) (slots) & IOAPIC_TOPOLOGY_LAPIC_SLOTS_MASK) << IOAPIC_TOPOLOGY_LAPIC_SLOTS_SHIFT)
+
+/* The I/O APIC inside the VIA VT82C686B: twenty-four pins with no SMI#
+   input, an Arbitration ID that always reads 0, and two registers past
+   the 82093AA's window, the IRQ Pin Assertion register at FEC00020h and the
+   EOI register at FEC00040h (VT82C686B data sheet 1.8, p. 116). Its window
+   is decoded while the southbridge's Internal APIC Enable says so
+   (ioapic_set_window_enabled). */
+#define IOAPIC_VARIANT_VIA                0x00004000
 
 /* Append-only save ABI: loaders gate each later field by version. */
 #define IOAPIC_STATE_VERSION          13
@@ -418,6 +427,7 @@ extern const device_t via_vt82c596a_device;
 extern const device_t via_vt82c596b_device;
 extern const device_t via_vt82c686a_device;
 extern const device_t via_vt82c686b_device;
+extern void           via_pipc_set_ioapic(void *priv, void *ioapic);
 extern const device_t via_vt8231_device;
 
 /* VLSI */
