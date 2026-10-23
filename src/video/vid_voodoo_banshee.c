@@ -345,16 +345,18 @@ banshee_update_irqs(banshee_t *banshee)
     }
 }
 
-/* The desktop's lookup through the half of the CLUT it selects, skipped while that half is an
-   identity ramp, which would change nothing: drivers keep one there unless a gamma is set. Called
-   whenever the half, the bypass or an entry changes. */
+/* The desktop's lookup through the half of the CLUT it selects. At 24 and 32 bpp each channel's
+   8 bits index the CLUT, so while that half is an identity ramp, as drivers keep it until a gamma
+   is set, the lookup would change nothing and is skipped. At 16 bpp the index is the 5 or 6 bits
+   shifted up, which is not the plain 565 to 888 conversion, so it always goes through the CLUT.
+   Called whenever the depth, the half, the bypass or an entry changes. */
 static void
 banshee_update_lut_map(banshee_t *banshee)
 {
     svga_t *svga = &banshee->svga;
-    int     map  = 0;
+    int     map  = banshee->desktop_lut && (svga->bpp < 24);
 
-    if (banshee->desktop_lut) {
+    if (banshee->desktop_lut && !map) {
         for (uint32_t i = 0; i < 256; i++) {
             if ((svga->lut[i] & 0xffffff) != (i * 0x010101)) {
                 map = 1;
