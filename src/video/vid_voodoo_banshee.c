@@ -654,6 +654,8 @@ banshee_recalctimings(svga_t *svga)
         switch (VIDPROCCFG_DESKTOP_PIX_FORMAT) {
             case PIX_FORMAT_8:
                 svga->render = svga_render_8bpp_highres;
+                /* Desktop CLUT select: the lower or upper 256 of the 512 entries. */
+                svga->map8   = &svga->pallook[(banshee->vidProcCfg & VIDPROCCFG_DESKTOP_CLUT_SEL) ? 256 : 0];
                 svga->bpp    = 8;
                 break;
             case PIX_FORMAT_RGB565:
