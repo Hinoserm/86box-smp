@@ -1917,6 +1917,7 @@ svga_init(const device_t *info, svga_t *svga, void *priv, int memsize,
     svga->ramdac_type = RAMDAC_6BIT;
 
     svga->map8            = svga->pallook;
+    svga->lut             = svga->pallook;
 
     return 0;
 }

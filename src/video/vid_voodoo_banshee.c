@@ -117,6 +117,7 @@ typedef struct banshee_t {
 
     uint32_t dacMode;
     int      dacAddr;
+    int      desktop_lut; /* the desktop reads the CLUT: video processor on, CLUT not bypassed */
 
     uint32_t vidDesktopOverlayStride;
     uint32_t vidDesktopStartAddr;
@@ -344,6 +345,26 @@ banshee_update_irqs(banshee_t *banshee)
     }
 }
 
+/* The desktop's lookup through the half of the CLUT it selects, skipped while that half is an
+   identity ramp, which would change nothing: drivers keep one there unless a gamma is set. Called
+   whenever the half, the bypass or an entry changes. */
+static void
+banshee_update_lut_map(banshee_t *banshee)
+{
+    svga_t *svga = &banshee->svga;
+    int     map  = 0;
+
+    if (banshee->desktop_lut) {
+        for (uint32_t i = 0; i < 256; i++) {
+            if ((svga->lut[i] & 0xffffff) != (i * 0x010101)) {
+                map = 1;
+                break;
+            }
+        }
+    }
+    svga->lut_map = map;
+}
+
 static void
 banshee_vblank_start(svga_t *svga)
 {
@@ -407,6 +428,8 @@ banshee_out(uint16_t addr, uint8_t val, void *priv)
             break;
     }
     svga_out(addr, val, svga);
+    if (addr == 0x3c9)
+        banshee_update_lut_map(banshee);
 }
 
 static uint8_t
@@ -504,22 +527,16 @@ banshee_updatemapping(banshee_t *banshee)
 uint32_t
 banshee_conv_16to32(svga_t* svga, uint16_t color, UNUSED(uint8_t bpp))
 {
-    banshee_t *banshee = (banshee_t *) svga->priv;
     uint32_t ret = 0x00000000;
     uint16_t src_b = (color & 0x1f) << 3;
     uint16_t src_g = (color & 0x7e0) >> 3;
     uint16_t src_r = (color & 0xf800) >> 8;
 
-    if (banshee->vidProcCfg & VIDPROCCFG_DESKTOP_CLUT_SEL) {
-        src_b += 256;
-        src_g += 256;
-        src_r += 256;
-    }
-
     if (svga->lut_map) {
-        uint8_t b = getcolr(svga->pallook[src_b]);
-        uint8_t g = getcolg(svga->pallook[src_g]);
-        uint8_t r = getcolb(svga->pallook[src_r]);
+        /* Each channel through its own component of the entry its value indexes. */
+        uint8_t b = getcolb(svga->lut[src_b]);
+        uint8_t g = getcolg(svga->lut[src_g]);
+        uint8_t r = getcolr(svga->lut[src_r]);
         ret = (video_16to32[color] & 0xFF000000) | makecol(r, g, b);
     } else
         ret = video_16to32[color];
@@ -654,8 +671,6 @@ banshee_recalctimings(svga_t *svga)
         switch (VIDPROCCFG_DESKTOP_PIX_FORMAT) {
             case PIX_FORMAT_8:
                 svga->render = svga_render_8bpp_highres;
-                /* Desktop CLUT select: the lower or upper 256 of the 512 entries. */
-                svga->map8   = &svga->pallook[(banshee->vidProcCfg & VIDPROCCFG_DESKTOP_CLUT_SEL) ? 256 : 0];
                 svga->bpp    = 8;
                 break;
             case PIX_FORMAT_RGB565:
@@ -673,8 +688,13 @@ banshee_recalctimings(svga_t *svga)
             default:
                 fatal("Unknown pixel format %08x (vgaInit0=%08x)\n", VIDPROCCFG_DESKTOP_PIX_FORMAT, banshee->vgaInit0);
         }
-        /* Here, once the depth is known: set where vidProcCfg is written, it went by the depth before. */
-        svga->lut_map = !(banshee->vidProcCfg & VIDPROCCFG_DESKTOP_CLUT_BYPASS) && (svga->bpp < 24);
+        /* The desktop goes through the CLUT at every depth unless bypassed: the palette at 8 bpp, a
+           per-channel ramp at 16, 24 and 32 (3dfx's Windows 2000 driver loads its gamma ramp there).
+           The desktop CLUT select picks the lower or upper 256 of the 512 entries for either. */
+        svga->map8           = &svga->pallook[(banshee->vidProcCfg & VIDPROCCFG_DESKTOP_CLUT_SEL) ? 256 : 0];
+        svga->lut            = svga->map8;
+        banshee->desktop_lut = !(banshee->vidProcCfg & VIDPROCCFG_DESKTOP_CLUT_BYPASS);
+        banshee_update_lut_map(banshee);
         if (!(banshee->vidProcCfg & VIDPROCCFG_DESKTOP_TILE) && (banshee->vidProcCfg & VIDPROCCFG_HALF_MODE))
             svga->rowcount = 1;
         else
@@ -729,7 +749,11 @@ banshee_recalctimings(svga_t *svga)
 #if 0
         banshee_log("Normal shift out\n");
 #endif
-        svga->bpp = 8;
+        svga->bpp     = 8;
+        /* VGA: the palette through the VGA DAC only, the lower 256 entries. */
+        svga->lut            = svga->pallook;
+        banshee->desktop_lut = 0;
+        banshee_update_lut_map(banshee);
     }
 
     svga->fb_only = (banshee->vidProcCfg & VIDPROCCFG_VIDPROC_ENABLE);
@@ -894,6 +918,7 @@ banshee_ext_outl(uint16_t addr, uint32_t val, void *priv)
         case DAC_dacData:
             svga->pallook[banshee->dacAddr] = val & 0xffffff;
             svga->fullchange                = changeframecount;
+            banshee_update_lut_map(banshee);
             break;
 
         case Video_vidProcCfg:

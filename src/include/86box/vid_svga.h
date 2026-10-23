@@ -326,6 +326,8 @@ typedef struct svga_t {
 
     /* Enable LUT mapping of >= 24 bpp modes. */
     int lut_map;
+    /* The 256 entries LUT mapping reads: pallook, or the part of a larger CLUT the card selects. */
+    uint32_t *lut;
 
     /* Override the horizontal blanking stuff. */
     int hoverride;

@@ -34,9 +34,9 @@ svga_lookup_lut_ram(svga_t* svga, uint32_t val)
     if (!svga->lut_map)
         return val;
 
-    uint8_t r = getcolr(svga->pallook[getcolr(val)]);
-    uint8_t g = getcolg(svga->pallook[getcolg(val)]);
-    uint8_t b = getcolb(svga->pallook[getcolb(val)]);
+    uint8_t r = getcolr(svga->lut[getcolr(val)]);
+    uint8_t g = getcolg(svga->lut[getcolg(val)]);
+    uint8_t b = getcolb(svga->lut[getcolb(val)]);
     return makecol32(r, g, b) | (val & 0xFF000000);
 }
 
