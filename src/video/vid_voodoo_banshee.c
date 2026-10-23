@@ -673,6 +673,8 @@ banshee_recalctimings(svga_t *svga)
             default:
                 fatal("Unknown pixel format %08x (vgaInit0=%08x)\n", VIDPROCCFG_DESKTOP_PIX_FORMAT, banshee->vgaInit0);
         }
+        /* Here, once the depth is known: set where vidProcCfg is written, it went by the depth before. */
+        svga->lut_map = !(banshee->vidProcCfg & VIDPROCCFG_DESKTOP_CLUT_BYPASS) && (svga->bpp < 24);
         if (!(banshee->vidProcCfg & VIDPROCCFG_DESKTOP_TILE) && (banshee->vidProcCfg & VIDPROCCFG_HALF_MODE))
             svga->rowcount = 1;
         else
@@ -902,7 +904,6 @@ banshee_ext_outl(uint16_t addr, uint32_t val, void *priv)
             banshee->overlay_pix_fmt = (val & VIDPROCCFG_OVERLAY_PIX_FORMAT_MASK) >> VIDPROCCFG_OVERLAY_PIX_FORMAT_SHIFT;
             svga->hwcursor.ena       = val & VIDPROCCFG_HWCURSOR_ENA;
             svga->fullchange         = changeframecount;
-            svga->lut_map            = !(val & VIDPROCCFG_DESKTOP_CLUT_BYPASS) && (svga->bpp < 24);
             svga_recalctimings(svga);
             break;
 
