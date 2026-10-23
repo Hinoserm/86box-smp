@@ -119,6 +119,8 @@ extern const device_t esc_device;
 
 extern const device_t sio_device;
 extern const device_t sio_zb_device;
+extern const device_t sio_a_device;
+extern void           sio_a_set_ioapic(void *priv, void *ioapic);
 extern const device_t sioa_peer_device;
 extern uint32_t       sioa_apic_base(const void *priv);
 extern void           sioa_attach(void *priv, void *ioapic, void *gx, uint8_t bus);
@@ -175,7 +177,9 @@ typedef struct ioapic_legacy_irq_routing_t {
 #define IOAPIC_POST_TRIGGER_AMI           0x00000400
 /* The I/O APIC inside the 82374 ESC rather than an 82093AA: sixteen pins,
    version 11h with MRE 0Fh, no SMI# input, and a window the ESC moves with
-   its APICBASE register (ioapic_set_mmio_base). */
+   its APICBASE register (ioapic_set_mmio_base). The 82379AB SIO.A's is the
+   same: version 000F0011h, the same sixteen inputs, and an APICBASE of its
+   own (82378ZB/82379AB data sheet 3.1.27, 3.7.4, Figure 8). */
 #define IOAPIC_VARIANT_ESC                0x00000800
 /* A board with its other processors fitted and running (cpu_mp.c): a local
    APIC for each, started by a real STARTUP. */
