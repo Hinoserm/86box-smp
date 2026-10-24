@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <time.h>
 #include <png.h>
 #include <errno.h>
 #ifdef _WIN32
@@ -713,7 +714,8 @@ fpu_reg80(int r, uint16_t *se, uint64_t *signif)
 
 /* hsample: where the emulated processor is, read from a thread of its own
    once a millisecond of wall time. Weighted by host time, not emulated
-   time, it names the guest code that is slow to emulate. The read is
+   time, it names the guest code that is slow to emulate; the emulated
+   cycle count and host time with each sample give its local speed. The read is
    unsynchronised on purpose -- each sample is a statistic -- and the
    recompiler stores pc at block boundaries, so a sample names a block. */
 #define HSAMPLE_MAX 600000
@@ -721,7 +723,18 @@ static thread_t   *hsample_thread;
 static atomic_int  hsample_run;
 static uint32_t   *hsample_lin;
 static uint8_t    *hsample_cpl;
+static uint64_t   *hsample_tsc;  /* emulated cycles so far */
+static uint64_t   *hsample_host; /* host microseconds */
 static atomic_int  hsample_n;
+
+static uint64_t
+hsample_now_us(void)
+{
+    struct timespec ts;
+
+    timespec_get(&ts, TIME_UTC);
+    return ((uint64_t) ts.tv_sec * 1000000) + (ts.tv_nsec / 1000);
+}
 
 static void
 hsample_loop(UNUSED(void *priv))
@@ -733,6 +746,8 @@ hsample_loop(UNUSED(void *priv))
             break;
         hsample_lin[n] = cpu_state.seg_cs.base + cpu_state.pc;
         hsample_cpl[n] = (cpu_state.seg_cs.access >> 5) & 3;
+        hsample_tsc[n]  = tsc;
+        hsample_host[n] = hsample_now_us();
         atomic_store(&hsample_n, n + 1);
         plat_delay_ms(1);
     }
@@ -943,6 +958,8 @@ handle_request(char *line)
         if (!hsample_lin) {
             hsample_lin = malloc(HSAMPLE_MAX * sizeof(uint32_t));
             hsample_cpl = malloc(HSAMPLE_MAX);
+            hsample_tsc  = malloc(HSAMPLE_MAX * sizeof(uint64_t));
+            hsample_host = malloc(HSAMPLE_MAX * sizeof(uint64_t));
         }
         atomic_store(&hsample_n, 0);
         atomic_store(&hsample_run, 1);
@@ -960,7 +977,8 @@ handle_request(char *line)
             respond_error("nothing sampled, or the file will not open");
         else {
             for (int i = 0; i < n; i++)
-                fprintf(fp, "%08x %u\n", hsample_lin[i], hsample_cpl[i]);
+                fprintf(fp, "%08x %u %llu %llu\n", hsample_lin[i], hsample_cpl[i],
+                        (unsigned long long) hsample_tsc[i], (unsigned long long) hsample_host[i]);
             fclose(fp);
             resp.len = 0;
             sb_printf(&resp, "{\"ok\":true,\"samples\":%d}", n);
