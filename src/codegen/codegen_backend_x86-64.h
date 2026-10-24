@@ -1,11 +1,14 @@
 #include "codegen_backend_x86-64_defs.h"
 
 /* Raised from 0x4000 - too small to hold both status variants (16/32-bit,
-   flat/non-flat) of hot code at once, causing recompile thrash - and from
+   flat/non-flat) of hot code at once, causing recompile thrash - from
    0x10000, which Windows 2000's boot overran: it evicted and compiled again
-   15-30 thousand blocks a second. Block indices are 32-bit. */
-#define BLOCK_SIZE  0x20000
-#define BLOCK_MASK  0x1ffff
+   15-30 thousand blocks a second - and from 0x20000, which a guest with
+   large kernels (CORSAC under Half-Life, about 130 thousand blocks live)
+   filled, evicting and compiling again some two thousand blocks a second at
+   two thirds of its speed. Block indices are 32-bit. */
+#define BLOCK_SIZE  0x40000
+#define BLOCK_MASK  0x3ffff
 #define BLOCK_START 0
 
 #define HASH_SIZE   0x20000

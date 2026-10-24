@@ -21,8 +21,8 @@
 #ifndef MEM_BLOCK_NR
 #if defined(__amd64__) || defined(_M_X64)
 /* Two for each of BLOCK_SIZE's blocks: running out of these deletes every
-   block at once. */
-#define MEM_BLOCK_NR 262144
+   block at once. 480 MB, touched only as code is compiled into it. */
+#define MEM_BLOCK_NR 524288
 #elif defined __aarch64__ || defined _M_ARM64
 /* 131072 for code plus the 128 that hold veneers (MEM_BLOCK_VENEER_STRIDE),
    so the code memory runs out, and deletes every block, at the points it
