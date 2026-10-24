@@ -80,6 +80,10 @@ typedef int sock_t;
 #include <86box/automation.h>
 #ifdef USE_DYNAREC
 void codegen_allocator_dump(FILE *fp);
+extern uint64_t codegen_stat_compiles;
+extern uint64_t codegen_stat_deletes;
+extern uint64_t codegen_stat_dispatches;
+extern int      codegen_allocator_usage;
 #endif
 #ifdef USE_GDBSTUB
 #    include <86box/gdbstub.h>
@@ -1044,6 +1048,12 @@ handle_request(char *line)
         resp.len = 0;
         sb_printf(&resp, "{\"ok\":true,\"samples\":%d}", atomic_load(&hsample_n));
 #ifdef USE_DYNAREC
+    } else if (!strcmp(argv[0], "jitstat")) {
+        /* The recompiler's counts so far, and its code memory in use. */
+        resp.len = 0;
+        sb_printf(&resp, "{\"ok\":true,\"compiles\":%llu,\"deletes\":%llu,\"dispatches\":%llu,\"chunks\":%d,\"tsc\":%llu}",
+                  (unsigned long long) codegen_stat_compiles, (unsigned long long) codegen_stat_deletes,
+                  (unsigned long long) codegen_stat_dispatches, codegen_allocator_usage, (unsigned long long) tsc);
     } else if (!strcmp(argv[0], "jitmap") && (argc == 2)) {
         /* jitmap <path>: the recompiled code's host ranges and their guest
            blocks (codegen_allocator_dump); hold the machine first. */

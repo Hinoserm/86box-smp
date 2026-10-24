@@ -30,6 +30,10 @@
 
 uint8_t *block_write_data = NULL;
 
+/* Read by the automation's jitstat: blocks compiled and deleted so far. */
+uint64_t codegen_stat_compiles;
+uint64_t codegen_stat_deletes;
+
 int      codegen_flat_ds;
 int      codegen_flat_ss;
 /* The data segments flat but for their first 64 KB as the block starts
@@ -1720,6 +1724,7 @@ invalidate_block(codeblock_t *block)
 static void
 delete_block(codeblock_t *block)
 {
+    codegen_stat_deletes++;
     uint32_t old_pc = block->pc;
 
     if (block == &codeblock[codeblock_hash[HASH(block->phys)]])
@@ -1940,6 +1945,7 @@ codegen_get_ir_data(void)
 void
 codegen_block_start_recompile(codeblock_t *block)
 {
+    codegen_stat_compiles++;
     page_t *page = &pages[block->phys >> 12];
 
     codegen_recording_page(0, block->phys);

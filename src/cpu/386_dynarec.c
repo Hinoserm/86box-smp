@@ -866,6 +866,9 @@ rep_chunk_continue(void)
 #    endif
 }
 
+/* Read by the automation's jitstat: entries to the block lookup. */
+uint64_t codegen_stat_dispatches;
+
 #if defined(__linux__) && !defined(__clang__)
 static inline void __attribute__((optimize("O2")))
 #else
@@ -873,6 +876,7 @@ static __inline void
 #endif
 exec386_dynarec_dyn(void)
 {
+    codegen_stat_dispatches++;
 #    ifdef CODEGEN_CHAIN
     /* The link the last chain wanted, taken once */
     uint8_t *link_stub = codegen_chain_link_stub;
