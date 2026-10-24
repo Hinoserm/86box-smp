@@ -2,6 +2,7 @@
 #include "cocoa_mouse.hpp"
 #import <AppKit/AppKit.h>
 #import <Cocoa/Cocoa.h>
+#include <math.h>
 extern "C" {
 #include <86box/86box.h>
 #include <86box/keyboard.h>
@@ -21,6 +22,50 @@ CocoaEventFilter::~CocoaEventFilter()
 {
 }
 
+/* While the mouse is captured the cursor is detached from it and should not
+   move, but macOS reattaches it on its own now and then, and a fast move then
+   carries the cursor out of the window. So the cursor is held where the
+   capture began: whenever it is found anywhere else it goes straight back,
+   detached again. The deltas the guest gets come from the events, so nothing
+   is lost by it. */
+static CGPoint capture_point;
+static bool    capture_held = false;
+
+void
+macos_mouse_hold(int on)
+{
+    if (on) {
+        CGEventRef       now = CGEventCreate(NULL);
+        CGEventSourceRef src = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
+
+        capture_point = CGEventGetLocation(now);
+        CFRelease(now);
+        /* A warp would otherwise hold back the mouse's own events for a while. */
+        if (src) {
+            CGEventSourceSetLocalEventsSuppressionInterval(src, 0.0);
+            CFRelease(src);
+        }
+        capture_held = true;
+    } else
+        capture_held = false;
+}
+
+static void
+mouse_hold_check(void)
+{
+    if (!capture_held)
+        return;
+
+    CGEventRef now = CGEventCreate(NULL);
+    CGPoint    at  = CGEventGetLocation(now);
+
+    CFRelease(now);
+    if ((fabs(at.x - capture_point.x) >= 1.0) || (fabs(at.y - capture_point.y) >= 1.0)) {
+        CGWarpMouseCursorPosition(capture_point);
+        CGAssociateMouseAndMouseCursorPosition(false);
+    }
+}
+
 bool
 CocoaEventFilter::nativeEventFilter(const QByteArray &eventType, void *message, result_t *result)
 {
@@ -34,6 +79,7 @@ CocoaEventFilter::nativeEventFilter(const QByteArray &eventType, void *message, 
                 || [event type] == NSEventTypeRightMouseDragged
                 || [event type] == NSEventTypeOtherMouseDragged) {
                 mouse_scalef((double) [event deltaX], (double) [event deltaY]);
+                mouse_hold_check();
                 return true;
             }
             if ([event type] == NSEventTypeScrollWheel) {

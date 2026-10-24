@@ -17,3 +17,6 @@ private:
     bool control_click_active = false;
     bool right_button_active  = false;
 };
+
+/* Hold the cursor where it is while the mouse is captured (macos_event_filter.mm). */
+void macos_mouse_hold(int on);

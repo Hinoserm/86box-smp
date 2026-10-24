@@ -63,6 +63,9 @@
 #endif
 
 #ifdef __APPLE__
+#    include "cocoa_mouse.hpp"
+#endif
+#ifdef __APPLE__
 #    include <CoreGraphics/CoreGraphics.h>
 #endif
 
@@ -201,6 +204,7 @@ qt_mouse_capture(int on)
         while (QApplication::overrideCursor())
             QApplication::restoreOverrideCursor();
 #ifdef __APPLE__
+        macos_mouse_hold(0);
         CGAssociateMouseAndMouseCursorPosition(true);
 #endif
         return;
@@ -208,6 +212,7 @@ qt_mouse_capture(int on)
     mouse_capture = 1;
     QApplication::setOverrideCursor(Qt::BlankCursor);
 #ifdef __APPLE__
+    macos_mouse_hold(1);
     CGAssociateMouseAndMouseCursorPosition(false);
 #endif
     return;
