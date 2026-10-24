@@ -4,11 +4,17 @@
  *          PC systems and compatibles from 1981 through fairly recent
  *          system designs based on the PCI bus.
  *
- *          Emulation of Intel System I/O PCI chip.
+ *          Emulation of Intel System I/O PCI chip: the 82378IB and ZB
+ *          (SIO) and the 82379AB (SIO.A), the ZB with an I/O APIC of its
+ *          own, either as a board's south bridge or on a peer PCI bus
+ *          for that bus's arbiter and I/O APIC alone. Registers and
+ *          defaults are Intel's 82378ZB/82379AB data sheet (290571-001).
  *
  * Authors: Miran Grca, <mgrca8@gmail.com>
+ *          Michael Pratte, <mpratte@makefox.group>
  *
  *          Copyright 2016-2018 Miran Grca.
+ *          Copyright 2026 Michael Pratte.
  */
 #include <stdarg.h>
 #include <stdint.h>
@@ -38,6 +44,11 @@ typedef struct sio_t {
     uint8_t pci_slot;
     uint8_t is_zb; /* the ZB's registers: the ZB and the 82379AB */
     uint8_t is_sioa;
+    /* An 82379AB on a peer PCI bus, for its arbiter and its I/O APIC
+       alone: none of its ISA side is connected (the Acer X3, whose service
+       guide shows every ISA pin of it open), so its registers are kept as
+       written and act on nothing but its I/O APIC (sio_a_peer_device). */
+    uint8_t peer;
 
     uint8_t regs[256];
     /* PACC (70h) and APICBASE (71h) are write-only (data sheet 3.1.26,
@@ -57,7 +68,18 @@ typedef struct sio_t {
     apm_t     *apm;
     port_92_t *port_92;
     void      *ioapic; /* the 82379AB's I/O APIC, which the board hands over */
+
+    /* A peer's: the auxiliary host bridge in front of its bus, whose APIC
+       range decides whether the processors reach its I/O APIC, and the
+       cards on that bus driving each of the APIC's inputs. */
+    void   *gx;
+    uint8_t line[PCI_CARDS_NUM][4];
+    uint8_t drivers[16];
 } sio_t;
+
+/* device_t.local: the Revision ID, and whether the chip is a peer. */
+#define SIO_ID_MASK 0x00ff
+#define SIO_PEER    0x0100
 
 #ifdef ENABLE_SIO_LOG
 int sio_do_log = ENABLE_SIO_LOG;
@@ -167,14 +189,16 @@ sio_write(int func, int addr, UNUSED(int len), uint8_t val, void *priv)
             break;
 
         case 0x07:
-            dev->regs[addr] &= ~(val & 0x38);
+            /* MA and RTA are cleared by writing 1; STA is read-only
+               (data sheet 3.1.4). */
+            dev->regs[addr] &= ~(val & 0x30);
             break;
 
         case 0x40:
             if (dev->is_zb) {
                 dev->regs[addr] = (val & 0x7f);
 
-                if (!((val ^ old) & 0x40))
+                if (!((val ^ old) & 0x40) || dev->peer)
                     return;
 
                 dma_alias_remove();
@@ -219,7 +243,7 @@ sio_write(int func, int addr, UNUSED(int len), uint8_t val, void *priv)
         case 0x4f:
             dev->regs[addr] = val;
 
-            if (!((val ^ old) & 0x40))
+            if (!((val ^ old) & 0x40) || dev->peer)
                 return;
 
             port_92_remove(dev->port_92);
@@ -243,6 +267,9 @@ sio_write(int func, int addr, UNUSED(int len), uint8_t val, void *priv)
             if (dev->is_zb) {
                 sio_log("Set IRQ routing: INT %c -> %02X\n", 0x41 + (addr & 0x03), val);
                 dev->regs[addr] = val & 0x8f;
+                /* A peer's PIRQ pins are pulled up: nothing to steer. */
+                if (dev->peer)
+                    break;
                 if (val & 0x80)
                     pci_set_irq_routing(PCI_INTA + (addr & 0x03), PCI_IRQ_DISABLED);
                 else
@@ -255,8 +282,11 @@ sio_write(int func, int addr, UNUSED(int len), uint8_t val, void *priv)
                external INT signal inactive (data sheet 3.1.26). */
             if (dev->is_sioa) {
                 dev->pacc = val & 0x03;
-                ioapic_set_pin0_smi(dev->ioapic, !!(val & 0x02));
-                ioapic_set_intr_masked(dev->ioapic, !!(val & 0x01));
+                /* A peer's SMI and INT inputs are not connected. */
+                if (!dev->peer) {
+                    ioapic_set_pin0_smi(dev->ioapic, !!(val & 0x02));
+                    ioapic_set_intr_masked(dev->ioapic, !!(val & 0x01));
+                }
             }
             break;
         case 0x71:
@@ -265,7 +295,10 @@ sio_write(int func, int addr, UNUSED(int len), uint8_t val, void *priv)
                3.1.27). */
             if (dev->is_sioa) {
                 dev->apicbase = val & 0x3f;
-                ioapic_set_mmio_base(dev->ioapic, 0xfec00000 | ((uint32_t) (val & 0x3f) << 10));
+                if (dev->peer)
+                    sio_a_apic_update(dev);
+                else
+                    ioapic_set_mmio_base(dev->ioapic, sio_a_apic_base(dev));
             }
             break;
         case 0x80:
@@ -275,6 +308,10 @@ sio_write(int func, int addr, UNUSED(int len), uint8_t val, void *priv)
             else
                 dev->regs[addr] = val;
 
+            /* A peer's utility bus, and its BIOS timer with it, is not
+               connected. */
+            if (dev->peer)
+                break;
             if (dev->timer_base & 0x01) {
                 io_removehandler(dev->timer_base & 0xfffc, 0x0004,
                                  sio_timer_read, sio_timer_readw, NULL,
@@ -289,7 +326,10 @@ sio_write(int func, int addr, UNUSED(int len), uint8_t val, void *priv)
             break;
         case 0xa0:
             if (dev->is_zb) {
-                dev->regs[addr] = val & 0x1f;
+                /* Bit 6, CWSGNTDI, is the 82379AB's (data sheet, SMICNTL). */
+                dev->regs[addr] = val & (dev->is_sioa ? 0x5f : 0x1f);
+                if (dev->peer)
+                    break;
                 apm_set_do_smi(dev->apm, !!(val & 0x01) && !!(dev->regs[0xa2] & 0x80));
                 switch ((val & 0x18) >> 3) {
                     case 0x00:
@@ -313,7 +353,8 @@ sio_write(int func, int addr, UNUSED(int len), uint8_t val, void *priv)
         case 0xa2:
             if (dev->is_zb) {
                 dev->regs[addr] = val & 0xff;
-                apm_set_do_smi(dev->apm, !!(dev->regs[0xa0] & 0x01) && !!(val & 0x80));
+                if (!dev->peer)
+                    apm_set_do_smi(dev->apm, !!(dev->regs[0xa0] & 0x01) && !!(val & 0x80));
             }
             break;
         case 0xaa:
@@ -327,24 +368,31 @@ sio_write(int func, int addr, UNUSED(int len), uint8_t val, void *priv)
             break;
         case 0xa4:
             if (dev->is_zb) {
-                dev->regs[addr]    = val & 0xfb;
-                cpu_fast_off_flags = (cpu_fast_off_flags & 0xffffff00) | dev->regs[addr];
+                dev->regs[addr] = val & 0xfb;
+                if (!dev->peer)
+                    cpu_fast_off_flags = (cpu_fast_off_flags & 0xffffff00) | dev->regs[addr];
             }
             break;
         case 0xa5:
             if (dev->is_zb) {
-                dev->regs[addr]    = val & 0xff;
-                cpu_fast_off_flags = (cpu_fast_off_flags & 0xffff00ff) | (dev->regs[addr] << 8);
+                dev->regs[addr] = val & 0xff;
+                if (!dev->peer)
+                    cpu_fast_off_flags = (cpu_fast_off_flags & 0xffff00ff) | (dev->regs[addr] << 8);
             }
             break;
         case 0xa7:
             if (dev->is_zb) {
-                dev->regs[addr]    = val & 0xa0;
-                cpu_fast_off_flags = (cpu_fast_off_flags & 0x00ffffff) | (dev->regs[addr] << 24);
+                /* Bits 31 and 29; the 82379AB adds 30 and 27:24 (data
+                   sheet, SEE). */
+                dev->regs[addr] = val & (dev->is_sioa ? 0xef : 0xa0);
+                if (!dev->peer)
+                    cpu_fast_off_flags = (cpu_fast_off_flags & 0x00ffffff) | (dev->regs[addr] << 24);
             }
             break;
         case 0xa8:
-            dev->regs[addr]    = val & 0xff;
+            dev->regs[addr] = val & 0xff;
+            if (dev->peer)
+                break;
             cpu_fast_off_val   = val;
             cpu_fast_off_count = val + 1;
             cpu_fast_off_period_set(cpu_fast_off_val, dev->fast_off_period);
@@ -467,6 +515,11 @@ sio_reset_hard(void *priv)
         dev->regs[0xa8] = 0x0f;
     }
 
+    dev->pacc     = 0x00;
+    dev->apicbase = 0x00;
+    if (dev->peer)
+        return;
+
     pci_set_irq_routing(PCI_INTA, PCI_IRQ_DISABLED);
     pci_set_irq_routing(PCI_INTB, PCI_IRQ_DISABLED);
     pci_set_irq_routing(PCI_INTC, PCI_IRQ_DISABLED);
@@ -511,7 +564,8 @@ sio_reset(void *priv)
     sio_write(0, 0x70, 1, 0x00, priv);
     sio_write(0, 0x71, 1, 0x00, priv);
 
-    dma_set_params(1, 0xffffffff);
+    if (!dev->peer)
+        dma_set_params(1, 0xffffffff);
 
     if (dev->is_zb) {
         sio_write(0, 0x60, 1, 0x80, priv);
@@ -543,6 +597,9 @@ sio_speed_changed(void *priv)
     sio_t *dev = (sio_t *) priv;
     int    te;
 
+    if (dev->peer)
+        return;
+
     te = timer_is_enabled(&dev->timer);
 
     timer_disable(&dev->timer);
@@ -563,11 +620,20 @@ sio_init(const device_t *info)
 {
     sio_t *dev = (sio_t *) calloc(1, sizeof(sio_t));
 
-    pci_add_card(PCI_ADD_SOUTHBRIDGE, sio_read, sio_write, dev, &dev->pci_slot);
-
-    dev->id      = info->local;
+    dev->id      = info->local & SIO_ID_MASK;
     dev->is_zb   = (dev->id != 0x00);
     dev->is_sioa = (dev->id == 0x88);
+    dev->peer    = !!(info->local & SIO_PEER);
+
+    if (dev->peer) {
+        /* The PCI side alone: arbiter, registers and I/O APIC. */
+        memset(dev->line, 0xff, sizeof(dev->line));
+        pci_add_card(PCI_ADD_SOUTHBRIDGE_AUX, sio_read, sio_write, dev, &dev->pci_slot);
+        sio_reset_hard(dev);
+        return dev;
+    }
+
+    pci_add_card(PCI_ADD_SOUTHBRIDGE, sio_read, sio_write, dev, &dev->pci_slot);
 
     if (dev->is_zb)
         timer_add(&dev->fast_off_timer, sio_fast_off_count, dev, 0);
@@ -666,7 +732,91 @@ sio_a_set_ioapic(void *priv, void *ioapic)
     sio_t *dev = (sio_t *) priv;
 
     dev->ioapic = ioapic;
-    ioapic_set_mmio_base(ioapic, 0xfec00000 | ((uint32_t) dev->apicbase << 10));
+    ioapic_set_mmio_base(ioapic, sio_a_apic_base(dev));
     ioapic_set_pin0_smi(ioapic, !!(dev->pacc & 0x02));
     ioapic_set_intr_masked(ioapic, !!(dev->pacc & 0x01));
+}
+
+/* The same 82379AB on a peer PCI bus behind a 450GX auxiliary bridge, for
+   that bus's arbiter and its I/O APIC alone (sio_t.peer). */
+const device_t sio_a_peer_device = {
+    .name          = "Intel 82379AB (SIO.A), peer bus arbiter and I/O APIC",
+    .internal_name = "sio_a_peer",
+    .flags         = DEVICE_PCI,
+    .local         = 0x88 | SIO_PEER,
+    .init          = sio_init,
+    .close         = sio_close,
+    .reset         = sio_reset,
+    .available     = NULL,
+    .speed_changed = sio_speed_changed,
+    .force_redraw  = NULL,
+    .config        = NULL
+};
+
+/* Its I/O APIC's window: FEC0xy00h, x and y from APICBASE (data sheet
+   3.1.27). */
+uint32_t
+sio_a_apic_base(const void *priv)
+{
+    const sio_t *dev = (const sio_t *) priv;
+
+    return 0xfec00000 | ((uint32_t) (dev->apicbase & 0x3f) << 10);
+}
+
+/* A peer's I/O APIC window: at APICBASE, reached while the auxiliary host
+   bridge forwards that address to its bus. The board calls this when the
+   bridge's range changes. */
+void
+sio_a_apic_update(void *priv)
+{
+    sio_t         *dev  = (sio_t *) priv;
+    const uint32_t base = sio_a_apic_base(dev);
+    uint32_t       lo   = 0;
+    uint32_t       hi   = 0;
+    int            on;
+
+    if (!dev->peer || (dev->ioapic == NULL))
+        return;
+    on = i450gx_apic_range(dev->gx, 1, &lo, &hi) && (base >= lo) && ((base + 0x3ff) <= hi);
+    ioapic_secondary_map(dev->ioapic, base, on);
+}
+
+/* A card on a peer's bus raised or dropped an INTx, steered to irq_line.
+   Its APIC's INTIN n is IRQ n (Figure 8): IRQ3-7, 9-12, 14 and 15 are
+   inputs the board may wire; what drives each is the OR of the cards on
+   it. */
+static void
+sio_a_peer_irq_observe(void *priv, uint8_t slot, uint8_t pci_int_index, uint8_t irq_line, int set)
+{
+    sio_t   *dev = (sio_t *) priv;
+    uint8_t *cur;
+    uint8_t  was;
+
+    if ((slot >= PCI_CARDS_NUM) || (pci_int_index > 3))
+        return;
+    cur = &dev->line[slot][pci_int_index];
+    was = *cur;
+
+    if (!set)
+        irq_line = 0xff;
+    if (irq_line == was)
+        return;
+    if ((was < 16) && dev->drivers[was] && !--dev->drivers[was])
+        ioapic_secondary_line(dev->ioapic, was, 0);
+    *cur = irq_line;
+    if ((irq_line < 16) && !dev->drivers[irq_line]++)
+        ioapic_secondary_line(dev->ioapic, irq_line, 1);
+}
+
+/* A peer's wiring: its I/O APIC, the host bridge in front of its bus, and
+   that bus's number (86Box's index). */
+void
+sio_a_peer_attach(void *priv, void *ioapic, void *gx, uint8_t bus)
+{
+    sio_t *dev = (sio_t *) priv;
+
+    dev->ioapic = ioapic;
+    dev->gx     = gx;
+    pci_set_bus_irq_observer(bus, sio_a_peer_irq_observe, dev);
+    sio_a_apic_update(dev);
 }

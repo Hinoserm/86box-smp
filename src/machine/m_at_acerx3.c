@@ -335,7 +335,7 @@ acerx3_apicr_changed(UNUSED(void *arg))
     int      on = i450gx_apic_range(acerx3_apic.gx, 0, &lo, &hi);
 
     ioapic_set_host_decode(acerx3_apic.esc_ioapic, lo, hi, on);
-    sioa_apic_update(acerx3_apic.sioa);
+    sio_a_apic_update(acerx3_apic.sioa);
 }
 
 static const device_config_t acerx3_config[] = {
@@ -480,7 +480,7 @@ machine_at_acerx3_init(const machine_t *model)
 
     device_add(&pceb_device);
     device_add_params(&esc_device, (void *) ESC_CRAM_ACER);
-    sioa  = device_add(&sioa_peer_device);
+    sioa  = device_add(&sio_a_peer_device);
     board = device_add(&acerx3_board_device);
 
     /* The FDC37C935 carries the keyboard controller, the RTC and the one
@@ -530,7 +530,7 @@ machine_at_acerx3_init(const machine_t *model)
         acerx3_apic.gx         = gx;
         acerx3_apic.esc_ioapic = ioapic;
         acerx3_apic.sioa       = sioa;
-        sioa_attach(sioa, device_add(&ioapic_secondary_device), gx, bus2);
+        sio_a_peer_attach(sioa, device_add(&ioapic_secondary_device), gx, bus2);
         i450gx_set_apicr_callback(gx, acerx3_apicr_changed, NULL);
     }
 
