@@ -11,14 +11,17 @@
 #define BLOCK_MASK  0x3ffff
 #define BLOCK_START 0
 
-#define HASH_SIZE   0x20000
-#define HASH_MASK   0x1ffff
+/* As many slots as BLOCK_SIZE has blocks: at half as many, with the
+   table full (CORSAC under Half-Life), the lookups that missed their slot
+   and walked the page's tree took 5% of the machine thread. */
+#define HASH_SIZE   0x40000
+#define HASH_MASK   0x3ffff
 
-/* The block hash takes the physical address's bits above 128K too: with the
-   low 17 alone, code at the same offset in different 128K regions (the
+/* The block hash takes the physical address's bits above 256K too: with the
+   low bits alone, code at the same offset in different regions (the
    kernel's and a driver's, two processes' copies) fought for one slot and
    went to the tree walk each time. */
-#define HASH(l)     (((l) ^ ((l) >> 17)) & 0x1ffff)
+#define HASH(l)     (((l) ^ ((l) >> 18)) & HASH_MASK)
 
 #define BLOCK_MAX   0x3c0
 
