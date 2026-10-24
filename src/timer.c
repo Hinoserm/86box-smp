@@ -118,6 +118,41 @@ timer_remove_head(void)
     }
 }
 
+/* Each callback's firings so far, for the automation's timerstat: what
+   ends the recompiler's chains (exec386_chain_floor stops them at the next
+   timer due). Keyed by the callback, open addressing. */
+#define TIMER_STAT_SLOTS 256
+static struct {
+    void (*callback)(void *priv);
+    uint64_t count;
+} timer_stats[TIMER_STAT_SLOTS];
+
+static inline void
+timer_stat_note(void (*callback)(void *priv))
+{
+    uint32_t h = (uint32_t) (((uintptr_t) callback >> 4) * 2654435761u) % TIMER_STAT_SLOTS;
+
+    for (int i = 0; i < TIMER_STAT_SLOTS; i++, h = (h + 1) % TIMER_STAT_SLOTS) {
+        if (timer_stats[h].callback == callback) {
+            timer_stats[h].count++;
+            return;
+        }
+        if (!timer_stats[h].callback) {
+            timer_stats[h].callback = callback;
+            timer_stats[h].count    = 1;
+            return;
+        }
+    }
+}
+
+void
+timer_stat_dump(FILE *fp)
+{
+    for (int i = 0; i < TIMER_STAT_SLOTS; i++)
+        if (timer_stats[i].callback)
+            fprintf(fp, "%p %llu\n", (void *) timer_stats[i].callback, (unsigned long long) timer_stats[i].count);
+}
+
 void
 timer_process(void)
 {
@@ -142,6 +177,7 @@ timer_process(void)
                is needed.
              */
             timer->in_callback = 1;
+            timer_stat_note(timer->callback);
             timer->callback(timer->priv);
             timer->in_callback = 0;
         }

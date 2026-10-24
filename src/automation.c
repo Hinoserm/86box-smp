@@ -78,6 +78,7 @@ typedef int sock_t;
 #include <86box/nvr.h>
 #include <86box/acpi.h>
 #include <86box/automation.h>
+void timer_stat_dump(FILE *fp);
 #ifdef USE_DYNAREC
 void codegen_allocator_dump(FILE *fp);
 extern uint64_t codegen_stat_compiles;
@@ -1051,6 +1052,17 @@ handle_request(char *line)
         resp.len = 0;
         sb_printf(&resp, "{\"ok\":true,\"samples\":%d}", atomic_load(&hsample_n));
 #ifdef USE_DYNAREC
+    } else if (!strcmp(argv[0], "timerstat") && (argc == 2)) {
+        /* timerstat <path>: each timer callback's address and firings so far. */
+        FILE *fp = fopen(argv[1], "w");
+
+        if (!fp)
+            respond_error("the file will not open");
+        else {
+            timer_stat_dump(fp);
+            fclose(fp);
+            respond_ok_time();
+        }
     } else if (!strcmp(argv[0], "jitstat")) {
         /* The recompiler's counts so far, and its code memory in use. */
         resp.len = 0;
