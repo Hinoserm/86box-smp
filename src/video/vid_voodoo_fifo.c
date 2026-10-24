@@ -230,8 +230,9 @@ voodoo_queue_command(voodoo_t *voodoo, uint32_t addr_type, uint32_t val)
     voodoo->fifo_write_idx++;
     voodoo->cmd_status &= ~(1 << 24);
 
-    if (FIFO_ENTRIES > 0xe000)
-        voodoo_wake_fifo_thread(voodoo);
+    /* The hardware drains its FIFO on its own: what is queued runs without the
+       host reading status. The wake is delayed, so writes still batch up. */
+    voodoo_wake_fifo_thread(voodoo);
 }
 
 /* Runs every queued FIFO entry. The caller holds fifo_mutex, so the entries

@@ -1108,12 +1108,10 @@ banshee_status(banshee_t *banshee)
     int           busy         = (written - voodoo->cmd_read) || (voodoo->cmdfifo_depth_rd != voodoo->cmdfifo_depth_wr) || (voodoo->cmdfifo_depth_rd_2 != voodoo->cmdfifo_depth_wr_2) || RENDER_VOODOO_BUSY(voodoo, 0) || RENDER_VOODOO_BUSY(voodoo, 1) || RENDER_VOODOO_BUSY(voodoo, 2) || RENDER_VOODOO_BUSY(voodoo, 3) || voodoo->voodoo_busy;
     uint32_t      ret          = 0;
 
-    if (fifo_entries < 0x20)
-        ret |= 0x1f - fifo_entries;
-    else
-        ret |= 0x1f;
-    if (fifo_entries)
-        ret |= 0x20;
+    /* Bits 5:0, PCI FIFO freespace: 0x3f when empty, 0 when full. The hardware
+       FIFO holds 0x3f entries; the model's is larger, so past that it reads full. */
+    if (fifo_entries < 0x3f)
+        ret |= 0x3f - fifo_entries;
     if (swap_count < 7)
         ret |= (swap_count << 28);
     else
