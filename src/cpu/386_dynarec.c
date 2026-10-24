@@ -866,8 +866,13 @@ rep_chunk_continue(void)
 #    endif
 }
 
-/* Read by the automation's jitstat: entries to the block lookup. */
+/* Read by the automation's jitstat: entries to the block lookup, and why
+   chains of recompiled code ended: a link not made yet, an indirect exit
+   that missed, or anything else (cycles spent, an interrupt, a fault). */
 uint64_t codegen_stat_dispatches;
+uint64_t codegen_stat_exit_link;
+uint64_t codegen_stat_exit_ind;
+uint64_t codegen_stat_exit_other;
 
 #if defined(__linux__) && !defined(__clang__)
 static inline void __attribute__((optimize("O2")))
@@ -1107,6 +1112,12 @@ exec386_dynarec_dyn(void)
         /* The chain left for want of a link, or by an indirect exit that
            missed: linked or filled once the block it wanted passes every
            test. */
+        if (codegen_chain_last_exit)
+            codegen_stat_exit_link++;
+        else if (codegen_ind_miss)
+            codegen_stat_exit_ind++;
+        else
+            codegen_stat_exit_other++;
         if (codegen_chain_last_exit || codegen_ind_miss) {
             codegen_chain_link_stub   = codegen_chain_last_exit;
             codegen_chain_ind_pending = !codegen_chain_last_exit;
