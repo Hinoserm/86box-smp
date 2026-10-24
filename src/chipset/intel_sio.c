@@ -40,6 +40,11 @@ typedef struct sio_t {
     uint8_t is_sioa;
 
     uint8_t regs[256];
+    /* PACC (70h) and APICBASE (71h) are write-only (data sheet 3.1.26,
+       3.1.27): what was written is kept here, and a read of either
+       returns 0 as the rest of the reserved space does. */
+    uint8_t pacc;
+    uint8_t apicbase;
 
     uint16_t timer_base;
     uint16_t timer_latch;
@@ -249,7 +254,7 @@ sio_write(int func, int addr, UNUSED(int len), uint8_t val, void *priv)
                APIC's input 0 in place of INT; bit 0, INTRC, holds the
                external INT signal inactive (data sheet 3.1.26). */
             if (dev->is_sioa) {
-                dev->regs[addr] = val & 0x03;
+                dev->pacc = val & 0x03;
                 ioapic_set_pin0_smi(dev->ioapic, !!(val & 0x02));
                 ioapic_set_intr_masked(dev->ioapic, !!(val & 0x01));
             }
@@ -259,7 +264,7 @@ sio_write(int func, int addr, UNUSED(int len), uint8_t val, void *priv)
                A[11:10] of the I/O APIC's window at FEC0xy00h (data sheet
                3.1.27). */
             if (dev->is_sioa) {
-                dev->regs[addr] = val & 0x3f;
+                dev->apicbase = val & 0x3f;
                 ioapic_set_mmio_base(dev->ioapic, 0xfec00000 | ((uint32_t) (val & 0x3f) << 10));
             }
             break;
@@ -661,7 +666,7 @@ sio_a_set_ioapic(void *priv, void *ioapic)
     sio_t *dev = (sio_t *) priv;
 
     dev->ioapic = ioapic;
-    ioapic_set_mmio_base(ioapic, 0xfec00000 | ((uint32_t) dev->regs[0x71] << 10));
-    ioapic_set_pin0_smi(ioapic, !!(dev->regs[0x70] & 0x02));
-    ioapic_set_intr_masked(ioapic, !!(dev->regs[0x70] & 0x01));
+    ioapic_set_mmio_base(ioapic, 0xfec00000 | ((uint32_t) dev->apicbase << 10));
+    ioapic_set_pin0_smi(ioapic, !!(dev->pacc & 0x02));
+    ioapic_set_intr_masked(ioapic, !!(dev->pacc & 0x01));
 }
