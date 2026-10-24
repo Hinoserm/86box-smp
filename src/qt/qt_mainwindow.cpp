@@ -77,6 +77,7 @@ extern bool fast_forward;
 #include <QThread>
 #include <QKeyEvent>
 #include <QShortcut>
+#include <QToolButton>
 #include <QMessageBox>
 #include <QFocusEvent>
 #include <QApplication>
@@ -317,6 +318,12 @@ MainWindow::MainWindow(QWidget *parent)
     toolbar_label_widget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 
     ui->toolBar->addWidget(toolbar_label_widget);
+
+    /* The toolbar is for the mouse. A button that took keyboard focus (on macOS
+       a click gives it) would be pressed by the guest's Space or Return. */
+    ui->toolBar->setFocusPolicy(Qt::NoFocus);
+    for (auto *button : ui->toolBar->findChildren<QToolButton *>())
+        button->setFocusPolicy(Qt::NoFocus);
 
     this->setWindowFlag(Qt::CustomizeWindowHint, true);
     this->setWindowFlag(Qt::MSWindowsFixedSizeDialogHint, vid_resize != 1);
