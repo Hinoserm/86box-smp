@@ -143,8 +143,10 @@ extern uint64_t codegen_link_unlinked;
 /*The indirect link table: the blocks a near RET, CALL or indirect JMP last
   reached, looked up by linear PC in the exit stub, each valid for the CS
   base and key it was filled under and while its block's link generation
-  is the one it was filled under.*/
-#    define CODEGEN_IND_SIZE 4096
+  is the one it was filled under. 32768 entries (2 MB): with 4096, a guest
+  whose hot code returns to some ten thousand places (CORSAC under
+  Half-Life) missed on half its exits, the entries pushing each other out.*/
+#    define CODEGEN_IND_SIZE 32768
 typedef struct codegen_ind_t {
     uint32_t  pc;
     uint32_t  cs_base;
