@@ -79,8 +79,10 @@ typedef struct serial_s {
     uint8_t fifo_enabled;
     uint8_t bits;
 
-    /* Divides the receive timer down for the modem status poll. */
+    /* Bit times the receive timer has run since the modem status poll. */
     uint8_t status_divider;
+    /* The receive timer is armed for a whole character: the line was idle. */
+    uint8_t receive_idle;
     uint8_t data_bits;
     uint8_t baud_cycles;
     uint8_t txsr;

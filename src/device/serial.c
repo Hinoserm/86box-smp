@@ -200,8 +200,10 @@ serial_receive_needed(const serial_t *dev)
 static void
 serial_receive_start(serial_t *dev)
 {
-    if (serial_receive_needed(dev) && !timer_is_on(&dev->receive_timer))
+    if (serial_receive_needed(dev) && !timer_is_on(&dev->receive_timer)) {
+        dev->receive_idle = 0;
         timer_on_auto(&dev->receive_timer, serial_receive_period(dev));
+    }
 }
 
 static void
@@ -211,6 +213,10 @@ serial_receive_timer(void *priv)
 
     serial_log("serial_receive_timer()\n");
 
+    const int ticked = dev->receive_idle ? (dev->bits ? dev->bits : 10) : 1;
+    int       got    = 0;
+
+    dev->receive_idle = 0;
     timer_on_auto(&dev->receive_timer, serial_receive_period(dev));
 
     /* Only read when the receive shift register is free: it still holds the
@@ -218,14 +224,17 @@ serial_receive_timer(void *priv)
        unconditionally can overwrite input that was never delivered. */
     if (dev->char_port.chardev.read && (dev->out_new == 0xffff)) {
         uint8_t val;
-        if (dev->char_port.chardev.read(&val, sizeof(val), dev->char_port.chardev.priv) > 0)
+        if (dev->char_port.chardev.read(&val, sizeof(val), dev->char_port.chardev.priv) > 0) {
             serial_write_fifo(dev, val);
+            got = 1;
+        }
     }
 
     /* The modem status lines do not change thousands of times a second, and
-       querying them is not free on every host. */
-    dev->status_divider++;
-    if (dev->char_port.chardev.status && !(dev->status_divider & 0x3f)) {
+       querying them is not free on every host: every 64 bit times. */
+    dev->status_divider += ticked;
+    if (dev->char_port.chardev.status && (dev->status_divider >= 64)) {
+        dev->status_divider = 0;
         uint8_t prev_msr = dev->msr;
         uint32_t flags = dev->char_port.chardev.status(dev->char_port.chardev.priv);
         uint8_t mask = CHAR_COM_CTS | CHAR_COM_DSR | CHAR_COM_RI | CHAR_COM_DCD;
@@ -283,6 +292,16 @@ serial_receive_timer(void *priv)
 
     if (!serial_receive_needed(dev))
         timer_disable(&dev->receive_timer);
+    else if (!got && (dev->out_new == 0xffff)) {
+        /* Nothing came and nothing waits: no character can arrive sooner
+           than a character time, so the host is asked again then, not every
+           bit (a pipe or a tty on a port, polled 115200 times a second, ended
+           the recompiler's chains as often). A character from a device here
+           (write_fifo) brings the next look back to one bit time; one that
+           comes is taken bit-timed again, so bursts move as they did. */
+        dev->receive_idle = 1;
+        timer_on_auto(&dev->receive_timer, (dev->bits ? dev->bits : 10) * serial_receive_period(dev));
+    }
 }
 
 static void
@@ -295,6 +314,11 @@ write_fifo(serial_t *dev, uint8_t dat)
 
     /* Do this here, because in non-FIFO mode, this is read directly. */
     dev->out_new = (uint16_t) dat;
+    /* A character's wait for an idle line is over: on, one bit time ahead. */
+    if (dev->receive_idle && timer_is_on(&dev->receive_timer)) {
+        dev->receive_idle = 0;
+        timer_on_auto(&dev->receive_timer, serial_receive_period(dev));
+    }
     serial_receive_start(dev);
 }
 
@@ -460,6 +484,7 @@ static void
 serial_update_speed(serial_t *dev)
 {
     serial_log("serial_update_speed(%lf)\n", dev->transmit_period);
+    dev->receive_idle = 0;
     if (serial_receive_needed(dev))
         timer_on_auto(&dev->receive_timer, serial_receive_period(dev));
     else
