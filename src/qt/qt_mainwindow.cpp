@@ -78,6 +78,8 @@ extern bool fast_forward;
 #include <QKeyEvent>
 #include <QShortcut>
 #include <QToolButton>
+#include <QAccessible>
+#include <QAccessibleWidget>
 #include <QMessageBox>
 #include <QFocusEvent>
 #include <QApplication>
@@ -199,6 +201,90 @@ processEventsOnlyWhenPausedOrModal()
 }
 #endif
 
+
+/* The toolbar's buttons as the accessibility layer sees them. While the guest
+   has the keyboard and mouse captured they are taken out of it: hidden, and
+   with no press action. Otherwise macOS Full Keyboard Access presses the last
+   clicked toolbar button when the guest is sent Space, whatever Qt's focus. */
+static bool toolbar_accessible = true;
+
+class ToolbarButtonAccessible : public QAccessibleWidget {
+public:
+    explicit ToolbarButtonAccessible(QToolButton *button)
+        : QAccessibleWidget(button, QAccessible::Button)
+    {
+    }
+
+    QAccessible::State state() const override
+    {
+        QAccessible::State state = QAccessibleWidget::state();
+        const auto        *button = static_cast<QToolButton *>(widget());
+
+        if (button->isCheckable()) {
+            state.checkable = true;
+            state.checked   = button->isChecked();
+        }
+        if (!toolbar_accessible) {
+            state.invisible = true;
+            state.focusable = false;
+        }
+        return state;
+    }
+
+    QString text(QAccessible::Text t) const override
+    {
+        if (t == QAccessible::Name) {
+            const auto *button = static_cast<QToolButton *>(widget());
+            QString     name   = button->accessibleName();
+
+            if (name.isEmpty())
+                name = button->toolTip();
+            if (name.isEmpty())
+                name = button->text();
+            return name;
+        }
+        return QAccessibleWidget::text(t);
+    }
+
+    QStringList actionNames() const override
+    {
+        if (!toolbar_accessible || !widget()->isEnabled())
+            return {};
+        return { pressAction() };
+    }
+
+    void doAction(const QString &name) override
+    {
+        if (toolbar_accessible && (name == pressAction()) && widget()->isEnabled())
+            static_cast<QToolButton *>(widget())->click();
+    }
+};
+
+static QAccessibleInterface *
+toolbar_button_accessible(const QString &, QObject *object)
+{
+    auto *button = qobject_cast<QToolButton *>(object);
+
+    if (button && button->parentWidget() && (button->parentWidget()->objectName() == QLatin1String("toolBar")))
+        return new ToolbarButtonAccessible(button);
+    return nullptr;
+}
+
+void
+MainWindow::setToolbarAccessible(bool on)
+{
+    if (toolbar_accessible == on)
+        return;
+    toolbar_accessible = on;
+
+    for (auto *button : ui->toolBar->findChildren<QToolButton *>()) {
+        QAccessibleEvent event(button, on ? QAccessible::ObjectShow : QAccessible::ObjectHide);
+        QAccessible::updateAccessibility(&event);
+    }
+    QAccessibleEvent event(ui->toolBar, QAccessible::ObjectReorder);
+    QAccessible::updateAccessibility(&event);
+}
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
@@ -319,11 +405,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     ui->toolBar->addWidget(toolbar_label_widget);
 
-    /* The toolbar is for the mouse. A button that took keyboard focus (on macOS
-       a click gives it) would be pressed by the guest's Space or Return. */
-    ui->toolBar->setFocusPolicy(Qt::NoFocus);
-    for (auto *button : ui->toolBar->findChildren<QToolButton *>())
-        button->setFocusPolicy(Qt::NoFocus);
+    QAccessible::installFactory(toolbar_button_accessible);
 
     this->setWindowFlag(Qt::CustomizeWindowHint, true);
     this->setWindowFlag(Qt::MSWindowsFixedSizeDialogHint, vid_resize != 1);
@@ -436,6 +518,7 @@ MainWindow::MainWindow(QWidget *parent)
             return;
 
         qt_mouse_capture(mouse_capture);
+        setToolbarAccessible(!mouse_capture);
         if (mouse_capture) {
             if (hook_enabled)
                 this->grabKeyboard();

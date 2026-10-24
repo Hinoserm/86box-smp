@@ -29,6 +29,7 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 
 public:
+    void setToolbarAccessible(bool on);
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
