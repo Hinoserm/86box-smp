@@ -756,6 +756,51 @@ hsample_loop(UNUSED(void *priv))
     }
 }
 
+/* esample: the same, sampled every ESAMPLE_US of emulated time by a timer
+   on the CPU thread, as a profiler inside the guest would see it. Host time
+   share over emulated time share is how much dearer a piece of guest code
+   is to emulate than the average. Armed and disarmed in automation_quantum,
+   on the CPU thread, which owns the timers. */
+#define ESAMPLE_US 20
+static pc_timer_t  esample_timer;
+static int         esample_added;
+static atomic_int  esample_want; /* 1 start, 0 stop, as asked */
+static int         esample_on;
+static uint32_t   *esample_lin;
+static uint8_t    *esample_cpl;
+static atomic_int  esample_n;
+
+static void
+esample_tick(UNUSED(void *priv))
+{
+    int n = atomic_load(&esample_n);
+
+    if (n < HSAMPLE_MAX) {
+        esample_lin[n] = cpu_state.seg_cs.base + cpu_state.pc;
+        esample_cpl[n] = (cpu_state.seg_cs.access >> 5) & 3;
+        atomic_store(&esample_n, n + 1);
+    }
+    timer_advance_u64(&esample_timer, ESAMPLE_US * TIMER_USEC);
+}
+
+static void
+esample_quantum(void)
+{
+    int want = atomic_load(&esample_want);
+
+    if (want == esample_on)
+        return;
+    if (want) {
+        if (!esample_added) {
+            timer_add(&esample_timer, esample_tick, NULL, 0);
+            esample_added = 1;
+        }
+        timer_set_delay_u64(&esample_timer, ESAMPLE_US * TIMER_USEC);
+    } else
+        timer_disable(&esample_timer);
+    esample_on = want;
+}
+
 static void
 hsample_stop(void)
 {
@@ -968,6 +1013,32 @@ handle_request(char *line)
         atomic_store(&hsample_run, 1);
         hsample_thread = thread_create_named(hsample_loop, NULL, "hsample");
         respond_ok_time();
+    } else if (!strcmp(argv[0], "esample") && (argc == 2) && !strcmp(argv[1], "start")) {
+        /* esample start | esample stop | esample dump <path> */
+        if (!esample_lin) {
+            esample_lin = malloc(HSAMPLE_MAX * sizeof(uint32_t));
+            esample_cpl = malloc(HSAMPLE_MAX);
+        }
+        atomic_store(&esample_n, 0);
+        atomic_store(&esample_want, 1);
+        respond_ok_time();
+    } else if (!strcmp(argv[0], "esample") && (argc == 2) && !strcmp(argv[1], "stop")) {
+        atomic_store(&esample_want, 0);
+        resp.len = 0;
+        sb_printf(&resp, "{\"ok\":true,\"samples\":%d}", atomic_load(&esample_n));
+    } else if (!strcmp(argv[0], "esample") && (argc == 3) && !strcmp(argv[1], "dump")) {
+        FILE *fp = esample_lin ? fopen(argv[2], "w") : NULL;
+        int   n  = atomic_load(&esample_n);
+
+        if (!fp)
+            respond_error("nothing sampled, or the file will not open");
+        else {
+            for (int i = 0; i < n; i++)
+                fprintf(fp, "%08x %u\n", esample_lin[i], esample_cpl[i]);
+            fclose(fp);
+            resp.len = 0;
+            sb_printf(&resp, "{\"ok\":true,\"samples\":%d}", n);
+        }
     } else if (!strcmp(argv[0], "hsample") && (argc == 2) && !strcmp(argv[1], "stop")) {
         hsample_stop();
         resp.len = 0;
@@ -1217,6 +1288,8 @@ automation_quantum(void)
 #endif
 
     emu_ms += force_10ms ? 10 : 1;
+
+    esample_quantum();
 
     /* Speed while running, held steps included: emulated vs host time per
        emulated second. Wall time spent held between requests is excluded. */
