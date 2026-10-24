@@ -197,6 +197,16 @@ extern void codegen_links_written(void);
 
 extern codeblock_t *codeblock;
 
+/*The block hash's slot for code at a physical address run under a status.
+  The status bits a block must match exactly (CPU_STATUS_FLAGS: operand and
+  stack size, mode, the x87 precision and rounding a block is compiled for)
+  go into it, so the variants of the same code each have a slot: keyed by
+  the address alone they took turns in one, and a guest switching between
+  them (Half-Life under CORSAC, its x87 control word changing every few
+  calls) went to the page's block tree for most lookups. The bits a block
+  need only include (CPU_STATUS_MASK) stay out.*/
+#define HASH_STATUS(phys, status) HASH((uint32_t) (phys) ^ ((uint32_t) ((status) & CPU_STATUS_FLAGS) * 0x9e3779b9u))
+
 extern uint32_t *codeblock_hash;
 
 extern uint8_t *block_write_data;

@@ -1727,8 +1727,8 @@ delete_block(codeblock_t *block)
     codegen_stat_deletes++;
     uint32_t old_pc = block->pc;
 
-    if (block == &codeblock[codeblock_hash[HASH(block->phys)]])
-        codeblock_hash[HASH(block->phys)] = BLOCK_INVALID;
+    if (block == &codeblock[codeblock_hash[HASH_STATUS(block->phys, block->status)]])
+        codeblock_hash[HASH_STATUS(block->phys, block->status)] = BLOCK_INVALID;
 
 #ifndef RELEASE_BUILD
     if (!block->valid)
@@ -1753,8 +1753,8 @@ delete_block(codeblock_t *block)
 static void
 delete_dirty_block(codeblock_t *block)
 {
-    if (block == &codeblock[codeblock_hash[HASH(block->phys)]])
-        codeblock_hash[HASH(block->phys)] = BLOCK_INVALID;
+    if (block == &codeblock[codeblock_hash[HASH_STATUS(block->phys, block->status)]])
+        codeblock_hash[HASH_STATUS(block->phys, block->status)] = BLOCK_INVALID;
 
 #ifndef RELEASE_BUILD
     if (!block->valid)
@@ -1906,7 +1906,7 @@ codegen_block_init(uint32_t phys_addr)
 #endif
     block_current = get_block_nr(block);
 
-    block_num                 = HASH(phys_addr);
+    block_num                 = HASH_STATUS(phys_addr, cpu_cur_status);
     codeblock_hash[block_num] = block_current;
 
     block->valid       = 1;
@@ -1952,7 +1952,7 @@ codegen_block_start_recompile(codeblock_t *block)
     if (!page->block)
         mem_flush_write_page(block->phys, cs + cpu_state.pc);
 
-    block_num     = HASH(block->phys);
+    block_num     = HASH_STATUS(block->phys, cpu_cur_status);
     block_current = get_block_nr(block); // block->pnt;
 
 #ifndef RELEASE_BUILD

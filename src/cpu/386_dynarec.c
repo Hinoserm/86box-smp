@@ -909,8 +909,8 @@ exec386_dynarec_dyn(void)
 
     uint32_t start_pc  = 0;
     uint32_t phys_addr = get_phys(cs + cpu_state.pc);
-    int      hash      = HASH(phys_addr);
-    codeblock_t *block = &codeblock[codeblock_hash[hash]];
+    int      hash;
+    codeblock_t *block;
     int valid_block = 0;
 
     /* Code in device memory (a BIOS copying a routine into video memory) is
@@ -948,6 +948,10 @@ exec386_dynarec_dyn(void)
        here from what they hold, as ES's are, for any load that left them. */
     cpu_seg_flat64k(&cpu_state.seg_ds, CPU_STATUS_NOTFLAT64KDS);
     cpu_seg_flat64k(&cpu_state.seg_ss, CPU_STATUS_NOTFLAT64KSS);
+    /* The slot is keyed by the status as well (HASH_STATUS), so it is
+       taken once the status is up to date. */
+    hash  = HASH_STATUS(phys_addr, cpu_cur_status);
+    block = &codeblock[codeblock_hash[hash]];
 
     if (!cpu_state.abrt)
     {
