@@ -210,19 +210,6 @@ machine_at_aurora_init(const machine_t *model)
 }
 
 /* i450GX */
-static void *p6rp4_gx;
-
-/* The I/O APIC is reached only through the PB's APICR range. */
-static void
-p6rp4_apicr_changed(void *ioapic)
-{
-    uint32_t lo = 0;
-    uint32_t hi = 0;
-    int      on = i450gx_apic_range(p6rp4_gx, 0, &lo, &hi);
-
-    ioapic_set_host_decode(ioapic, lo, hi, on);
-}
-
 int
 machine_at_p6rp4_init(const machine_t *model)
 {
@@ -239,21 +226,9 @@ machine_at_p6rp4_init(const machine_t *model)
     machine_pci_init();
     machine_pci_register_slots();
 
-    p6rp4_gx = device_add(&i450gx_device);
-    {
-        static const ioapic_legacy_irq_routing_t p6rp4_irq_routing = {
-            .irq_to_intin = IOAPIC_LEGACY_IRQ_ROUTE_ISA
-        };
-        /* An AMI BIOS (AMIBIOS 0106 for SMC): its last POST code before
-           booting is 00h (IOAPIC_POST_TRIGGER_AMI). */
-        void *ioapic = device_add_params(&ioapic_validated_up_device,
-                                         (void *) (IOAPIC_TOPOLOGY_LAPIC_SLOTS(2) |
-                                                   IOAPIC_TOPOLOGY_UP_APIC_DEFAULT | IOAPIC_POST_TRIGGER_AMI));
-
-        ioapic_set_legacy_irq_routing(ioapic, &p6rp4_irq_routing);
-        /* The PB forwards its APICR range to the PCI bus the 82093AA is on. */
-        i450gx_set_apicr_callback(p6rp4_gx, p6rp4_apicr_changed, ioapic);
-    }
+    /* No I/O APIC: only the P/I-P6RSP4 sibling, with the 82379AB SIO.A,
+       has one. The BIOS's MP table builder (F000:6800) is never called. */
+    device_add(&i450gx_device);
     device_add(&sio_zb_device);
     device_add(machine_get_ide_device(machine));
     /* Input port bit 2 must be 1 or CMOS Setup is disabled. */
