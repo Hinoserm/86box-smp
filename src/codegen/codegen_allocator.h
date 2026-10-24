@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 
 /*The allocator handles all allocation of executable memory. Since the two-pass
   recompiler design makes applying hard limits to codeblock size difficult, the
@@ -46,6 +47,8 @@ void *codegen_allocator_veneer(const void *src, const void *dst);
 #endif
 
 void codegen_allocator_init(void);
+/*Writes every allocated piece of code and its block's guest addresses*/
+void codegen_allocator_dump(FILE *fp);
 /*Allocate a mem_block_t, and the associated backing memory.
   If parent is non-NULL, then the new block will be added to the list in
   parent->next*/

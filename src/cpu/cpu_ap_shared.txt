@@ -16,6 +16,7 @@ fegetround
 fesetround
 floor
 fmod
+fprintf
 free
 fwrite
 ilogb

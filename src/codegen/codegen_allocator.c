@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <86box/86box.h>
 #include "cpu.h"
 #include <86box/mem.h>
@@ -137,6 +138,32 @@ codegen_allocator_init(void)
     }
 #endif
     mem_block_free_list = 1;
+}
+
+/*Every allocated piece of recompiled code, one line each: its host start
+  and end, then the guest pc, CS base and physical address of the block
+  that owns it. Joined with a host profiler's samples, it names the guest
+  code each sample of recompiled code ran for.*/
+void
+codegen_allocator_dump(FILE *fp)
+{
+    static uint8_t is_free[MEM_BLOCK_NR];
+    uint32_t       nr;
+
+    memset(is_free, 0, sizeof(is_free));
+    for (nr = mem_block_free_list; nr; nr = mem_blocks[nr - 1].next)
+        is_free[nr - 1] = 1;
+    for (uint32_t c = 0; c < MEM_BLOCK_NR; c++) {
+        const codeblock_t *block;
+
+        if (is_free[c] || !mem_block_alloc)
+            continue;
+        block = &codeblock[mem_blocks[c].code_block];
+        if (!block->valid)
+            continue;
+        fprintf(fp, "%p %p %08x %08x %08x\n", (void *) &mem_block_alloc[mem_blocks[c].offset],
+                (void *) &mem_block_alloc[mem_blocks[c].offset + MEM_BLOCK_SIZE], block->pc, block->_cs, block->phys);
+    }
 }
 
 mem_block_t *

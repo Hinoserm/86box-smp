@@ -78,6 +78,9 @@ typedef int sock_t;
 #include <86box/nvr.h>
 #include <86box/acpi.h>
 #include <86box/automation.h>
+#ifdef USE_DYNAREC
+void codegen_allocator_dump(FILE *fp);
+#endif
 #ifdef USE_GDBSTUB
 #    include <86box/gdbstub.h>
 #endif
@@ -969,6 +972,20 @@ handle_request(char *line)
         hsample_stop();
         resp.len = 0;
         sb_printf(&resp, "{\"ok\":true,\"samples\":%d}", atomic_load(&hsample_n));
+#ifdef USE_DYNAREC
+    } else if (!strcmp(argv[0], "jitmap") && (argc == 2)) {
+        /* jitmap <path>: the recompiled code's host ranges and their guest
+           blocks (codegen_allocator_dump); hold the machine first. */
+        FILE *fp = fopen(argv[1], "w");
+
+        if (!fp)
+            respond_error("the file will not open");
+        else {
+            codegen_allocator_dump(fp);
+            fclose(fp);
+            respond_ok_time();
+        }
+#endif
     } else if (!strcmp(argv[0], "hsample") && (argc == 3) && !strcmp(argv[1], "dump")) {
         FILE *fp = hsample_lin ? fopen(argv[2], "w") : NULL;
         int   n  = atomic_load(&hsample_n);
