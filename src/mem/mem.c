@@ -1269,6 +1269,9 @@ mem_mapping_apply_granule(mem_mapping_t *map, uint64_t c)
     n  = STATE_BUS | !!mem_smm_cpus;
     wp = _mem_wp_bus[g];
 
+    /* A mapping that is the processor's own is not on the bus. */
+    if (map->flags & MEM_MAPPING_CPU_ONLY)
+        return;
     if (!wp && (map->write_b || map->write_w || map->write_l) && mem_mapping_access_allowed(map->flags, _mem_state[g].states[n].w))
         write_mapping_bus[g] = map;
     if ((map->read_b || map->read_w || map->read_l) && mem_mapping_access_allowed(map->flags, _mem_state[g].states[n].r))

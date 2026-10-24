@@ -184,6 +184,8 @@ MEM_ST_FN(mem_st64, uint64_t)
                                      two processors' accesses may race on, as on memory, and
                                      charge their time with MEM_ACCESS_CHARGE; a write may be
                                      kept from it (ap_local_write). */
+#define MEM_MAPPING_CPU_ONLY  256 /* The processor's own: seen by its accesses and never
+                                     by a bus master's (mem_*_phys). */
 
 /* #define's for memory granularity, currently 4k, less does
    not work because of internal 4k pages. */
