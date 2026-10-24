@@ -1131,8 +1131,15 @@ banshee_status(banshee_t *banshee)
     if (voodoo->cmdfifo_depth_rd_2 != voodoo->cmdfifo_depth_wr_2)
         ret |= (1 << 12);
 
-    if (!voodoo->voodoo_busy)
-        voodoo_wake_fifo_thread(voodoo);
+    /* The card drains its FIFO whether or not anyone looks. A driver reading
+       status with entries queued is waiting for them to go, so they start
+       now rather than after the delay that lets writes batch up. */
+    if (!voodoo->voodoo_busy) {
+        if (!FIFO_EMPTY)
+            voodoo_wake_fifo_thread_now(voodoo);
+        else
+            voodoo_wake_fifo_thread(voodoo);
+    }
 
 #if 0
     banshee_log("banshee_status: busy %i  %i (%i %i)  %i   %i %i  %04x(%08x):%08x %08x\n", busy, written, voodoo->cmd_written, voodoo->cmd_written_fifo, voodoo->cmd_read, voodoo->cmdfifo_depth_rd, voodoo->cmdfifo_depth_wr, CS,cs,cpu_state.pc, ret);
@@ -1453,16 +1460,21 @@ banshee_reg_readl(uint32_t addr, void *priv)
             break;
 
         case 0x0100000: /*2D registers*/
+            /* status and intrCtrl report the card's state as it stands, as
+               they do through the 3D window: a driver polling for FIFO room
+               must not have the whole FIFO run, and the render threads
+               waited out, on every read. The blitter's own registers are
+               set through the FIFO, so they are read after it has run. */
+            if ((addr & 0x1fc) == SST_status) {
+                ret = banshee_status(banshee);
+                break;
+            }
+            if ((addr & 0x1fc) == SST_intrCtrl) {
+                ret = banshee->intrCtrl & 0x0030003f;
+                break;
+            }
             voodoo_flush(voodoo);
             switch (addr & 0x1fc) {
-                case SST_status:
-                    ret = banshee_status(banshee);
-                    break;
-
-                case SST_intrCtrl:
-                    ret = banshee->intrCtrl & 0x0030003f;
-                    break;
-
                 case 0x08:
                     ret = voodoo->banshee_blt.clip0Min;
                     break;
