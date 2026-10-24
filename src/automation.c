@@ -711,6 +711,43 @@ fpu_reg80(int r, uint16_t *se, uint64_t *signif)
     }
 }
 
+/* hsample: where the emulated processor is, read from a thread of its own
+   once a millisecond of wall time. Weighted by host time, not emulated
+   time, it names the guest code that is slow to emulate. The read is
+   unsynchronised on purpose -- each sample is a statistic -- and the
+   recompiler stores pc at block boundaries, so a sample names a block. */
+#define HSAMPLE_MAX 600000
+static thread_t   *hsample_thread;
+static atomic_int  hsample_run;
+static uint32_t   *hsample_lin;
+static uint8_t    *hsample_cpl;
+static atomic_int  hsample_n;
+
+static void
+hsample_loop(UNUSED(void *priv))
+{
+    while (atomic_load(&hsample_run)) {
+        int n = atomic_load(&hsample_n);
+
+        if (n >= HSAMPLE_MAX)
+            break;
+        hsample_lin[n] = cpu_state.seg_cs.base + cpu_state.pc;
+        hsample_cpl[n] = (cpu_state.seg_cs.access >> 5) & 3;
+        atomic_store(&hsample_n, n + 1);
+        plat_delay_ms(1);
+    }
+}
+
+static void
+hsample_stop(void)
+{
+    if (hsample_thread) {
+        atomic_store(&hsample_run, 0);
+        thread_wait(hsample_thread);
+        hsample_thread = NULL;
+    }
+}
+
 static void
 handle_request(char *line)
 {
@@ -900,6 +937,34 @@ handle_request(char *line)
         cmd_info();
     } else if (!strcmp(argv[0], "text")) {
         cmd_text();
+    } else if (!strcmp(argv[0], "hsample") && (argc == 2) && !strcmp(argv[1], "start")) {
+        /* hsample start | hsample stop | hsample dump <path> */
+        hsample_stop();
+        if (!hsample_lin) {
+            hsample_lin = malloc(HSAMPLE_MAX * sizeof(uint32_t));
+            hsample_cpl = malloc(HSAMPLE_MAX);
+        }
+        atomic_store(&hsample_n, 0);
+        atomic_store(&hsample_run, 1);
+        hsample_thread = thread_create_named(hsample_loop, NULL, "hsample");
+        respond_ok_time();
+    } else if (!strcmp(argv[0], "hsample") && (argc == 2) && !strcmp(argv[1], "stop")) {
+        hsample_stop();
+        resp.len = 0;
+        sb_printf(&resp, "{\"ok\":true,\"samples\":%d}", atomic_load(&hsample_n));
+    } else if (!strcmp(argv[0], "hsample") && (argc == 3) && !strcmp(argv[1], "dump")) {
+        FILE *fp = hsample_lin ? fopen(argv[2], "w") : NULL;
+        int   n  = atomic_load(&hsample_n);
+
+        if (!fp)
+            respond_error("nothing sampled, or the file will not open");
+        else {
+            for (int i = 0; i < n; i++)
+                fprintf(fp, "%08x %u\n", hsample_lin[i], hsample_cpl[i]);
+            fclose(fp);
+            resp.len = 0;
+            sb_printf(&resp, "{\"ok\":true,\"samples\":%d}", n);
+        }
     } else if (!strcmp(argv[0], "memr") && (argc == 3)) {
         uint32_t addr = strtoul(argv[1], NULL, 0);
         int      len  = atoi(argv[2]);
