@@ -39,6 +39,7 @@
 #include <86box/video.h>
 #include <86box/machine.h>
 #include <86box/ioapic_routes.h>
+#include <86box/cpu_mp.h>
 #include <86box/sound.h>
 
 /* i430NX */
@@ -104,8 +105,25 @@ machine_at_p54np4d_init(const machine_t *model)
     /* The SIO.A's I/O APIC: the BIOS gives it ID 2 at FEC00000h and lists
        the ISA IRQs on it in its MP table (Award: its last POST code before
        booting is FFh). */
-    ioapic = device_add_params(&ioapic_validated_up_device,
-                               (void *) (IOAPIC_TOPOLOGY_UP_APIC_DEFAULT | IOAPIC_VARIANT_ESC));
+    {
+        uintptr_t topo = IOAPIC_TOPOLOGY_UP_APIC_DEFAULT | IOAPIC_VARIANT_ESC;
+
+        /* Two sockets (MACHINE_DUAL_CPU), and the BIOS's fixed MP table
+           (F98A0h) lists two processors: with two fitted, the second starts
+           from the first's STARTUP through the APIC. Without the APIC, or
+           with a processor that does not pair (cpu_mp_pairable), one runs. */
+        if ((cpu_count >= 2) && !machine_get_config_int("disable_apic") && cpu_mp_pairable(cpu_f, cpu_s)) {
+            cpu_mp_configure(2);
+            topo |= IOAPIC_TOPOLOGY_LAPIC_SLOTS(2) | IOAPIC_TOPOLOGY_SMP;
+        } else {
+            if (cpu_count >= 2)
+                pclog("P54NP4D: %i processors configured, one runs: %s\n", cpu_count,
+                      machine_get_config_int("disable_apic") ? "the APIC is disabled" :
+                                                               "this processor does not pair");
+            topo |= IOAPIC_TOPOLOGY_LAPIC_SLOTS(1);
+        }
+        ioapic = device_add_params(&ioapic_validated_up_device, (void *) topo);
+    }
     ioapic_set_legacy_irq_routing(ioapic, &p54np4d_irq_routing);
     sio_a_set_ioapic(sio, ioapic);
     device_add_params(machine_get_kbc_device(machine), (void *) model->kbc_params);
